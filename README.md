@@ -46,7 +46,7 @@ The server is ready when the log prints:
 ```
 
 The MCP endpoint `http://localhost:8000/mcp` can be registered in any MCP-enabled AI tool
-(VS Code Copilot, Claude Desktop, Cursor, Windsurf, …). VS Code `settings.json` example:
+(Copilot CLI, Claude Desktop, …).
 
 ### Team builder skill
 
