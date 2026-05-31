@@ -1,7 +1,7 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/80.png" height="130" alt="Slowbro" title="Slowbro"/>
 <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/248.png" height="130" alt="Tyranitar" title="Tyranitar"/>
+<img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/80.png" height="130" alt="Slowbro" title="Slowbro"/>
 <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/637.png" height="130" alt="Volcarona" title="Volcarona"/>
 
 # champions-mcp
@@ -18,13 +18,18 @@ across seven layers:
 - **Regulation / legality** — curated regulation sets (active: **M-A**, 2026-04-08 → 2026-06-17).
   Champions item catalog (139 items, Serebii-verified), Item Clause and Species Clause enforcement.
 - **Movesets** — per-species Champions movepools (186 species / 490 moves, Serebii-verified).
-- **Roster** — 213 pickable entries (incl. regional forms) from the M-A allowlist
+- **Roster** — 213 pickable entries (incl. regional forms and Mega evolutions) from the M-A allowlist
   ([Bulbapedia](https://bulbapedia.bulbagarden.net/wiki/Regulation_Set_M-A)), `roster_verified: true`.
+  Mega forms are tracked with their own typing, abilities and stats; held Mega Stones are validated against the item catalog.
 - **Meta** — Smogon chaos stats (usage %, sets, spreads) + Limitless tournament data (top teams, cores).
 - **Stat Points** — Champions SP math: 66 total, max 32/stat, 1 SP = +1 stat at Lv 50.
   Speed threshold, stat calc, spread validation.
 - **Damage calc** — [`@smogon/calc`](https://github.com/smogon/damage-calc) in native Champions
   mode (gen 0): Champions species/items/moves, SP spread passed straight through, singles/doubles.
+  Mega evolution is triggered automatically from the held Mega Stone; regional forms use Champions-accurate stats.
+
+<br>
+<div align="center"><img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/135.png" height="100" alt="Jolteon" title="Jolteon"/></div>
 
 ## Run
 
@@ -40,7 +45,8 @@ The server is ready when the log prints:
  MCP URL   : http://localhost:8000/mcp
 ```
 
-Register in VS Code `settings.json`:
+The MCP endpoint `http://localhost:8000/mcp` can be registered in any MCP-enabled AI tool
+(VS Code Copilot, Claude Desktop, Cursor, Windsurf, …). VS Code `settings.json` example:
 
 ```json
 "mcp": {
@@ -62,6 +68,9 @@ set `CHAMPIONS_MCP_PREWARM=0` to skip after the first run.
 > **Security note** — This server is intended for local use only. There is no TLS and no
 > authentication. Do not expose it to the internet or to untrusted networks.
 
+<br>
+<div align="center"><img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/143.png" height="100" alt="Snorlax" title="Snorlax"/></div>
+
 ## Caching
 
 The project is a **good citizen towards every upstream API**: no resource is fetched more
@@ -80,6 +89,9 @@ Delete it to force a full re-prewarm:
 ```bash
 docker compose down -v && docker compose up -d --build
 ```
+
+<br>
+<div align="center"><img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/137.png" height="100" alt="Porygon" title="Porygon"/></div>
 
 ## Tools
 
