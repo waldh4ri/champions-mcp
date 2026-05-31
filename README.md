@@ -54,27 +54,8 @@ A [`SKILL.md`](skills/champions-team-building/SKILL.md) ships with this repo. Th
 server works without it — every tool is self-documented. The skill is optional context
 that aligns the model to the Champions-specific workflow: correct tool order, the
 spread + damage loop, format isolation (VGC vs BSS), and common pitfalls. Without it
-the model may fall back on Scarlet/Violet intuition or skip steps like `calc_damage`.
-
-Load it in your AI tool after connecting the MCP server:
-
-| Tool | How to load |
-|---|---|
-| **VS Code Copilot** | Copy or symlink `skills/` into `.github/skills/` — Copilot agent picks it up automatically and exposes `/champions-team-building` as a slash command. |
-| **Claude Code** | `/add-dir skills/champions-team-building` in the session, or add the path to your project's `CLAUDE.md`. |
-| **Cursor / Windsurf** | Attach the file via `@` mention or add it to the project rules/context. |
-| **Claude Desktop** | Use `@` file mention, or paste the skill contents into the system prompt. |
-
-```json
-"mcp": {
-  "servers": {
-    "champions-mcp": {
-      "type": "http",
-      "url": "http://localhost:8000/mcp"
-    }
-  }
-}
-```
+the model may fall back on Scarlet/Violet intuition or skip steps like `calc_damage`. 
+Load it in your AI tool after connecting the MCP server.
 
 The compose stack builds two services: **`champions-calc`** (`@smogon/calc` HTTP sidecar,
 internal only) and **`champions-mcp`** (Python MCP server, port 8000). Once running the
