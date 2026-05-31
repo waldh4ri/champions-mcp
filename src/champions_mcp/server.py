@@ -247,12 +247,15 @@ def _build_game_rules_vgc() -> dict[str, Any]:
                 "2. RESEARCH each Pok\u00e9mon: (a) get_smogon_analysis [written overview, skip if available=false]; "
                     "(b) get_pokemon_sets [real ladder data: moves/items/spreads/%]; "
                     "(c) get_pokemon_moves [full legal moveset — ALWAYS do this before assigning moves].",
-                "3. SPREAD: calc_stats to verify final Lv50 stats; "
-                    "speed_threshold to find min Speed SP vs targets.",
-                "4. DAMAGE CHECKS: calc_damage to verify KO/damage ranges (game_type='doubles').",
-                "5. LEGALITY: validate_team when the team is complete.",
-                "6. META REVIEW: analyze_team for coverage/threat analysis.",
-                "7. EXPORT: create_pokepaste for the shareable paste link.",
+                "3. SPREAD + DAMAGE LOOP (must iterate — spread is NOT finalised until damage checks pass): "
+                    "(a) speed_threshold to find min Speed SP vs priority targets; "
+                    "(b) calc_stats to compute Lv50 stats for the candidate spread; "
+                    "(c) calc_damage (game_type='doubles') to verify KO/survival benchmarks on both sides — "
+                    "REQUIRED before declaring the spread final; "
+                    "(d) if benchmarks fail, adjust SP allocation and repeat from (b).",
+                "4. LEGALITY: validate_team when the team is complete.",
+                "5. META REVIEW: analyze_team for coverage/threat analysis.",
+                "6. EXPORT: create_pokepaste for the shareable paste link.",
             ],
             "vgc_exclusive_tools": {
                 "suggest_cores": "Co-occurrence patterns from Limitless top-cut VGC teams. Use early for inspiration.",
@@ -304,12 +307,15 @@ def _build_game_rules_bss() -> dict[str, Any]:
                 "2. RESEARCH each Pok\u00e9mon: (a) get_smogon_analysis [written overview, skip if available=false]; "
                     "(b) get_pokemon_sets [real ladder data: moves/items/spreads/%]; "
                     "(c) get_pokemon_moves [full legal moveset — ALWAYS do this before assigning moves].",
-                "3. SPREAD: calc_stats to verify final Lv50 stats; "
-                    "speed_threshold to find min Speed SP vs targets.",
-                "4. DAMAGE CHECKS: calc_damage to verify KO/damage ranges (game_type='singles').",
-                "5. LEGALITY: validate_team when the team is complete.",
-                "6. META REVIEW: analyze_team for coverage/threat analysis.",
-                "7. EXPORT: create_pokepaste for the shareable paste link.",
+                "3. SPREAD + DAMAGE LOOP (must iterate — spread is NOT finalised until damage checks pass): "
+                    "(a) speed_threshold to find min Speed SP vs priority targets; "
+                    "(b) calc_stats to compute Lv50 stats for the candidate spread; "
+                    "(c) calc_damage (game_type='singles') to verify KO/survival benchmarks on both sides — "
+                    "REQUIRED before declaring the spread final; "
+                    "(d) if benchmarks fail, adjust SP allocation and repeat from (b).",
+                "4. LEGALITY: validate_team when the team is complete.",
+                "5. META REVIEW: analyze_team for coverage/threat analysis.",
+                "6. EXPORT: create_pokepaste for the shareable paste link.",
             ],
             "format_agnostic_tools": _FORMAT_AGNOSTIC_TOOLS,
             "note": "Limitless tournament tools (suggest_cores, get_top_teams, "
@@ -1368,10 +1374,13 @@ async def calc_stats(
     stat_points: dict[str, int] | None = None,
     nature: str = "serious",
 ) -> dict[str, Any]:
-    """Compute all six final Champions stats (Lv 50, 31 IVs) for a spread.
+    """Compute all six final Champions stats (Lv 50, 31 IVs) for a candidate spread.
 
-    **Use after picking a spread from ``get_pokemon_sets``** to confirm exact
-    stat values. Validates the SP budget and returns base + final stats.
+    Use inside the **spread + damage loop**: call this to see stat values for a
+    candidate SP allocation, then follow up with ``calc_damage`` to verify KO/
+    survival benchmarks. Adjust spread and repeat until benchmarks pass — only
+    then is the spread finalised. Validates the SP budget and returns base +
+    final stats.
 
     Accepts localized species names. Nature default is "serious" (neutral).
     For detailed in-battle Speed with modifiers, use ``compute_speed``.

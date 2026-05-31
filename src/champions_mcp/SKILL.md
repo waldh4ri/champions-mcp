@@ -95,7 +95,9 @@ champions-mcp          # stdio, for MCP clients that spawn processes
   on.
 - **Champions-native math only.** Use `speed_threshold`/`compute_speed`/
   `calc_stats` (Stat Points, not EVs) and `calc_damage` (Champions calc). Don't
-  hand-compute stats or reuse SV damage figures.
+  hand-compute stats or reuse SV damage figures. `calc_stats` and `calc_damage`
+  form an **iteration loop**: do not declare a spread final without running
+  `calc_damage` to confirm every KO/survival benchmark.
 
 ## Workflow
 
@@ -139,21 +141,23 @@ For every team member:
 - Pick an item from the **legal catalog**. Respect the **item clause**.
 - Choose an ability and Mega Stone if applicable (one active Mega per battle).
 
-### 4. Stat Points, nature & speed
-- Use `speed_threshold` to decide Speed SP + nature vs key meta targets.
+### 4. Spread + damage loop (iterate — spread is NOT final until benchmarks pass)
+- Use `speed_threshold` to set Speed SP + nature vs key meta targets.
   For VGC, account for Tailwind / Choice Scarf. For BSS, account for Scarf.
-- Use `calc_stats` to finalize spreads; `compute_speed` to sanity-check.
-- Verify every spread with `validate_ev_spread` (66 total, ≤32/stat).
-
-### 5. Damage-check the gameplan
+- Use `calc_stats` to compute Lv 50 stats for the **candidate** spread;
+  `compute_speed` to sanity-check Speed in-battle.
 - Use `calc_damage` with the **correct `game_type`** from the session
   (doubles for VGC, singles for BSS). Set weather, ability, item, Mega,
-  and SP spreads on both sides. Adjust sets/spreads until key benchmarks hit.
+  and SP spreads on both sides.
+- **If benchmarks fail, adjust SP allocation and repeat `calc_stats` →
+  `calc_damage` until every KO/survival target is met.**
+  A spread is not final until `calc_damage` confirms the benchmarks.
+- Verify the final spread with `validate_ev_spread` (66 total, ≤32/stat).
 
-### 6. Validate the full team
+### 5. Validate the full team
 - `validate_team` on all 6. Fix **every** violation and re-validate until clean.
 
-### 7. Analyze, finalize, export
+### 6. Analyze, finalize, export
 - `analyze_team` (pass the session format) → meta coverage and top unaddressed
   threats. Close real gaps; don't paper over them.
 - `create_pokepaste` to give the user an importable paste.
@@ -288,7 +292,7 @@ Choice Specs — do not suggest these.
 | Species data & moves | `get_pokemon`, `get_pokemon_moves`, `is_legal_move`, `get_move`, `get_type_matchups` |
 | Items | `get_item` (legality via catalog in game rules) |
 | Stat Points & speed | `validate_ev_spread`, `calc_stats`, `compute_speed`, `speed_threshold` |
-| Damage | `calc_damage` (pass `game_type='doubles'` for VGC, `'singles'` for BSS) |
+| Damage (part of spread loop — **required** before finalising spread) | `calc_damage` (pass `game_type='doubles'` for VGC, `'singles'` for BSS) |
 | Validation & analysis | `validate_team`, `analyze_team` (pass session `format`) |
 | Export | `create_pokepaste` |
 
