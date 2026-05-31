@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+
+# Build / dist
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Testing & coverage
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
+
+# Environment variables — copy .env.example → .env to configure
+.env
+
+# Runtime cache (SQLite, can be large)
+data/cache.sqlite
+data/*.sqlite
+data/champions_*.json
+
+# Scratch
+tmp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/

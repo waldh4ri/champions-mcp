@@ -1,0 +1,95 @@
+# champions-mcp docker-compose stack
+#
+# Services
+# --------
+#   champions-calc  — @smogon/calc HTTP sidecar (Node 20, gen-0 Champions mode)
+#   champions-mcp   — MCP server (Python 3.12, streamable-HTTP transport)
+#
+# Quick start
+# -----------
+#   docker compose up --build
+#
+# The calc image is built automatically (clones smogon/damage-calc from GitHub).
+#
+# The MCP URL is printed to stdout after startup.
+# Default: http://localhost:8000/mcp
+#
+# Configuration: copy .env.example to .env and edit as needed.
+# If .env is absent the stack launches with the defaults from .env.example.
+
+env_file:
+  - path: .env.example
+    required: true
+  - path: .env
+    required: false
+
+services:
+
+  # --------------------------------------------------------------------------
+  # @smogon/calc HTTP sidecar
+  # Clones smogon/damage-calc from GitHub and compiles @smogon/calc at build.
+  # Override CALC_IMAGE in .env to use a pre-built tag and skip the clone.
+  # --------------------------------------------------------------------------
+  champions-calc:
+    build:
+      context: .
+      dockerfile: docker/calc/Dockerfile
+    image: ${CALC_IMAGE:-champions-calc:latest}
+    command: ["/app/server.js"]
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - mcp-internal
+
+  # --------------------------------------------------------------------------
+  # champions-mcp Python MCP server
+  # --------------------------------------------------------------------------
+  champions-mcp:
+    build:
+      context: .
+      dockerfile: docker/mcp/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    environment:
+      # HTTP transport settings
+      MCP_TRANSPORT: "streamable-http"
+      FASTMCP_HOST: "0.0.0.0"
+      FASTMCP_PORT: "8000"
+      # Let the entrypoint know the host-side published port for the URL banner
+      PUBLISHED_PORT: "${MCP_PORT:-8000}"
+      # Calc sidecar endpoint
+      CHAMPIONS_MCP_CALC_HTTP: "http://champions-calc:3000/"
+      # Data / cache
+      CHAMPIONS_MCP_DATA_DIR: "/data"
+      CHAMPIONS_MCP_CACHE_DB: "/data/cache.sqlite"
+      # Prewarm on startup (set to 0 if data volume is already populated)
+      CHAMPIONS_MCP_PREWARM: "${CHAMPIONS_MCP_PREWARM:-1}"
+      # Optional Limitless API key
+      LIMITLESS_API_KEY: "${LIMITLESS_API_KEY:-}"
+      # TTLs / timeouts (override in .env as needed)
+      CHAMPIONS_MCP_META_TTL: "${CHAMPIONS_MCP_META_TTL:-21600}"
+      CHAMPIONS_MCP_HTTP_TIMEOUT: "${CHAMPIONS_MCP_HTTP_TIMEOUT:-20}"
+    volumes:
+      - champions-data:/data
+    depends_on:
+      champions-calc:
+        condition: service_healthy
+    networks:
+      - mcp-internal
+
+networks:
+  mcp-internal:
+    driver: bridge
+
+volumes:
+  champions-data:
+    # Persists the PokeAPI SQLite mirror, name index, and meta cache across
+    # container restarts.  Delete it to force a full re-prewarm.
