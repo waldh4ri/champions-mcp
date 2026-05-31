@@ -18,7 +18,6 @@ across seven layers:
 - **Regulation / legality** — curated regulation sets (active: **M-A**, 2026-04-08 → 2026-06-17).
   Champions item catalog (139 items, Serebii-verified), Item Clause and Species Clause enforcement.
 - **Movesets** — per-species Champions movepools (186 species / 490 moves, Serebii-verified).
-  PokeAPI learnsets are wrong for Champions; every move assignment is validated against this data.
 - **Roster** — 213 pickable entries (incl. regional forms) from the M-A allowlist
   ([Bulbapedia](https://bulbapedia.bulbagarden.net/wiki/Regulation_Set_M-A)), `roster_verified: true`.
 - **Meta** — Smogon chaos stats (usage %, sets, spreads) + Limitless tournament data (top teams, cores).
