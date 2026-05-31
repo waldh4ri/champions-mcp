@@ -10,7 +10,7 @@
 
 </div>
 
-An MCP server for AI-assisted Pokémon **Champions** team building, exposing 35 tools
+An MCP server for AI-assisted Pokémon **Champions** team building both VGC and BSS, exposing 35 tools
 across seven layers:
 
 - **Pokédex** — species, stats, types, abilities, moves, items from [PokeAPI](https://pokeapi.co),
