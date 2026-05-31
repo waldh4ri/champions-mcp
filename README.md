@@ -215,7 +215,6 @@ so a normal `pytest` run is fully offline.
 | [Smogon Strategy Dex](https://www.smogon.com/dex/champions/) | Per-Pokémon strategy analyses |
 | [Limitless VGC](https://limitlesstcg.com) ([API docs](https://docs.limitlesstcg.com/developer.html)) | Tournament listings, standings, top-team decklists |
 | [smogon/damage-calc](https://github.com/smogon/damage-calc) | `@smogon/calc` with native Champions (gen 0) support |
-
 | [pokepast.es](https://pokepast.es) | Team paste hosting used by `create_pokepaste` |
 Pokémon is © Nintendo / Creatures Inc. / GAME FREAK inc. Pokémon Champions is developed
 by The Pokémon Company. This project is an unofficial fan tool and is not affiliated with
