@@ -29,7 +29,7 @@ across seven layers:
 ## Run
 
 ```bash
-git clone https://github.com/your-org/champions-mcp
+git clone https://github.com/waldh4ri/champions-mcp
 cd champions-mcp
 docker compose up -d --build
 ```
