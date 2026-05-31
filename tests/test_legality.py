@@ -3,7 +3,8 @@ from __future__ import annotations
 from champions_mcp.config import Settings
 from champions_mcp.models import Team
 from champions_mcp.regulations import MegaRule, Regulation, RegulationRegistry
-from champions_mcp.services.legality import LegalityService, _base_species
+from champions_mcp.services.legality import LegalityService
+from champions_mcp.normalize import base_species as _base_species
 
 
 def _ma():

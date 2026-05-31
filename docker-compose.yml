@@ -15,13 +15,7 @@
 # Default: http://localhost:8000/mcp
 #
 # Configuration: copy .env.example to .env and edit as needed.
-# If .env is absent the stack launches with the defaults from .env.example.
-
-env_file:
-  - path: .env.example
-    required: true
-  - path: .env
-    required: false
+# If .env is absent the built-in :-defaults match .env.example — no copy needed.
 
 services:
 

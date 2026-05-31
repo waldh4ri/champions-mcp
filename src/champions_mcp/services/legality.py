@@ -89,7 +89,7 @@ class LegalityService:
                 )
                 continue
 
-            base = _base_species(slug)
+            base = base_species(slug)
             species_members.setdefault(base, []).append(label)
 
             if (
