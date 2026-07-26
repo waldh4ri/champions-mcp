@@ -148,7 +148,7 @@ champions-mcp          # stdio MCP server
 - Start from the user's concept or a clear gameplan.
 - Validate candidates with `is_legal_pokemon`.
 - Fill role/type gaps from the legal pool: `search_pokemon_by_profile`,
-  `list_pokemon`, `pokemons_by_type`, `pokemons_by_ability`, `pokemons_by_move`
+  `list_pokemon`, `search_pokemons_by_type`, `search_pokemons_by_ability`, `search_pokemons_by_move`
   — the `find_candidates` field of each role brief tells you which to call.
 - **`search_pokemon_by_profile` is the fastest way from a role to candidates.**
   Every Pokémon is tagged from its typing and its stat spread *relative to this
@@ -339,7 +339,7 @@ Where to be creative:
   six individually-strong Pokémon with no plan.
 - **Who fills a role.** Roles are fixed by the format; the *filler* is not.
   `get_usage_stats(format, order="bottom")` ranks every legal Pokémon with no
-  cutoff — intersect it with `pokemons_by_move("<the role's signature move>")` to
+  cutoff — intersect it with `search_pokemons_by_move("<the role's signature move>")` to
   find real off-meta candidates rather than guessing which are underrated.
 - **The angle on a known threat.** An unexpected answer to a top-usage Pokémon
   is worth more than a copied one, because it isn't played around.
@@ -406,7 +406,7 @@ support it, the idea is dead, and reporting that honestly is the correct answer.
 | Meta: speed benchmarks | `get_speed_tiers(format=…)` |
 | What a team slot is *for* (per format) | `list_roles(format=…)`, `get_role_description(role, format=…)` |
 | Find candidates by typing/stat profile | `search_pokemon_by_profile(tags=[…])`, `list_profile_tags()`, `list_type_profiles()` |
-| Legal picks | `is_legal_pokemon`, `list_pokemon`, `pokemons_by_type`, `pokemons_by_ability`, `pokemons_by_move` |
+| Legal picks | `is_legal_pokemon`, `list_pokemon`, `search_pokemons_by_type`, `search_pokemons_by_ability`, `search_pokemons_by_move` |
 | Species data & moves | `get_pokemon`, `get_pokemon_moves`, `is_legal_move`, `get_move`, `get_type_matchups`, `get_pokemon_weaknesses` |
 | Items / abilities | `get_item`, `search_items`, `get_ability` |
 | Stat Points & speed | `calc_stats`, `compute_speed`, `speed_threshold` |

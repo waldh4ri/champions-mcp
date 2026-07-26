@@ -48,7 +48,7 @@ THINK = os.getenv("LLAMA_THINK", "true").strip().lower() not in ("0", "false", "
 # temperature buys randomness, not insight, and higher temp here mostly buys
 # invented facts — which the DATA RULE forbids. Team-building creativity comes
 # from the prompt and from actually searching the roster (usage bottom-ranking,
-# pokemons_by_move), not from the sampler.
+# search_pokemons_by_move), not from the sampler.
 _SAMPLING_THINKING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0}
 _SAMPLING_INSTRUCT = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}
 

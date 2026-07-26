@@ -21,7 +21,7 @@ The only outbound calls happen at two points, both opt-in:
 - `champions-mcp-pull` fetches the source index and runs the PokeAPI enrichment pass.
 - `create_pokepaste` uploads a finished team to pokepast.es.
 
-31 MCP tools cover the Pokedex, legal rosters and movepools, usage stats/sets/teammates,
+37 MCP tools cover the Pokedex, legal rosters and movepools, usage stats/sets/teammates,
 Stat Point and speed math, team validation, damage calculation, and Pokepaste export. A
 bundled skill walks an LLM through the whole team-building workflow end to end.
 
@@ -55,8 +55,8 @@ docker compose down -v          # also delete the volume, next start does a full
 For development, or if you want to run the MCP server directly without Docker:
 
 ```bash
-pip install -e ".[dev]"
-champions-mcp-pull        # build data/champions.sqlite (downloads + enriches)
+pip install -e ".[dev]"    # or pip install -r requirements.txt
+champions-mcp-pull         # build data/champions.sqlite (downloads + enriches)
 champions-mcp              # run the MCP server (stdio by default)
 pytest                     # offline tests against the built DB
 ```
@@ -89,8 +89,8 @@ Call `get_game_rules(format)` first (`format='vgc'` for doubles, `'bss'` for sin
 pool grouped by category (Mega Stones hidden by default - they are 75 of the 148
 items); if an item is not in it, it does not exist in Champions.
 
-**Roster and movepool** - `list_pokemon`, `pokemons_by_type`, `pokemons_by_ability`,
-`pokemons_by_move`, `get_pokemon_moves`, `is_legal_move`, `is_legal_pokemon`
+**Roster and movepool** - `list_pokemon`, `search_pokemons_by_type`, `search_pokemons_by_ability`,
+`search_pokemons_by_move`, `get_pokemon_moves`, `is_legal_move`, `is_legal_pokemon`
 
 **Meta, both formats** - `get_usage_stats`, `get_pokemon_sets`, `get_top_teammates`,
 `suggest_cores`, `get_speed_tiers`

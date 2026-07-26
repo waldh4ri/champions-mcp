@@ -158,7 +158,7 @@ _TOOL_GUIDE = {
                "search_moves, list_items (the whole item pool — call before "
                "assigning items), get_item, search_items, get_ability, "
                "get_type_matchups, get_pokemon_weaknesses",
-    "build": "list_pokemon, pokemons_by_type/ability/move, get_pokemon_moves "
+    "build": "list_pokemon, search_pokemons_by_type/ability/move, get_pokemon_moves "
              "(legal movepool), is_legal_move, is_legal_pokemon",
     "profiles": "list_type_profiles (rank every typing offensively/defensively), "
                 "list_profile_tags (the tag vocabulary), search_pokemon_by_profile "
@@ -341,19 +341,19 @@ async def list_pokemon(
 
 
 @mcp.tool()
-async def pokemons_by_type(type1: str, type2: str | None = None) -> dict[str, Any]:
+async def search_pokemons_by_type(type1: str, type2: str | None = None) -> dict[str, Any]:
     """Champions Pokémon of a given type or exact type pair (Champions typing)."""
     return roster.pokemons_by_type(_db(), type1, type2)
 
 
 @mcp.tool()
-async def pokemons_by_ability(ability: str) -> dict[str, Any]:
+async def search_pokemons_by_ability(ability: str) -> dict[str, Any]:
     """Champions Pokémon with a given ability (checks Mega-form abilities too)."""
     return roster.pokemons_by_ability(_db(), ability)
 
 
 @mcp.tool()
-async def pokemons_by_move(move: str) -> dict[str, Any]:
+async def search_pokemons_by_move(move: str) -> dict[str, Any]:
     """Champions Pokémon that can learn a given move (Champions movepools)."""
     return roster.pokemons_by_move(_db(), move)
 
