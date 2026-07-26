@@ -61,6 +61,24 @@ champions-mcp              # run the MCP server (stdio by default)
 pytest                     # offline tests against the built DB
 ```
 
+### Optional: local LLM + web chat
+
+Adds a self-contained chat UI on top of the same MCP server, backed by a local model
+served through llama.cpp. No API key, no external client needed. A model is not shipped
+with the project: put a GGUF file in `./models` first (or set `LLAMA_MODEL_HF` to
+auto-download one from Hugging Face).
+
+```bash
+docker compose --profile ai up -d --build
+```
+
+Open **http://localhost:3000**. This starts two more services: `llama-server`
+(llama.cpp, OpenAI-compatible API, GPU-backed) and `champions-chat`, a web UI that
+opens an MCP session to `champions-mcp`, auto-loads every tool, and runs the
+tool-calling loop for you. Requires an NVIDIA GPU. Everything (model file, context
+size, GPU/CPU offload, sampling, and more) is configured through environment
+variables, see [`.env.example`](.env.example) for the full list.
+
 ## Tools
 
 Call `get_game_rules(format)` first (`format='vgc'` for doubles, `'bss'` for singles).

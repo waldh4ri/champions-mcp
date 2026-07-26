@@ -12,13 +12,19 @@ import os
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP  # pyright: ignore[reportMissingImports]
 
-from . import (
-    pokedex, pokepaste, profiles, reference, roles as roles_mod, roster,
-    teambuilder, usage,
-)
 from . import legality as legality_mod
+from . import (
+    pokedex,
+    pokepaste,
+    profiles,
+    reference,
+    roster,
+    teambuilder,
+    usage,
+)
+from . import roles as roles_mod
 from .champions_stats import (
     ALL_STATS,
     MAX_PER_STAT_SP,
@@ -44,7 +50,7 @@ from .names import NameError, resolve
 class App:
     """Lazily-constructed singleton holding the DB + the damage calc."""
 
-    _instance: "App | None" = None
+    _instance: App | None = None
 
     def __init__(self) -> None:
         """Load settings and open the DB + damage-calculator handles.
@@ -58,7 +64,7 @@ class App:
         self.damage = DamageCalculator(self.settings, self.db)
 
     @classmethod
-    def get(cls) -> "App":
+    def get(cls) -> App:
         """Return the process-wide `App` instance, constructing it on first call.
 
         Returns:
@@ -553,6 +559,8 @@ def _base_stats(species: str) -> tuple[str, dict[str, int]]:
     """
     slug = resolve(_db(), species)
     row = _db().get_pokemon_row(slug)
+    if row is None:
+        raise NameError(f"Unknown Pokemon: {species}")
     bs = row["base_stats"]
     return row["battle_name"], {
         "hp": bs["hp"], "attack": bs["attack"], "defense": bs["defense"],

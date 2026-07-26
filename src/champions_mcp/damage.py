@@ -12,7 +12,12 @@ from __future__ import annotations
 import asyncio
 import json
 
-from .champions_stats import ALL_STATS, normalize_spread, normalize_nature, validate_spread
+from .champions_stats import (
+    ALL_STATS,
+    normalize_nature,
+    normalize_spread,
+    validate_spread,
+)
 from .config import Settings
 from .db import Db
 from .names import try_resolve
@@ -178,7 +183,7 @@ class DamageCalculator:
             out, err = await asyncio.wait_for(
                 proc.communicate(json.dumps(payload).encode()), timeout=self._s.calc_timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             return {"ok": False, "error": "damage calc timed out"}
         if proc.returncode != 0 and not out:
