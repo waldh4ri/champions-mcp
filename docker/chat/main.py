@@ -48,7 +48,7 @@ THINK = os.getenv("LLAMA_THINK", "true").strip().lower() not in ("0", "false", "
 # temperature buys randomness, not insight, and higher temp here mostly buys
 # invented facts — which the DATA RULE forbids. Team-building creativity comes
 # from the prompt and from actually searching the roster (usage bottom-ranking,
-# search_pokemons_by_move), not from the sampler.
+# search_pokemon_by_move), not from the sampler.
 _SAMPLING_THINKING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0}
 _SAMPLING_INSTRUCT = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}
 
@@ -200,7 +200,7 @@ SYSTEM_PROMPT = (
     "distinct build fits this slot's role, then adapt it to YOUR team — its role, "
     "the threats it must beat, your speed mode, and the Item Clause. The final set "
     "is whichever fits the team best and is often not one of the listed sets; "
-    "deviating is right when calc_damage/speed_threshold back it. Only legality is "
+    "deviating is right when calc_damage/compute_speed_threshold back it. Only legality is "
     "non-negotiable — confirm moves with get_pokemon_moves.\n"
     "- Be economical: use query/limit args, never request full dumps, and never "
     "repeat a call you already made.\n"
@@ -210,7 +210,7 @@ SYSTEM_PROMPT = (
     "Pokémon, so you can find them instead of guessing. But an unconventional pick "
     "must clear the same bar as an obvious one: it legally learns the moves "
     "(get_pokemon_moves), fits the role's stat/typing profile (get_pokemon), hits "
-    "its Speed or damage benchmark (speed_threshold / calc_damage), and does "
+    "its Speed or damage benchmark (compute_speed_threshold / calc_damage), and does "
     "something about a real top-usage threat. If it fails those, it is not "
     "creative — it is just worse. Never invent a fact to make a fun idea work; "
     "drop the idea instead.\n"

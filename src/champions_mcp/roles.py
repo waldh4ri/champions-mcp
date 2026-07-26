@@ -263,7 +263,7 @@ _ROLES: list[dict[str, Any]] = [
         "answered_by": ["priority-attacker", "revenge-killer", "phazer",
                         "disruptor", "intimidate-support"],
         "find_candidates": [
-            'search_pokemons_by_move("Swords Dance") / search_pokemons_by_move("Dragon Dance")',
+            'search_pokemon_by_move("Swords Dance") / search_pokemon_by_move("Dragon Dance")',
             'get_pokemon_sets(name, format=…) — confirm the setup move is actually used',
         ],
     },
@@ -308,7 +308,7 @@ _ROLES: list[dict[str, Any]] = [
                        "cleric"],
         "answered_by": ["special-wall", "disruptor", "priority-attacker", "phazer"],
         "find_candidates": [
-            'search_pokemons_by_move("Nasty Plot") / search_pokemons_by_move("Calm Mind")',
+            'search_pokemon_by_move("Nasty Plot") / search_pokemon_by_move("Calm Mind")',
             'get_speed_tiers(format=…) — check whether it outspeeds after boosting',
         ],
     },
@@ -344,7 +344,7 @@ _ROLES: list[dict[str, Any]] = [
         "signature_items": ["Choice Scarf", "Life Orb", "Focus Sash"],
         "signature_abilities": ["Moxie", "Speed Boost", "Chlorophyll", "Swift Swim"],
         "sp_guidance": "Speed first — cleaning is a Speed-tier job. Use "
-                       "get_speed_tiers and speed_threshold to buy the exact "
+                       "get_speed_tiers and compute_speed_threshold to buy the exact "
                        "tier, then dump the remainder into the offensive stat.",
         "pairs_with": ["physical-wallbreaker", "special-wallbreaker", "hazard-setter"],
         "answered_by": ["priority-attacker", "tank", "defensive-pivot"],
@@ -388,7 +388,7 @@ _ROLES: list[dict[str, Any]] = [
         "signature_moves": ["U-turn", "Close Combat", "Trick", "Ice Shard"],
         "signature_items": ["Choice Scarf"],
         "signature_abilities": ["Intimidate", "Moxie"],
-        "sp_guidance": "Compute the target with speed_threshold using "
+        "sp_guidance": "Compute the target with compute_speed_threshold using "
                        "attacker_choice_scarf=True — a Scarf multiplies the "
                        "final stat by 1.5, so far fewer Speed SP are needed than "
                        "an unboosted attacker would want. Bank the difference "
@@ -396,7 +396,7 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["defensive-pivot", "physical-wall", "hazard-setter"],
         "answered_by": ["bulky-attacker", "priority-attacker", "trick-room-setter"],
         "find_candidates": [
-            'speed_threshold(attacker=…, defender=…, attacker_choice_scarf=True)',
+            'compute_speed_threshold(attacker=…, defender=…, attacker_choice_scarf=True)',
             'get_pokemon_sets(name, format="bss") — check Choice Scarf usage %',
         ],
     },
@@ -446,8 +446,8 @@ _ROLES: list[dict[str, Any]] = [
         "answered_by": ["physical-wall", "tank", "intimidate-support"],
         "find_candidates": [
             'get_move("Extreme Speed") — check priority field',
-            'search_pokemons_by_ability("Prankster")',
-            'search_pokemons_by_move("Sucker Punch")',
+            'search_pokemon_by_ability("Prankster")',
+            'search_pokemon_by_move("Sucker Punch")',
         ],
     },
     {
@@ -626,8 +626,8 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["physical-setup-sweeper", "special-setup-sweeper"],
         "answered_by": ["disruptor", "priority-attacker"],
         "find_candidates": [
-            'search_pokemons_by_ability("Shadow Tag") — the only trapping ability in Champions',
-            'search_pokemons_by_move("Block")',
+            'search_pokemon_by_ability("Shadow Tag") — the only trapping ability in Champions',
+            'search_pokemon_by_move("Block")',
         ],
     },
     {
@@ -720,7 +720,7 @@ _ROLES: list[dict[str, Any]] = [
                         "stallbreaker"],
         "find_candidates": [
             'get_pokemon(name) — high HP + Defense',
-            'search_pokemons_by_move("Recover") / search_pokemons_by_move("Roost")',
+            'search_pokemon_by_move("Recover") / search_pokemon_by_move("Roost")',
             'get_pokemon_weaknesses(name)',
         ],
     },
@@ -849,7 +849,7 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["cleric", "physical-wall", "defensive-pivot"],
         "answered_by": ["physical-wallbreaker", "disruptor"],
         "find_candidates": [
-            'search_pokemons_by_ability("Guts") / search_pokemons_by_ability("Natural Cure")',
+            'search_pokemon_by_ability("Guts") / search_pokemon_by_ability("Natural Cure")',
             'get_ability("Magic Bounce")',
             'get_pokemon_weaknesses(name) — type immunities to status',
         ],
@@ -888,13 +888,13 @@ _ROLES: list[dict[str, Any]] = [
         "signature_items": ["Leftovers", "Mental Herb", "Sitrus Berry"],
         "signature_abilities": ["Magic Guard", "Magic Bounce", "Prankster"],
         "sp_guidance": "Speed matters more than usual — Taunt only works if it "
-                       "lands before the recovery move. Use speed_threshold "
+                       "lands before the recovery move. Use compute_speed_threshold "
                        "against the specific defensive Pokémon you're targeting.",
         "pairs_with": ["physical-setup-sweeper", "special-setup-sweeper"],
         "answered_by": ["bulky-attacker", "physical-wallbreaker"],
         "find_candidates": [
-            'search_pokemons_by_move("Taunt")',
-            'search_pokemons_by_ability("Magic Guard")',
+            'search_pokemon_by_move("Taunt")',
+            'search_pokemon_by_ability("Magic Guard")',
         ],
     },
     {
@@ -937,7 +937,7 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["hazard-setter", "physical-wall"],
         "answered_by": ["disruptor", "physical-wallbreaker"],
         "find_candidates": [
-            'search_pokemons_by_move("Roar") / search_pokemons_by_move("Haze")',
+            'search_pokemon_by_move("Roar") / search_pokemon_by_move("Haze")',
             'get_move("Dragon Tail") — check the priority field',
         ],
     },
@@ -978,14 +978,14 @@ _ROLES: list[dict[str, Any]] = [
         "signature_items": ["Choice Scarf", "Life Orb", "Muscle Band", "Expert Belt"],
         "signature_abilities": ["Regenerator", "Intimidate"],
         "sp_guidance": "Speed carries this role — pivot before taking the hit. "
-                       "Use speed_threshold against the Pokémon you expect to "
+                       "Use compute_speed_threshold against the Pokémon you expect to "
                        "pivot away from, then split the rest between offence and "
                        "enough bulk to survive a hit if you're wrong.",
         "pairs_with": ["physical-wallbreaker", "special-wallbreaker", "glass-cannon",
                        "physical-setup-sweeper"],
         "answered_by": ["defensive-pivot", "trapper", "physical-wall"],
         "find_candidates": [
-            'search_pokemons_by_move("U-turn") / search_pokemons_by_move("Volt Switch")',
+            'search_pokemon_by_move("U-turn") / search_pokemon_by_move("Volt Switch")',
             'get_pokemon_sets(name, format=…) — is the pivot move in its top moves?',
         ],
     },
@@ -1031,8 +1031,8 @@ _ROLES: list[dict[str, Any]] = [
                        "physical-wallbreaker", "cleric"],
         "answered_by": ["disruptor", "trapper", "stallbreaker"],
         "find_candidates": [
-            'search_pokemons_by_move("Parting Shot") / search_pokemons_by_move("U-turn")',
-            'search_pokemons_by_ability("Regenerator")',
+            'search_pokemon_by_move("Parting Shot") / search_pokemon_by_move("U-turn")',
+            'search_pokemon_by_ability("Regenerator")',
         ],
     },
 
@@ -1081,8 +1081,8 @@ _ROLES: list[dict[str, Any]] = [
                        "fake-out-user"],
         "answered_by": ["disruptor", "trick-room-setter", "priority-attacker"],
         "find_candidates": [
-            'search_pokemons_by_move("Tailwind")',
-            'search_pokemons_by_ability("Prankster")',
+            'search_pokemon_by_move("Tailwind")',
+            'search_pokemon_by_ability("Prankster")',
             'compute_speed(name, ..., tailwind=True)',
         ],
     },
@@ -1129,7 +1129,7 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["trick-room-abuser", "redirection-support", "fake-out-user"],
         "answered_by": ["disruptor", "tailwind-setter", "priority-attacker"],
         "find_candidates": [
-            'search_pokemons_by_move("Trick Room")',
+            'search_pokemon_by_move("Trick Room")',
             'get_item("Mental Herb")',
             'get_usage_stats(format="vgc") + get_pokemon(name) — low Speed, high bulk',
         ],
@@ -1171,13 +1171,13 @@ _ROLES: list[dict[str, Any]] = [
         "signature_items": ["Focus Sash", "Sitrus Berry", "Mental Herb"],
         "signature_abilities": ["Prankster", "Levitate"],
         "sp_guidance": "Enough Speed to move before the target you're slowing "
-                       "(speed_threshold), then bulk. After a drop, recompute "
+                       "(compute_speed_threshold), then bulk. After a drop, recompute "
                        "the race with compute_speed using stage=-1 or -2 on the "
                        "opponent — a single Icy Wind is one stage (×2/3).",
         "pairs_with": ["spread-attacker", "bulky-attacker", "physical-wallbreaker"],
         "answered_by": ["status-absorber", "field-protection-support", "disruptor"],
         "find_candidates": [
-            'search_pokemons_by_move("Icy Wind") / search_pokemons_by_move("Thunder Wave")',
+            'search_pokemon_by_move("Icy Wind") / search_pokemon_by_move("Thunder Wave")',
             'compute_speed(name, ..., stage=-1) to model the drop',
         ],
     },
@@ -1228,8 +1228,8 @@ _ROLES: list[dict[str, Any]] = [
                        "trick-room-abuser", "physical-wallbreaker"],
         "answered_by": ["spread-attacker", "disruptor", "fake-out-user"],
         "find_candidates": [
-            'search_pokemons_by_move("Follow Me") / search_pokemons_by_move("Rage Powder")',
-            'search_pokemons_by_ability("Lightning Rod") / search_pokemons_by_ability("Friend Guard")',
+            'search_pokemon_by_move("Follow Me") / search_pokemon_by_move("Rage Powder")',
+            'search_pokemon_by_ability("Lightning Rod") / search_pokemon_by_ability("Friend Guard")',
         ],
     },
     {
@@ -1280,8 +1280,8 @@ _ROLES: list[dict[str, Any]] = [
                        "tailwind-setter", "glass-cannon"],
         "answered_by": ["field-protection-support", "status-absorber"],
         "find_candidates": [
-            'search_pokemons_by_move("Fake Out")',
-            'search_pokemons_by_ability("Inner Focus") — one of the few Fake Out answers in Champions',
+            'search_pokemon_by_move("Fake Out")',
+            'search_pokemon_by_ability("Inner Focus") — one of the few Fake Out answers in Champions',
         ],
     },
     {
@@ -1325,8 +1325,8 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["bulky-attacker", "redirection-support", "physical-wall"],
         "answered_by": ["special-wallbreaker", "special-setup-sweeper"],
         "find_candidates": [
-            'search_pokemons_by_ability("Intimidate")',
-            'search_pokemons_by_move("Snarl")',
+            'search_pokemon_by_ability("Intimidate")',
+            'search_pokemon_by_move("Snarl")',
             'calc_damage(..., defender_ability=…, attacker_boosts={"atk": -1})',
         ],
     },
@@ -1370,7 +1370,7 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["trick-room-abuser", "bulky-attacker", "spread-attacker"],
         "answered_by": ["physical-wallbreaker", "disruptor"],
         "find_candidates": [
-            'search_pokemons_by_move("Wide Guard") / search_pokemons_by_move("Ally Switch")',
+            'search_pokemon_by_move("Wide Guard") / search_pokemon_by_move("Ally Switch")',
             'get_move("Quick Guard") — check priority',
         ],
     },
@@ -1418,8 +1418,8 @@ _ROLES: list[dict[str, Any]] = [
                        "defensive-pivot"],
         "answered_by": ["stallbreaker", "disruptor", "physical-wallbreaker"],
         "find_candidates": [
-            'search_pokemons_by_move("Wish") / search_pokemons_by_move("Heal Bell")',
-            'search_pokemons_by_ability("Natural Cure")',
+            'search_pokemon_by_move("Wish") / search_pokemon_by_move("Heal Bell")',
+            'search_pokemon_by_ability("Natural Cure")',
         ],
     },
     {
@@ -1465,7 +1465,7 @@ _ROLES: list[dict[str, Any]] = [
                        "glass-cannon"],
         "answered_by": ["disruptor", "physical-wallbreaker"],
         "find_candidates": [
-            'search_pokemons_by_move("Reflect") / search_pokemons_by_move("Aurora Veil")',
+            'search_pokemon_by_move("Reflect") / search_pokemon_by_move("Aurora Veil")',
             'get_item("Light Clay")',
         ],
     },
@@ -1506,13 +1506,13 @@ _ROLES: list[dict[str, Any]] = [
         "signature_items": ["Choice Scarf", "Focus Sash", "Leftovers"],
         "signature_abilities": ["Prankster", "Magic Bounce", "Unnerve"],
         "sp_guidance": "Speed is the stat that decides whether disruption works. "
-                       "Use speed_threshold against the setter or sweeper you're "
+                       "Use compute_speed_threshold against the setter or sweeper you're "
                        "aiming at; with Prankster, skip Speed and buy bulk instead.",
         "pairs_with": ["physical-setup-sweeper", "bulky-attacker", "offensive-pivot"],
         "answered_by": ["status-absorber", "bulky-attacker"],
         "find_candidates": [
-            'search_pokemons_by_move("Taunt") / search_pokemons_by_move("Knock Off")',
-            'search_pokemons_by_ability("Prankster")',
+            'search_pokemon_by_move("Taunt") / search_pokemon_by_move("Knock Off")',
+            'search_pokemon_by_ability("Prankster")',
         ],
     },
     {
@@ -1559,7 +1559,7 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["field-abuser", "spread-attacker", "special-wallbreaker"],
         "answered_by": ["weather-setter", "disruptor"],
         "find_candidates": [
-            'search_pokemons_by_ability("Drizzle") / search_pokemons_by_ability("Drought")',
+            'search_pokemon_by_ability("Drizzle") / search_pokemon_by_ability("Drought")',
             'search_items(query="Rock") — the weather-extending rocks',
             'calc_damage(..., weather="sun"|"rain"|"sand"|"snow")',
         ],
@@ -1608,8 +1608,8 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["field-abuser", "priority-attacker", "special-wallbreaker"],
         "answered_by": ["terrain-setter", "disruptor"],
         "find_candidates": [
-            'search_pokemons_by_move("Grassy Terrain") / search_pokemons_by_move("Psychic Terrain")',
-            'search_pokemons_by_ability("Electric Surge") — the only surge ability in Champions',
+            'search_pokemon_by_move("Grassy Terrain") / search_pokemon_by_move("Psychic Terrain")',
+            'search_pokemon_by_ability("Electric Surge") — the only surge ability in Champions',
             'calc_damage(..., terrain=…)',
         ],
     },
@@ -1660,8 +1660,8 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["weather-setter", "terrain-setter", "spread-attacker"],
         "answered_by": ["weather-setter", "priority-attacker", "disruptor"],
         "find_candidates": [
-            'search_pokemons_by_ability("Swift Swim") / search_pokemons_by_ability("Chlorophyll")',
-            'search_pokemons_by_move("Weather Ball")',
+            'search_pokemon_by_ability("Swift Swim") / search_pokemon_by_ability("Chlorophyll")',
+            'search_pokemon_by_move("Weather Ball")',
         ],
     },
 
@@ -1709,7 +1709,7 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["phazer", "offensive-pivot", "cleaner", "suicide-lead"],
         "answered_by": ["hazard-remover", "disruptor"],
         "find_candidates": [
-            'search_pokemons_by_move("Stealth Rock") / search_pokemons_by_move("Sticky Web")',
+            'search_pokemon_by_move("Stealth Rock") / search_pokemon_by_move("Sticky Web")',
             'get_move("Spikes")',
         ],
     },
@@ -1755,8 +1755,8 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["physical-setup-sweeper", "cleaner", "defensive-pivot"],
         "answered_by": ["disruptor", "hazard-setter"],
         "find_candidates": [
-            'search_pokemons_by_move("Defog") / search_pokemons_by_move("Rapid Spin")',
-            'search_pokemons_by_ability("Magic Bounce")',
+            'search_pokemon_by_move("Defog") / search_pokemon_by_move("Rapid Spin")',
+            'search_pokemon_by_ability("Magic Bounce")',
         ],
     },
 
@@ -1797,13 +1797,13 @@ _ROLES: list[dict[str, Any]] = [
         "signature_items": ["Focus Sash", "Light Clay", "Mental Herb"],
         "signature_abilities": ["Sturdy", "Prankster"],
         "sp_guidance": "Max Speed, everything else is close to irrelevant behind "
-                       "a Focus Sash. Use speed_threshold against the format's "
+                       "a Focus Sash. Use compute_speed_threshold against the format's "
                        "fastest common leads.",
         "pairs_with": ["physical-setup-sweeper", "cleaner", "hazard-setter"],
         "answered_by": ["disruptor", "priority-attacker", "hazard-remover"],
         "find_candidates": [
             'get_speed_tiers(format=…) — pick from the very top',
-            'search_pokemons_by_move("Taunt")',
+            'search_pokemon_by_move("Taunt")',
             'get_item("Focus Sash")',
         ],
     },
@@ -1846,8 +1846,8 @@ _ROLES: list[dict[str, Any]] = [
         "pairs_with": ["physical-wallbreaker", "special-setup-sweeper", "glass-cannon"],
         "answered_by": ["phazer", "disruptor", "priority-attacker"],
         "find_candidates": [
-            'search_pokemons_by_move("Baton Pass")',
-            'search_pokemons_by_ability("Speed Boost")',
+            'search_pokemon_by_move("Baton Pass")',
+            'search_pokemon_by_ability("Speed Boost")',
         ],
     },
 ]
@@ -1882,19 +1882,19 @@ _CREATIVE_PICK_GATE = {
     "gates": [
         "1. LEGAL — it actually learns this role's defining move / has the "
         "required ability in Champions. Check get_pokemon_moves or "
-        "search_pokemons_by_move; never assume a movepool from another game.",
+        "search_pokemon_by_move; never assume a movepool from another game.",
         "2. SIGNATURE — its base stats and typing match this role's `look_for`. "
         "Check get_pokemon. A 'creative wallbreaker' with mediocre offence is "
         "just a bad Pokémon.",
         "3. BENCHMARK — it hits the number the role lives or dies on: the Speed "
-        "tier (speed_threshold / get_speed_tiers) or the survival/KO roll "
+        "tier (compute_speed_threshold / get_speed_tiers) or the survival/KO roll "
         "(calc_damage). This is the gate most off-meta picks fail.",
         "4. RELEVANCE — it does something about at least one real top-usage "
         "threat. Check get_usage_stats, then confirm with calc_damage.",
     ],
     "how_to_find_them": "get_usage_stats(format=…, order='bottom') ranks every "
                         "legal Pokémon with no cutoff — intersect that with "
-                        "search_pokemons_by_move(<this role's signature move>) to get "
+                        "search_pokemon_by_move(<this role's signature move>) to get "
                         "real off-meta candidates for this slot, instead of "
                         "guessing which Pokémon are underrated.",
 }

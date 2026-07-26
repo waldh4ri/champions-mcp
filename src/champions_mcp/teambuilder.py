@@ -140,7 +140,7 @@ def _mode_dependency_gaps(
                 "second every turn. A mode is only real if a teammate sets it — "
                 "'assume Trick Room is up' is not a plan."
             ),
-            "fix": "Add a Trick Room setter (search_pokemons_by_move('Trick Room')), or "
+            "fix": "Add a Trick Room setter (search_pokemon_by_move('Trick Room')), or "
                    "another speed-control option, or replace these members with "
                    "faster ones.",
         })
@@ -153,7 +153,7 @@ def _mode_dependency_gaps(
                 f"({', '.join(sorted(abilities & _WEATHER_ABUSER_ABILITIES))}) "
                 "is on the team, but nobody sets weather. It does nothing."
             ),
-            "fix": "Add a weather setter (search_pokemons_by_ability('Drizzle') etc.), "
+            "fix": "Add a weather setter (search_pokemon_by_ability('Drizzle') etc.), "
                    "or pick an ability that works unsupported.",
         })
 

@@ -158,7 +158,7 @@ _TOOL_GUIDE = {
                "search_moves, list_items (the whole item pool — call before "
                "assigning items), get_item, search_items, get_ability, "
                "get_type_matchups, get_pokemon_weaknesses",
-    "build": "list_pokemon, search_pokemons_by_type/ability/move, get_pokemon_moves "
+    "build": "list_pokemon, search_pokemon_by_type/ability/move, get_pokemon_moves "
              "(legal movepool), is_legal_move, is_legal_pokemon",
     "profiles": "list_type_profiles (rank every typing offensively/defensively), "
                 "list_profile_tags (the tag vocabulary), search_pokemon_by_profile "
@@ -170,7 +170,7 @@ _TOOL_GUIDE = {
              "differ sharply between vgc (doubles) and bss (singles).",
     "meta": "get_usage_stats, get_pokemon_sets, get_top_teammates, suggest_cores, "
             "get_speed_tiers — pass format=vgc|bss",
-    "stats": "calc_stats, compute_speed, speed_threshold",
+    "stats": "calc_stats, compute_speed, compute_speed_threshold",
     "finish": "validate_team → analyze_team → calc_damage → create_pokepaste",
 }
 
@@ -341,19 +341,19 @@ async def list_pokemon(
 
 
 @mcp.tool()
-async def search_pokemons_by_type(type1: str, type2: str | None = None) -> dict[str, Any]:
+async def search_pokemon_by_type(type1: str, type2: str | None = None) -> dict[str, Any]:
     """Champions Pokémon of a given type or exact type pair (Champions typing)."""
     return roster.pokemons_by_type(_db(), type1, type2)
 
 
 @mcp.tool()
-async def search_pokemons_by_ability(ability: str) -> dict[str, Any]:
+async def search_pokemon_by_ability(ability: str) -> dict[str, Any]:
     """Champions Pokémon with a given ability (checks Mega-form abilities too)."""
     return roster.pokemons_by_ability(_db(), ability)
 
 
 @mcp.tool()
-async def search_pokemons_by_move(move: str) -> dict[str, Any]:
+async def search_pokemon_by_move(move: str) -> dict[str, Any]:
     """Champions Pokémon that can learn a given move (Champions movepools)."""
     return roster.pokemons_by_move(_db(), move)
 
@@ -515,7 +515,7 @@ async def get_pokemon_sets(name: str, format: str = "vgc") -> dict[str, Any]:
     plays. Use it to see what is proven viable and which Speed benchmarks players
     tune for, then build the set your team actually needs. A set that is not in
     this list is often the right answer, as long as you justify it with
-    calc_damage/speed_threshold and confirm legality with get_pokemon_moves."""
+    calc_damage/compute_speed_threshold and confirm legality with get_pokemon_moves."""
     return usage.get_pokemon_sets(_db(), name, format)
 
 
@@ -616,7 +616,7 @@ async def compute_speed(
 
 
 @mcp.tool()
-async def speed_threshold(
+async def compute_speed_threshold(
     attacker: str, defender: str, defender_speed_sp: int = 0,
     defender_nature: str = "serious", attacker_natures: list[str] | None = None,
     tie_is_enough: bool = False, attacker_stage: int = 0,

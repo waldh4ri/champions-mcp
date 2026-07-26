@@ -99,7 +99,7 @@ champions-mcp          # stdio MCP server
   multiplier only if a tool returned it this conversation.
 - **Validate early and often.** `validate_team` is the gate; run it on a rough 6
   and after every change.
-- **Champions-native math only.** Use `speed_threshold` / `compute_speed` /
+- **Champions-native math only.** Use `compute_speed_threshold` / `compute_speed` /
   `calc_stats` (Stat Points, not EVs) and `calc_damage` (Champions calc).
   `calc_stats` ↔ `calc_damage` form an **iteration loop**: a spread is not final
   until `calc_damage` confirms every KO/survival benchmark.
@@ -148,7 +148,7 @@ champions-mcp          # stdio MCP server
 - Start from the user's concept or a clear gameplan.
 - Validate candidates with `is_legal_pokemon`.
 - Fill role/type gaps from the legal pool: `search_pokemon_by_profile`,
-  `list_pokemon`, `search_pokemons_by_type`, `search_pokemons_by_ability`, `search_pokemons_by_move`
+  `list_pokemon`, `search_pokemon_by_type`, `search_pokemon_by_ability`, `search_pokemon_by_move`
   — the `find_candidates` field of each role brief tells you which to call.
 - **`search_pokemon_by_profile` is the fastest way from a role to candidates.**
   Every Pokémon is tagged from its typing and its stat spread *relative to this
@@ -194,7 +194,7 @@ champions-mcp          # stdio MCP server
   answer, your speed mode, and the Item Clause once someone else took the
   popular item. The final set is the one that fits the team best, and it is
   frequently **not** one of the listed sets. Deviating is correct when
-  `calc_damage`/`speed_threshold` back it; only legality is non-negotiable.
+  `calc_damage`/`compute_speed_threshold` back it; only legality is non-negotiable.
 - Pick an item (`list_items` to see the whole pool grouped by category — call it
   once rather than reaching for an item you remember; `get_item` for one;
   `search_items` when you know the name) and ability (`get_ability`).
@@ -202,7 +202,7 @@ champions-mcp          # stdio MCP server
   guarantees at least some members cannot run their most-used item.
 
 ### 5. Spread + damage loop (iterate)
-- `speed_threshold` to set Speed SP + nature vs key targets (account for
+- `compute_speed_threshold` to set Speed SP + nature vs key targets (account for
   Tailwind / Choice Scarf).
 - `calc_stats` for the candidate spread; `compute_speed` to sanity-check Speed.
 - `calc_damage` with the correct `game_type` (doubles=VGC, singles=BSS), setting
@@ -339,7 +339,7 @@ Where to be creative:
   six individually-strong Pokémon with no plan.
 - **Who fills a role.** Roles are fixed by the format; the *filler* is not.
   `get_usage_stats(format, order="bottom")` ranks every legal Pokémon with no
-  cutoff — intersect it with `search_pokemons_by_move("<the role's signature move>")` to
+  cutoff — intersect it with `search_pokemon_by_move("<the role's signature move>")` to
   find real off-meta candidates rather than guessing which are underrated.
 - **The angle on a known threat.** An unexpected answer to a top-usage Pokémon
   is worth more than a copied one, because it isn't played around.
@@ -352,7 +352,7 @@ Every unconventional pick must clear the same four gates as an obvious one
 2. **Signature** — its base stats and typing match the role's `look_for`
    (`get_pokemon`).
 3. **Benchmark** — it hits the number the role lives on: the Speed tier
-   (`speed_threshold`) or the KO/survival roll (`calc_damage`). Most off-meta
+   (`compute_speed_threshold`) or the KO/survival roll (`calc_damage`). Most off-meta
    picks fail here — check it before falling in love with the idea.
 4. **Relevance** — it does something concrete about a real top-usage threat.
 
@@ -406,10 +406,10 @@ support it, the idea is dead, and reporting that honestly is the correct answer.
 | Meta: speed benchmarks | `get_speed_tiers(format=…)` |
 | What a team slot is *for* (per format) | `list_roles(format=…)`, `get_role_description(role, format=…)` |
 | Find candidates by typing/stat profile | `search_pokemon_by_profile(tags=[…])`, `list_profile_tags()`, `list_type_profiles()` |
-| Legal picks | `is_legal_pokemon`, `list_pokemon`, `search_pokemons_by_type`, `search_pokemons_by_ability`, `search_pokemons_by_move` |
+| Legal picks | `is_legal_pokemon`, `list_pokemon`, `search_pokemon_by_type`, `search_pokemon_by_ability`, `search_pokemon_by_move` |
 | Species data & moves | `get_pokemon`, `get_pokemon_moves`, `is_legal_move`, `get_move`, `get_type_matchups`, `get_pokemon_weaknesses` |
 | Items / abilities | `get_item`, `search_items`, `get_ability` |
-| Stat Points & speed | `calc_stats`, `compute_speed`, `speed_threshold` |
+| Stat Points & speed | `calc_stats`, `compute_speed`, `compute_speed_threshold` |
 | Damage (required before finalising a spread) | `calc_damage(game_type='doubles'|'singles')` |
 | Validation & analysis | `validate_team`, `analyze_team(format=…)` |
 | Export | `create_pokepaste` |

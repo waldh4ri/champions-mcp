@@ -44,9 +44,9 @@ the two.
 | [`get_type_matchups`](#get_type_matchups) | Pokédex | Offensive/defensive effectiveness for a type or dual-type |
 | [`get_pokemon_weaknesses`](#get_pokemon_weaknesses) | Pokédex | Full defensive type chart for a Pokémon or type pair |
 | [`list_pokemon`](#list_pokemon) | Roster | Roster pick list, filterable, optionally usage-sorted |
-| [`search_pokemons_by_type`](#search_pokemons_by_type) | Roster | Pokémon of a given type or exact type pair |
-| [`search_pokemons_by_ability`](#search_pokemons_by_ability) | Roster | Pokémon with a given ability |
-| [`search_pokemons_by_move`](#search_pokemons_by_move) | Roster | Pokémon that can learn a given move |
+| [`search_pokemon_by_type`](#search_pokemon_by_type) | Roster | Pokémon of a given type or exact type pair |
+| [`search_pokemon_by_ability`](#search_pokemon_by_ability) | Roster | Pokémon with a given ability |
+| [`search_pokemon_by_move`](#search_pokemon_by_move) | Roster | Pokémon that can learn a given move |
 | [`get_pokemon_moves`](#get_pokemon_moves) | Roster | Full legal movepool + weakness-coverage suggestions |
 | [`is_legal_move`](#is_legal_move) | Roster | Can this Pokémon use this move? |
 | [`is_legal_pokemon`](#is_legal_pokemon) | Roster | Is this Pokémon in the current roster? |
@@ -62,7 +62,7 @@ the two.
 | [`get_speed_tiers`](#get_speed_tiers) | Meta | Speed tiers for the most-used Pokémon |
 | [`calc_stats`](#calc_stats) | Stats | Final Lv-50 stats from an SP spread + nature |
 | [`compute_speed`](#compute_speed) | Stats | Effective in-battle Speed with modifiers |
-| [`speed_threshold`](#speed_threshold) | Stats | Minimum Speed SP to outspeed a target |
+| [`compute_speed_threshold`](#compute_speed_threshold) | Stats | Minimum Speed SP to outspeed a target |
 | [`validate_team`](#validate_team) | Team | Full legality report; call last |
 | [`analyze_team`](#analyze_team) | Team | Legality + meta context + dependency gaps |
 | [`calc_damage`](#calc_damage) | Damage | Damage rolls / %HP / KO chance via @smogon/calc |
@@ -232,7 +232,7 @@ use `get_usage_stats` instead.
 | `format` | `str \| None` | `None` | `"vgc"`/`"bss"`; sorts results by usage rank |
 | `limit` | `int` | `60` | Maximum results |
 
-### `search_pokemons_by_type`
+### `search_pokemon_by_type`
 
 Champions Pokémon of a given type or exact type pair (Champions typing).
 
@@ -241,7 +241,7 @@ Champions Pokémon of a given type or exact type pair (Champions typing).
 | `type1` | `str` | *(required)* | First (or only) type |
 | `type2` | `str \| None` | `None` | Second type, for an exact-pair match |
 
-### `search_pokemons_by_ability`
+### `search_pokemon_by_ability`
 
 Champions Pokémon with a given ability (checks Mega-form abilities too).
 
@@ -249,7 +249,7 @@ Champions Pokémon with a given ability (checks Mega-form abilities too).
 |---|---|---|---|
 | `ability` | `str` | *(required)* | Ability name |
 
-### `search_pokemons_by_move`
+### `search_pokemon_by_move`
 
 Champions Pokémon that can learn a given move (Champions movepools).
 
@@ -452,7 +452,7 @@ Choice Scarf (×1.5) → Tailwind (×2) → paralysis (×0.5), flooring each ste
 | `tailwind` | `bool` | `False` | Apply the ×2 Tailwind modifier |
 | `paralyzed` | `bool` | `False` | Apply the ×0.5 paralysis modifier |
 
-### `speed_threshold`
+### `compute_speed_threshold`
 
 Minimum Speed SP for `attacker` to outspeed `defender` (per nature), with SP
 left from the 66 budget. Default attacker natures checked: neutral + Jolly.

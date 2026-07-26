@@ -89,8 +89,8 @@ Call `get_game_rules(format)` first (`format='vgc'` for doubles, `'bss'` for sin
 pool grouped by category (Mega Stones hidden by default - they are 75 of the 148
 items); if an item is not in it, it does not exist in Champions.
 
-**Roster and movepool** - `list_pokemon`, `search_pokemons_by_type`, `search_pokemons_by_ability`,
-`search_pokemons_by_move`, `get_pokemon_moves`, `is_legal_move`, `is_legal_pokemon`
+**Roster and movepool** - `list_pokemon`, `search_pokemon_by_type`, `search_pokemon_by_ability`,
+`search_pokemon_by_move`, `get_pokemon_moves`, `is_legal_move`, `is_legal_pokemon`
 
 **Meta, both formats** - `get_usage_stats`, `get_pokemon_sets`, `get_top_teammates`,
 `suggest_cores`, `get_speed_tiers`
@@ -109,7 +109,7 @@ per format, since VGC and BSS need very different slots. Each brief's signature
 moves, items and abilities are checked against the Champions data before being
 returned.
 
-**Stat Points and speed** - `calc_stats`, `compute_speed`, `speed_threshold`
+**Stat Points and speed** - `calc_stats`, `compute_speed`, `compute_speed_threshold`
 
 **Team** - `validate_team`, `analyze_team`
 
