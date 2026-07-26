@@ -1,0 +1,28 @@
+{
+  "vgc": {
+    "display_name": "Pokémon Champions VGC (Doubles)",
+    "game_type": "doubles",
+    "battle_format": "Doubles",
+    "team_size": 6,
+    "bring": 4,
+    "level": 50,
+    "ivs": "31 in every stat (fixed — no IV investment or choice)",
+    "item_clause": true,
+    "species_clause": true,
+    "mega_max_per_battle": 1,
+    "description": "Team of 6, bring 4; two Pokémon active per side."
+  },
+  "bss": {
+    "display_name": "Pokémon Champions Battle Stadium Singles",
+    "game_type": "singles",
+    "battle_format": "Singles",
+    "team_size": 6,
+    "bring": 3,
+    "level": 50,
+    "ivs": "31 in every stat (fixed — no IV investment or choice)",
+    "item_clause": true,
+    "species_clause": true,
+    "mega_max_per_battle": 1,
+    "description": "Team of 6, bring 3; one Pokémon active per side."
+  }
+}

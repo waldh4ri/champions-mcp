@@ -1,0 +1,1174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Champions Chat v2</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Lexend:wght@600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      background: #0f172a;
+      color: #e2e8f0;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Full-bleed bars (header/footer) hold a centered, width-capped inner row
+       so the UI reads as one focused column instead of stretching edge to
+       edge on wide screens. */
+    :root { --content-width: 900px; }
+    /* A fixed 900px column looks lost in the middle of a 4K/ultra-wide
+       display — widen the reading column a bit on very large viewports while
+       keeping line length comfortable (still well short of full-bleed). */
+    @media (min-width: 2200px) {
+      :root { --content-width: 1180px; }
+    }
+
+    header {
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+      padding: 12px 20px;
+      display: flex;
+      flex-shrink: 0;
+    }
+
+    /* Full width, edge to edge — unlike #messages/#quickPrompts/footer, the
+       top bar is not capped to --content-width. */
+    .header-inner {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      row-gap: 8px;
+      width: 100%;
+      /* Wraps onto a second line on narrow windows instead of clipping/
+         overflowing — title first, controls flow below it. */
+      flex-wrap: wrap;
+    }
+
+    header h1 { font-size: 1rem; font-weight: 600; flex: 1; min-width: max-content; letter-spacing: 0.02em; }
+
+    /* Live throughput / context meters — fixed-width monospace so values don't
+       jitter the layout as digits change. */
+    #meters {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 14px;
+      row-gap: 6px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 0.76rem;
+      flex-shrink: 0;
+    }
+    .meter { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+    .meter-label {
+      color: #64748b;
+      font-size: 0.66rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .meter-val {
+      display: inline-block;
+      min-width: 7ch;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    #mCtx .meter-val { min-width: 13ch; }
+    #mPrefill .meter-val { color: #38bdf8; }
+    #mDecode .meter-val { color: #4ade80; }
+    /* Cache is a short "NN%" value (unlike the ~7-char "1234.5 t/s" PP/TG
+       values the generic min-width is sized for) — the reserved 7ch box plus
+       right-alignment left a big dead gap after the label. */
+    #mCache .meter-val { color: #c084fc; min-width: 4ch; }
+
+    #modelSelect {
+      background: #0f172a;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      outline: none;
+      max-width: 200px;
+    }
+    #modelSelect:focus { border-color: #6366f1; }
+
+    /* Shared style for the header's checkbox toggles: Autoscroll, Thinking, Tools. */
+    .viewToggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #94a3b8;
+      font-size: 0.78rem;
+      cursor: pointer;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    .viewToggle input {
+      accent-color: #6366f1;
+      cursor: pointer;
+      width: 14px;
+      height: 14px;
+    }
+
+    /* Dynamic show/hide for thinking + tool-call messages, driven by the
+       header toggles — pure CSS so no re-render is needed. */
+    body.hide-thinking .message.thinking-msg { display: none; }
+    body.hide-tools .message.tool-msg { display: none; }
+
+    /* The scrollbar belongs to this full-width wrapper (so it sticks to the
+       browser window's right edge), not to #messages itself (which is just
+       the centered, width-capped column of bubbles). */
+    #messagesScroll {
+      flex: 1;
+      overflow-y: auto;
+      scroll-behavior: smooth;
+    }
+    #messagesScroll::-webkit-scrollbar { width: 10px; }
+    #messagesScroll::-webkit-scrollbar-track { background: transparent; }
+    #messagesScroll::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 6px;
+      border: 2px solid #0f172a;
+    }
+    #messagesScroll::-webkit-scrollbar-thumb:hover { background: #475569; }
+    #messagesScroll { scrollbar-width: thin; scrollbar-color: #334155 transparent; }
+
+    #messages {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      width: 100%;
+      max-width: var(--content-width);
+      margin: 0 auto;
+    }
+
+    .message { display: flex; flex-direction: column; max-width: 80%; }
+    .message.user { align-self: flex-end; align-items: flex-end; }
+    .message.assistant,
+    .message.thinking-msg,
+    .message.tool-msg { align-self: flex-start; align-items: flex-start; max-width: 90%; }
+    .message.info { align-self: center; align-items: center; max-width: 100%; }
+
+    .bubble {
+      padding: 12px 16px;
+      border-radius: 14px;
+      font-size: 0.875rem;
+      line-height: 1.65;
+    }
+
+    .user .bubble {
+      background: #6366f1;
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .assistant .bubble {
+      background: linear-gradient(180deg, #1c2a3f 0%, #182234 100%);
+      border: 1px solid #2d3f58;
+      border-bottom-left-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.28), 0 1px 0 rgba(255,255,255,0.03) inset;
+      padding: 22px 26px;
+      font-size: 0.9375rem;
+      line-height: 1.75;
+      letter-spacing: 0.005em;
+    }
+
+    .info .bubble {
+      background: #0c1a2e;
+      border: 1px solid #1e3a5f;
+      color: #7dd3fc;
+      font-size: 0.8rem;
+      border-radius: 8px;
+    }
+
+    /* ── Assistant answer typography — this is the actual reading experience,
+       styled with generous rhythm so dense team-building writeups (headers,
+       bold species names, stat tables) don't read as a wall of text. ── */
+    .assistant .bubble > *:first-child { margin-top: 0 !important; }
+    .assistant .bubble > *:last-child { margin-bottom: 0 !important; }
+
+    .assistant .bubble p { margin: 0 0 0.95em; }
+
+    .assistant .bubble h1, .assistant .bubble h2, .assistant .bubble h3, .assistant .bubble h4 {
+      font-family: 'Lexend', 'Inter', system-ui, sans-serif;
+      color: #f8fafc;
+      font-weight: 700;
+      line-height: 1.35;
+      margin: 1.4em 0 0.6em;
+      letter-spacing: -0.01em;
+    }
+    .assistant .bubble h1 { font-size: 1.3em; padding-bottom: 0.4em; border-bottom: 1px solid #2d3f58; }
+    .assistant .bubble h2 { font-size: 1.15em; padding-bottom: 0.35em; border-bottom: 1px solid #263449; }
+    .assistant .bubble h3 { font-size: 1.02em; color: #93c5fd; display: flex; align-items: center; gap: 0.5em; }
+    .assistant .bubble h3::before {
+      content: ''; width: 4px; height: 1em; flex-shrink: 0;
+      background: linear-gradient(180deg, #818cf8, #6366f1);
+      border-radius: 2px;
+    }
+    .assistant .bubble h4 {
+      font-size: 0.86em; color: #93c5fd;
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+
+    .assistant .bubble ul, .assistant .bubble ol {
+      padding-left: 1.4em;
+      margin: 0 0 0.95em;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35em;
+    }
+    .assistant .bubble li { padding-left: 0.2em; }
+    .assistant .bubble li::marker { color: #818cf8; }
+    .assistant .bubble li > ul, .assistant .bubble li > ol { margin: 0.35em 0 0; }
+
+    .assistant .bubble strong { color: #f8fafc; font-weight: 700; }
+    .assistant .bubble em { color: #cbd5e1; }
+
+    .assistant .bubble a {
+      color: #7dd3fc;
+      text-decoration: none;
+      border-bottom: 1px solid rgba(125, 211, 252, 0.35);
+      transition: border-color 0.15s;
+    }
+    .assistant .bubble a:hover { border-color: #7dd3fc; }
+
+    .assistant .bubble blockquote {
+      margin: 0 0 0.95em;
+      padding: 0.65em 1.1em;
+      border-left: 3px solid #6366f1;
+      background: rgba(99, 102, 241, 0.08);
+      border-radius: 0 8px 8px 0;
+      color: #cbd5e1;
+    }
+    .assistant .bubble blockquote > *:last-child { margin-bottom: 0; }
+
+    .assistant .bubble hr {
+      border: none;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, #334155, transparent);
+      margin: 1.5em 0;
+    }
+
+    .assistant .bubble code {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 5px;
+      padding: 0.15em 0.4em;
+      font-size: 0.85em;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      color: #fbbf24;
+    }
+    .assistant .bubble pre {
+      background: #0b1220;
+      border: 1px solid #263449;
+      border-radius: 10px;
+      padding: 14px 18px;
+      overflow-x: auto;
+      margin: 0 0 0.95em;
+      box-shadow: inset 0 1px 3px rgba(0,0,0,0.3);
+    }
+    .assistant .bubble pre code {
+      background: none; border: none; padding: 0;
+      font-size: 0.83em; color: #e2e8f0;
+    }
+
+    .assistant .bubble .table-scroll {
+      overflow-x: auto;
+      margin: 0 0 0.95em;
+      border-radius: 10px;
+      border: 1px solid #263449;
+    }
+    .assistant .bubble table { border-collapse: collapse; width: 100%; font-size: 0.85em; }
+    .assistant .bubble th, .assistant .bubble td {
+      padding: 9px 14px;
+      border-bottom: 1px solid #263449;
+      text-align: left;
+    }
+    .assistant .bubble th {
+      background: #16233a;
+      color: #93c5fd;
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.76em;
+      letter-spacing: 0.05em;
+    }
+    .assistant .bubble tr:last-child td { border-bottom: none; }
+    .assistant .bubble tbody tr:hover td { background: rgba(255, 255, 255, 0.025); }
+
+    /* Each thinking return and each tool call is its own standalone message
+       in the conversation flow (not grouped per assistant turn), so they can
+       be independently expanded/collapsed and hidden via the header toggles. */
+
+    /* Small muted timestamp shown above user/assistant bubbles. */
+    .message-time {
+      color: #475569;
+      font-size: 0.7rem;
+      font-variant-numeric: tabular-nums;
+      padding: 0 4px;
+      margin-bottom: 4px;
+    }
+    /* Same timestamp, but inline as the trailing element of a thinking/tool
+       one-line summary rather than its own row. */
+    .meta-time-inline { color: #475569; font-size: 0.7rem; margin-left: auto; padding-left: 6px; }
+
+    /* Model "thinking" badge: always shows a 3-line preview (no click needed
+       to see that it thought something, or roughly what) with an expand
+       button that appears only when the reasoning actually runs past 3
+       lines. Left accent bar echoes the assistant bubble's h3 accent. */
+    .thinking {
+      width: 100%;
+      background: linear-gradient(180deg, #16213a 0%, #131b2e 100%);
+      border: 1px solid #2d3f58;
+      border-left: 3px solid #818cf8;
+      border-radius: 10px;
+      padding: 10px 14px;
+    }
+    .thinking-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+      color: #93c5fd;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+    .thinking-head .thinking-icon { font-size: 0.85rem; }
+    .thinking .think-body {
+      color: #94a3b8;
+      font-size: 0.82rem;
+      line-height: 1.55;
+    }
+    /* 3-line clamp: standard `line-clamp` plus the long-shipping `-webkit-`
+       prefix every current browser actually needs for it to take effect. */
+    .thinking .think-body.clamped {
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .thinking .think-body > *:first-child { margin-top: 0 !important; }
+    .thinking .think-body > *:last-child { margin-bottom: 0 !important; }
+    .thinking .think-body p { margin: 0 0 0.6em; }
+    .thinking .think-body ul, .thinking .think-body ol {
+      padding-left: 1.3em;
+      margin: 0 0 0.6em;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25em;
+    }
+    .thinking .think-body li::marker { color: #64748b; }
+    .thinking .think-body strong { color: #cbd5e1; font-weight: 600; }
+    .thinking .think-body h1, .thinking .think-body h2,
+    .thinking .think-body h3, .thinking .think-body h4 {
+      color: #cbd5e1;
+      font-weight: 600;
+      font-size: 0.95em;
+      margin: 0.9em 0 0.35em;
+    }
+    .thinking .think-body code {
+      background: #0a121f;
+      border: 1px solid #263449;
+      border-radius: 4px;
+      padding: 0.1em 0.35em;
+      font-size: 0.85em;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      color: #cbd5e1;
+    }
+    .thinking .think-body hr {
+      border: none;
+      height: 1px;
+      background: #263449;
+      margin: 0.9em 0;
+    }
+    .thinking .expand-btn { margin-top: 8px; }
+
+    /* One tool call = one collapsed single-line message: status dot, name,
+       args preview, result size, and (only when it grows past one line) an
+       expand affordance via the native <details> disclosure triangle. */
+    .tool-msg-el { width: 100%; font-size: 0.8rem; }
+    .tool-line {
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      color: #cbd5e1;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      padding: 4px 8px;
+      border-radius: 6px;
+      transition: background 0.15s;
+    }
+    .tool-line:hover { background: rgba(148, 163, 184, 0.08); }
+    .tool-line::-webkit-details-marker { display: none; }
+    .tool-line::before { content: '▸'; font-size: 0.7rem; color: #64748b; flex-shrink: 0; }
+    .tool-msg-el[open] .tool-line::before { content: '▾'; }
+    .tool-msg-el[open] .tool-line { color: #e2e8f0; }
+
+    .tool-status {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .tool-status.ok { background: #4ade80; box-shadow: 0 0 5px rgba(74, 222, 128, 0.55); }
+    .tool-status.err { background: #f87171; box-shadow: 0 0 5px rgba(248, 113, 113, 0.55); }
+    .tool-status.repeat { background: #fbbf24; box-shadow: 0 0 5px rgba(251, 191, 36, 0.55); }
+
+    .tool-name { color: #a5b4fc; font-weight: 600; }
+    .tool-args { color: #64748b; }
+    .tool-size { color: #64748b; font-size: 0.75rem; }
+    .tool-repeat, .tool-err-badge {
+      font-size: 0.7rem;
+      border-radius: 4px;
+      padding: 0 4px;
+    }
+    .tool-repeat { color: #fbbf24; border: 1px solid #78350f; }
+    .tool-err-badge { color: #f87171; border: 1px solid #7f1d1d; }
+
+    .tool-detail {
+      background: #0c1424;
+      border: 1px dashed #334155;
+      border-radius: 10px;
+      padding: 10px 14px;
+      margin-top: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .tool-detail pre {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      padding: 8px 12px;
+      overflow-x: auto;
+      color: #94a3b8;
+      font-size: 0.76rem;
+      line-height: 1.5;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    /* Long tool results fade out and get a "Show more" button instead of an
+       inner scrollbar — the main #messages pane is the only thing that scrolls. */
+    .tool-detail pre.collapsed {
+      max-height: 220px;
+      overflow-y: hidden;
+      mask-image: linear-gradient(to bottom, #000 75%, transparent 100%);
+      -webkit-mask-image: linear-gradient(to bottom, #000 75%, transparent 100%);
+    }
+    /* Shared "Show more/less" affordance — used by both the tool-call result
+       body and the thinking badge's 3-line preview. */
+    .expand-btn {
+      display: inline-block;
+      align-self: flex-start;
+      background: none;
+      border: 1px solid #334155;
+      color: #93c5fd;
+      border-radius: 6px;
+      padding: 3px 10px;
+      font-size: 0.72rem;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .expand-btn:hover { background: #1e293b; border-color: #6366f1; }
+
+    /* JSON pretty-printing (tool args + results) */
+    .tool-msg-el .jk { color: #93c5fd; }                        /* key */
+    .tool-msg-el .js { color: #86efac; }                        /* string value */
+    .tool-msg-el .jn { color: #fbbf24; }                        /* number */
+    .tool-msg-el .jb { color: #f0abfc; }                        /* boolean */
+    .tool-msg-el .jz { color: #64748b; font-style: italic; }    /* null */
+
+    /* Typing indicator */
+    .typing {
+      align-self: flex-start;
+      display: flex;
+      gap: 5px;
+      padding: 14px 18px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      border-bottom-left-radius: 4px;
+    }
+    .typing span {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #475569;
+      animation: pulse 1.3s ease-in-out infinite;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.18s; }
+    .typing span:nth-child(3) { animation-delay: 0.36s; }
+    @keyframes pulse {
+      0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+      30% { transform: translateY(-5px); opacity: 1; }
+    }
+
+    footer {
+      background: #1e293b;
+      border-top: 1px solid #334155;
+      padding: 12px 16px;
+      display: flex;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .footer-inner {
+      display: flex;
+      /* center, not flex-end: guarantees the button stays visually centered
+         against the textarea regardless of sub-pixel height rounding, and
+         still reads naturally once the textarea grows past one line. */
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      max-width: var(--content-width);
+    }
+
+    #input {
+      flex: 1;
+      background: #0f172a;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 0.875rem;
+      font-family: inherit;
+      resize: none;
+      min-height: 44px;
+      max-height: 130px;
+      line-height: 22px;
+      outline: none;
+      overflow-y: auto;
+    }
+    #input:focus { border-color: #6366f1; }
+    #input::placeholder { color: #475569; }
+
+    #sendBtn {
+      background: #6366f1;
+      color: #fff;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 10px 18px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+      height: 44px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s;
+    }
+    #sendBtn:hover:not(:disabled) { background: #4f46e5; }
+    #sendBtn:disabled { background: #1e293b; color: #475569; cursor: not-allowed; }
+
+    #resetBtn {
+      background: #0f172a;
+      color: #94a3b8;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      outline: none;
+      flex-shrink: 0;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    #resetBtn:hover { background: #7f1d1d; color: #fecaca; border-color: #991b1b; }
+
+    /* Quick test-prompt chips (the easy/medium/hard benchmark workloads) */
+    #quickPrompts {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px 12px;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+      width: 100%;
+      max-width: var(--content-width);
+      margin: 0 auto;
+      box-sizing: border-box;
+    }
+    #quickPrompts .qp-label { color: #64748b; font-size: 0.74rem; letter-spacing: 0.02em; }
+    .qp {
+      background: #0f172a;
+      color: #cbd5e1;
+      border: 1px solid #334155;
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 0.78rem;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .qp:hover:not(:disabled) { background: #1e293b; border-color: #6366f1; color: #e2e8f0; }
+    .qp:disabled { opacity: 0.45; cursor: not-allowed; }
+    .qp .qp-tier { color: #818cf8; font-weight: 600; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <h1>⚡ Champions Chat v2</h1>
+    <div id="meters" title="From the last reply: llama-server prefill/decode throughput, prompt-cache hit rate, and context window usage">
+      <span class="meter" id="mPrefill" title="Prompt processing (prefill) speed"><span class="meter-label">PP</span><span class="meter-val">--</span></span>
+      <span class="meter" id="mDecode" title="Token generation (decode) speed"><span class="meter-label">TG</span><span class="meter-val">--</span></span>
+      <span class="meter" id="mCache" title="Prompt-cache hit rate"><span class="meter-label">CACHE</span><span class="meter-val">--</span></span>
+      <span class="meter" id="mCtx" title="Context window used"><span class="meter-label">CTX</span><span class="meter-val">--</span></span>
+    </div>
+    <label class="viewToggle" title="Keep the view pinned to the newest message while a reply streams in">
+      <input type="checkbox" id="autoscrollChk" checked>
+      Autoscroll
+    </label>
+    <label class="viewToggle" title="Show or hide the model's reasoning messages">
+      <input type="checkbox" id="thinkingChk" checked>
+      Thinking
+    </label>
+    <label class="viewToggle" title="Show or hide tool call messages">
+      <input type="checkbox" id="toolsChk" checked>
+      Tools
+    </label>
+    <button id="resetBtn" onclick="resetChat()" title="Wipe the conversation and start fresh">Reset</button>
+    <select id="modelSelect"><option value="">Loading models…</option></select>
+  </div>
+</header>
+
+<div id="messagesScroll"><div id="messages"></div></div>
+
+<div id="quickPrompts">
+  <span class="qp-label">Try:</span>
+  <button class="qp" data-k="easy"   title="Send the easy test prompt"><span class="qp-tier">Easy</span> · stats lookup</button>
+  <button class="qp" data-k="medium" title="Send the medium test prompt"><span class="qp-tier">Medium</span> · speed calc</button>
+  <button class="qp" data-k="hard"   title="Send the hard test prompt"><span class="qp-tier">Hard</span> · full team build</button>
+  <button class="qp" data-k="underdogs" title="Send the underdogs test prompt"><span class="qp-tier">Underdogs</span> · BSS off-meta team</button>
+</div>
+
+<footer>
+  <div class="footer-inner">
+    <textarea id="input" placeholder="Ask about Pokémon teams, damage calcs, spreads…" rows="1"></textarea>
+    <button id="sendBtn" onclick="send()">Send</button>
+  </div>
+</footer>
+
+<script>
+  const messagesEl = document.getElementById('messages');
+  const messagesScrollEl = document.getElementById('messagesScroll');
+  const inputEl    = document.getElementById('input');
+  const sendBtn    = document.getElementById('sendBtn');
+  const modelSel   = document.getElementById('modelSelect');
+  const resetBtn   = document.getElementById('resetBtn');
+  const mPrefill   = document.querySelector('#mPrefill .meter-val');
+  const mDecode    = document.querySelector('#mDecode .meter-val');
+  const mCache     = document.querySelector('#mCache .meter-val');
+  const mCtx       = document.querySelector('#mCtx .meter-val');
+  const autoscrollChk = document.getElementById('autoscrollChk');
+  const thinkingChk   = document.getElementById('thinkingChk');
+  const toolsChk      = document.getElementById('toolsChk');
+
+  let history = [];
+  let ctxMax = 0;
+  let autoscroll = autoscrollChk.checked;
+
+  // ── autoscroll toggle ────────────────────────────────────────────────────────
+  function scrollToBottom() {
+    if (autoscroll) messagesScrollEl.scrollTop = messagesScrollEl.scrollHeight;
+  }
+  autoscrollChk.addEventListener('change', () => {
+    autoscroll = autoscrollChk.checked;
+    if (autoscroll) scrollToBottom(); // catch up immediately on re-enable
+  });
+
+  // ── thinking / tool-call visibility toggles ─────────────────────────────────
+  // Pure CSS show/hide (body.hide-thinking / body.hide-tools) so toggling
+  // doesn't need to touch or re-render any existing messages.
+  thinkingChk.addEventListener('change', () => {
+    document.body.classList.toggle('hide-thinking', !thinkingChk.checked);
+  });
+  toolsChk.addEventListener('change', () => {
+    document.body.classList.toggle('hide-tools', !toolsChk.checked);
+  });
+
+  const INTRO_HTML =
+    'Connected to champions-mcp &mdash; ask about VGC / BSS team building, ' +
+    'damage calcs, movesets, or meta usage.';
+
+  // ── reset ─────────────────────────────────────────────────────────────────────
+  // The chat backend is stateless (history is sent per request), so wiping the
+  // client-side history + view is a complete reset of the app state.
+  function resetChat() {
+    if (history.length && !confirm('Wipe the conversation and start fresh?')) return;
+    history = [];
+    messagesEl.innerHTML = '';
+    addBubble('info', INTRO_HTML);
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+    inputEl.focus();
+    mPrefill.textContent = '--';
+    mDecode.textContent = '--';
+    mCache.textContent = '--';
+    mCtx.textContent = ctxMax ? `0/${fmtK(ctxMax)}` : '--';
+    mCtx.style.color = '';
+  }
+
+  // ── model loader ─────────────────────────────────────────────────────────────
+  fetch('/api/models')
+    .then(r => r.json())
+    .then(data => {
+      const models = (data.models || []).map(m => m.name);
+      modelSel.innerHTML = models.length
+        ? models.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')
+        : '<option value="">No models found</option>';
+      ctxMax = data.context_size || 0;
+      if (ctxMax) mCtx.textContent = `0/${fmtK(ctxMax)}`;
+    })
+    .catch(() => { modelSel.innerHTML = '<option value="">backend unavailable</option>'; });
+
+  // ── meters (prefill/decode t/s, cache hit %, context usage) ────────────────────
+  function fmtK(n) {
+    return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
+  }
+
+  function updateMeters(m) {
+    if (!m) return;
+    mPrefill.textContent = m.prefill_tps ? `${m.prefill_tps.toFixed(1)} t/s` : '--';
+    mDecode.textContent  = m.decode_tps  ? `${m.decode_tps.toFixed(1)} t/s`  : '--';
+    mCache.textContent   = `${Math.round(m.cache_hit_pct ?? 0)}%`;
+
+    const max = m.context_max || ctxMax;
+    const used = m.context_tokens || 0;
+    if (max) {
+      const pct = used / max * 100;
+      mCtx.textContent = `${fmtK(used)}/${fmtK(max)} (${Math.round(pct)}%)`;
+      mCtx.style.color = pct > 85 ? '#f87171' : pct > 60 ? '#facc15' : '#4ade80';
+    } else {
+      mCtx.textContent = fmtK(used);
+    }
+  }
+
+  // ── textarea auto-resize ──────────────────────────────────────────────────────
+  inputEl.addEventListener('input', () => {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 130) + 'px';
+  });
+
+  inputEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+
+  // ── helpers ───────────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // Render markdown into a bubble and wrap any tables in a scroll container —
+  // marked.js emits bare <table> elements, which would otherwise force the
+  // whole page to scroll horizontally on wide team-building tables.
+  function renderMarkdown(el, text) {
+    el.innerHTML = marked.parse(text);
+    el.querySelectorAll('table').forEach(table => {
+      const wrap = document.createElement('div');
+      wrap.className = 'table-scroll';
+      table.parentNode.insertBefore(wrap, table);
+      wrap.appendChild(table);
+    });
+  }
+
+  // Escapes text for safe innerHTML *content* (not attribute) use — deliberately
+  // leaves quotes alone so the JSON syntax highlighter below can still match them.
+  function escText(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // Colorize a JSON string (already HTML-escaped) by token type: keys, string
+  // values, numbers, booleans, null. Tool args/results are JSON, so this is
+  // what makes them read as data instead of a grey wall of text.
+  function highlightJSON(jsonStr) {
+    const escaped = escText(jsonStr);
+    return escaped.replace(
+      /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(?:true|false)\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+      (match) => {
+        let cls = 'jn';
+        if (/^"/.test(match)) cls = /:$/.test(match) ? 'jk' : 'js';
+        else if (/^(true|false)$/.test(match)) cls = 'jb';
+        else if (match === 'null') cls = 'jz';
+        return `<span class="${cls}">${match}</span>`;
+      },
+    );
+  }
+
+  // Tries to parse+reformat text as JSON (tool results usually are); returns
+  // syntax-highlighted HTML, or null if the text isn't JSON so the caller can
+  // fall back to plain escaped text.
+  function tryPrettyJSON(text) {
+    try {
+      return highlightJSON(JSON.stringify(JSON.parse(text), null, 2));
+    } catch {
+      return null;
+    }
+  }
+
+  // Short, locale-aware clock time — attached to every user/assistant/
+  // thinking/tool message so the transcript reads like a real conversation
+  // log instead of an undated wall of bubbles.
+  function nowStamp() {
+    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function addBubble(role, html) {
+    const wrap = document.createElement('div');
+    wrap.className = `message ${role}`;
+    if (role === 'user' || role === 'assistant') {
+      const time = document.createElement('div');
+      time.className = 'message-time';
+      time.textContent = nowStamp();
+      wrap.appendChild(time);
+    }
+    const bub = document.createElement('div');
+    bub.className = 'bubble';
+    bub.innerHTML = html;
+    wrap.appendChild(bub);
+    messagesEl.appendChild(wrap);
+    scrollToBottom();
+    return bub;
+  }
+
+  // Long tool results get a fade + "Show more" button instead of an inner
+  // scrollbar — the #messages pane is the only thing that should scroll.
+  const COLLAPSE_LINES = 12;
+
+  // "312 chars" / "8.4k chars" — how big the tool's return was, shown right
+  // in the one-line summary so you can spot a suspiciously empty/huge result
+  // without expanding it.
+  function fmtSize(n) {
+    return (n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n)) + ' chars';
+  }
+
+  // Each thinking return is its own standalone, collapsed-by-default message
+  // in the conversation flow (not grouped per assistant turn).
+  function addThinkingMessage(text) {
+    const wrap = document.createElement('div');
+    wrap.className = 'message thinking-msg';
+
+    const badge = document.createElement('div');
+    badge.className = 'thinking';
+
+    const head = document.createElement('div');
+    head.className = 'thinking-head';
+    head.innerHTML =
+      '<span class="thinking-icon">💭</span>' +
+      '<span>Thinking</span>' +
+      `<span class="meta-time-inline">${nowStamp()}</span>`;
+    badge.appendChild(head);
+
+    const body = document.createElement('div');
+    body.className = 'think-body clamped';
+    renderMarkdown(body, text);
+    badge.appendChild(body);
+
+    wrap.appendChild(badge);
+    messagesEl.appendChild(wrap);
+    scrollToBottom();
+
+    // Only add a "Show more" control if the reasoning actually overflows the
+    // 3-line clamp — measured post-layout since clamped height depends on
+    // the rendered markdown, not the raw text length.
+    requestAnimationFrame(() => {
+      if (body.scrollHeight > body.clientHeight + 1) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'expand-btn';
+        btn.textContent = 'Show more ▾';
+        btn.addEventListener('click', () => {
+          const clamped = body.classList.toggle('clamped');
+          btn.textContent = clamped ? 'Show more ▾' : 'Show less ▴';
+        });
+        badge.appendChild(btn);
+      }
+    });
+
+    return wrap;
+  }
+
+  // Each tool call is its own standalone message: a single collapsed line
+  // (status dot, name, args preview, result size, repeat/error badge) that
+  // expands to the full arguments + return value.
+  function addToolMessage(ev) {
+    const wrap = document.createElement('div');
+    wrap.className = 'message tool-msg';
+
+    const det = document.createElement('details');
+    det.className = 'tool-msg-el';
+
+    const resultText = ev.result != null ? String(ev.result) : '';
+    const statusCls = ev.repeated ? 'repeat' : (ev.error ? 'err' : 'ok');
+    const statusTitle = ev.repeated ? 'Repeated call' : (ev.error ? 'Tool error' : 'Success');
+
+    let argStr = '';
+    try { argStr = JSON.stringify(ev.arguments ?? {}); } catch { argStr = '{…}'; }
+
+    const sum = document.createElement('summary');
+    sum.className = 'tool-line';
+    sum.innerHTML =
+      `<span class="tool-status ${statusCls}" title="${esc(statusTitle)}"></span>` +
+      `<span class="tool-name">${esc(ev.name)}</span>` +
+      `<span class="tool-args">${highlightJSON(argStr)}</span>` +
+      `<span class="tool-size">${fmtSize(resultText.length)}</span>` +
+      (ev.repeated ? '<span class="tool-repeat">repeat</span>' : '') +
+      (ev.error ? '<span class="tool-err-badge">error</span>' : '') +
+      `<span class="meta-time-inline">${nowStamp()}</span>`;
+    det.appendChild(sum);
+
+    if (resultText.trim()) {
+      const body = document.createElement('div');
+      body.className = 'tool-detail';
+
+      const pretty = tryPrettyJSON(resultText);
+      const pre = document.createElement('pre');
+      pre.innerHTML = pretty !== null ? pretty : escText(resultText);
+      body.appendChild(pre);
+
+      const lineCount = (pretty !== null ? pretty : resultText).split('\n').length;
+      if (lineCount > COLLAPSE_LINES) {
+        pre.classList.add('collapsed');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'expand-btn';
+        btn.textContent = 'Show more ▾';
+        btn.addEventListener('click', () => {
+          const collapsed = pre.classList.toggle('collapsed');
+          btn.textContent = collapsed ? 'Show more ▾' : 'Show less ▴';
+        });
+        body.appendChild(btn);
+      }
+      det.appendChild(body);
+    }
+
+    wrap.appendChild(det);
+    messagesEl.appendChild(wrap);
+    scrollToBottom();
+    return wrap;
+  }
+
+  function addTyping() {
+    const el = document.createElement('div');
+    el.className = 'typing';
+    el.innerHTML = '<span></span><span></span><span></span>';
+    messagesEl.appendChild(el);
+    scrollToBottom();
+    return el;
+  }
+
+  // ── send ──────────────────────────────────────────────────────────────────────
+  // The backend streams one NDJSON line per event (metrics/thinking/tool_call/
+  // final/error) so reasoning and tool calls render as they happen and the t/s
+  // meters refresh every round, instead of everything appearing at once at the
+  // end of the turn.
+  async function send() {
+    const text = inputEl.value.trim();
+    if (!text || sendBtn.disabled) return;
+
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+    setBusy(true);
+
+    history.push({ role: 'user', content: text });
+    addBubble('user', esc(text));
+
+    const typing = addTyping();
+    let typingRemoved = false;
+    let toolEvents = [];
+    let lastThinking = '';
+
+    // Interim thinking/tool-call messages render as they arrive, each as its
+    // own standalone message — the typing indicator only needs to disappear
+    // once, whenever the first bit of activity shows up.
+    function removeTypingOnce() {
+      if (!typingRemoved) {
+        typing.remove();
+        typingRemoved = true;
+      }
+    }
+
+    function handleEvent(evt) {
+      if (evt.type === 'metrics') {
+        updateMeters(evt.metrics);
+      } else if (evt.type === 'thinking') {
+        lastThinking = evt.text;
+        removeTypingOnce();
+        addThinkingMessage(evt.text);
+      } else if (evt.type === 'tool_call') {
+        toolEvents.push(evt.event);
+        removeTypingOnce();
+        addToolMessage(evt.event);
+      } else if (evt.type === 'error') {
+        throw new Error(evt.detail || 'Stream error');
+      }
+      // 'final' is handled by the caller — it needs the return value.
+    }
+
+    try {
+      const resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelSel.value, messages: history }),
+      });
+
+      if (!resp.ok || !resp.body) {
+        const detail = await resp.text().catch(() => '');
+        throw new Error(detail || `HTTP ${resp.status}`);
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let finalMessage = null;
+
+      const consume = (line) => {
+        if (!line.trim()) return;
+        const evt = JSON.parse(line);
+        if (evt.type === 'final') {
+          finalMessage = evt.message;
+          toolEvents = evt.tool_events ?? toolEvents;
+          updateMeters(evt.metrics);
+        } else {
+          handleEvent(evt);
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          consume(buf.slice(0, idx));
+          buf = buf.slice(idx + 1);
+        }
+      }
+      consume(buf); // flush any unterminated trailing line
+
+      if (!finalMessage) throw new Error('Stream ended without a response.');
+
+      const content = finalMessage.content ?? '';
+      const thinking = finalMessage.thinking ?? lastThinking ?? '';
+
+      // Store reasoning_content alongside content so the backend can send it
+      // back to llama-server on the next turn (--reasoning-preserve keeps
+      // the model's thinking coherent across the whole conversation, not
+      // just a single exchange's tool-calling rounds).
+      const assistantMsg = { role: 'assistant', content };
+      if (thinking) assistantMsg.reasoning_content = thinking;
+      history.push(assistantMsg);
+
+      removeTypingOnce(); // in case the model answered with no thinking/tool calls at all
+      const bub = addBubble('assistant', '');
+      renderMarkdown(bub, content);
+    } catch (err) {
+      removeTypingOnce();
+      addBubble('info', `<strong>Error:</strong> ${esc(err.message)}`);
+    } finally {
+      setBusy(false);
+      inputEl.focus();
+    }
+  }
+
+  // Toggle the send button + quick-prompt chips together while a request runs.
+  function setBusy(busy) {
+    sendBtn.disabled = busy;
+    qpButtons.forEach(b => { b.disabled = busy; });
+  }
+
+  // ── quick test prompts (mirror docker/bench/bench.py easy/medium/hard) ──────────
+  const QUICK_PROMPTS = {
+    easy: "What are Garchomp's base stats in Pokémon Champions? List HP, Attack, " +
+      "Defense, Special Attack, Special Defense and Speed.",
+    medium: "I'm building a Choice Scarf attacker with a Jolly nature for Champions " +
+      "singles (BSS). I want it to outspeed the entire top-32 Speed tier of the " +
+      "current meta, assuming those threats run a Jolly nature with no Speed Stat " +
+      "Points. Walk through the speed math: what final Speed do I need to beat, what " +
+      "base Speed clears it with a Scarf, and how many Speed Stat Points (1 SP = +1 " +
+      "stat, max 32 per stat) does each candidate need?",
+    hard: "Build me a complete, legal 6-Pokémon VGC doubles team for the current " +
+      "Pokémon Champions season. Requirements: a Trick Room mode setter and a " +
+      "fast-mode backup plan in the same team so it works in both speed modes; " +
+      "balanced offensive typing with answers to the top-5 meta threats; at least " +
+      "one Intimidate user and one redirection or speed-control option; and no two " +
+      "Pokémon sharing a weakness to the same common attacking type. For each of the " +
+      "six, give the species, item, ability, four moves, nature, and a full 66-point " +
+      "Stat Point spread (≤32 per stat), and justify every choice with damage " +
+      "benchmarks and the meta usage it's built to handle. Then summarise the team's " +
+      "win conditions and its two hardest matchups.",
+    underdogs: "Build me a complete, legal 6-Pokémon 'underdogs' team for Pokémon " +
+      "Champions BSS (singles) — every member should be a genuinely low-usage / " +
+      "off-meta pick (check real usage % and usage rank data, don't guess from " +
+      "general knowledge). Pull the bottom 100 by usage rank (not just the " +
+      "bottom 50) so you have a wide enough pool to work with, and use the " +
+      "profile tags to search that pool by typing and stat spread instead of " +
+      "guessing which low-usage Pokémon are actually good at something. " +
+      "Requirements. " +
+      "(1) STRUCTURE: BSS is bring-6-pick-3, so do not build one team of six — " +
+      "build two or three overlapping 3-cores and present the six as their " +
+      "union. Every core needs a real lead, a win condition, and an answer to " +
+      "its own weakness, and the cores should answer different matchups so team " +
+      "preview is a genuine choice. Decide the roles yourself: look up which " +
+      "roles exist and are viable in singles (nothing that only works in " +
+      "doubles), and state the cores and the role of each member before naming " +
+      "any Pokémon. Any Pokémon that appears in no viable core is a wasted slot. " +
+      "If a core depends on a mode (Trick Room, Tailwind, weather, terrain), a " +
+      "member of that core must actually carry the setter — 'assumes Trick Room " +
+      "is up' is a broken core, not a caveat. Fix it before answering. " +
+      "(2) MEGAS: at least two of the six must be Mega-capable with different " +
+      "Mega Stones, since only one can Mega Evolve per battle — treat them as " +
+      "two win conditions for different matchups. Profile and calc each one as " +
+      "its MEGA form: the Mega's typing, stats and ability differ from the base, " +
+      "so its weaknesses and speed tier are not the base form's. " +
+      "(3) TYPING: no two Pokémon in the same core sharing a weakness to the " +
+      "same common attacking type. Look every matchup up with the type tools — " +
+      "do not work multipliers out in your head. " +
+      "(4) META: check the real top-5 BSS threats, and note which of them are " +
+      "actually played as their Mega (if so, calc against the Mega with its " +
+      "stone). For each threat name which member threatens it and which can " +
+      "switch into it safely. " +
+      "(5) SETS: usage data is evidence, not a template — the top four moves " +
+      "are separate popularity numbers and may never have been used together. " +
+      "Expect off-list sets here; that is the point of an underdog team. Give " +
+      "species, item, ability, four moves, nature and a full 66-point Stat " +
+      "Point spread (≤32 per stat) for each. Consider a coverage move that hits " +
+      "back the type the Pokémon is weak to, where it does not cost something " +
+      "the gameplan needs. Do not put Protect on a set unless you state a " +
+      "concrete singles reason for it. " +
+      "(6) CALCS: back every claim with a real calc — offensively aim for a " +
+      "guaranteed OHKO on what a member is meant to remove (say so if it is " +
+      "only a likely one), and defensively for your switch-ins to be 3HKO'd or " +
+      "better. Quote the %HP range or KO chance, never 'it survives'. Add one " +
+      "line per member on why it is slept on relative to the common pick in its " +
+      "role. Finish with the team's win conditions, which three you would bring " +
+      "against the current #1 threat, and its two hardest matchups.",
+  };
+  const qpButtons = Array.from(document.querySelectorAll('.qp'));
+  qpButtons.forEach(btn => btn.addEventListener('click', () => {
+    if (sendBtn.disabled) return;
+    inputEl.value = QUICK_PROMPTS[btn.dataset.k];
+    send();
+  }));
+
+  // ── initial render ──────────────────────────────────────────────────────────────
+  addBubble('info', INTRO_HTML);
+</script>
+</body>
+</html>

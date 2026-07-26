@@ -1,0 +1,18 @@
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+.git/
+
+# Build artifacts — the container rebuilds these via champions-mcp-pull
+data/champions.sqlite
+data/pull-cache.sqlite
+data/pokemon-index.json
+
+.env
+tests/
+
+# Local GGUFs for the llama-server bench profile — bind-mounted at runtime,
+# must never be copied into a build context.
+models/

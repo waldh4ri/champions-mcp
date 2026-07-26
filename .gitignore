@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+tests/__pycache__/
+
+# Built data mirror + pull cache (regenerate with champions-mcp-pull)
+data/champions.sqlite
+data/pull-cache.sqlite
+data/pokemon-index.json
+
+.env
+.claude/
+.rtk/
+CLAUDE.md
+
+models/*
+!models/.gitkeep
