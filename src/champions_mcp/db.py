@@ -17,7 +17,15 @@ teammates          (slug, format, rank, teammate_*)     -> suggest_cores
 moves/abilities/items   PokeAPI-enriched reference text
 mega_forms         (form_name, species_slug, mega_kind, ...)  -> Mega Evolution data
 type_chart         (attacking, defending, multiplier)   -> weaknesses
+build_teams        one observed team per row + provenance  -> get_observed_sets
+build_members      that team's six members and their sets  -> get_team_context
 meta               key/value build markers (season, data_version, counts)
+
+``usage`` and ``build_*`` answer different questions and are not interchangeable.
+``usage`` holds *marginal* frequencies — how often a Pokémon runs each move,
+computed independently per slot — so it can never say which moves accompany
+which item. ``build_teams``/``build_members`` hold complete lists people
+actually brought, which is what makes those joint questions answerable.
 """
 
 from __future__ import annotations
@@ -158,6 +166,49 @@ CREATE TABLE IF NOT EXISTS type_chart (
     PRIMARY KEY (attacking, defending)
 );
 
+-- One row per *observed* team: a real six-Pokémon list somebody actually
+-- brought, as opposed to the marginal frequencies in `usage`. This is what
+-- makes conditional questions answerable ("what does Garchomp run *when it
+-- holds a Choice Scarf*") instead of only marginal ones.
+CREATE TABLE IF NOT EXISTS build_teams (
+    team_id     TEXT PRIMARY KEY,  -- sha1(source|source_ref|player)
+    source      TEXT NOT NULL,     -- 'limitless' | 'pokedb'
+    source_ref  TEXT,              -- tournament id / ladder season
+    event       TEXT,              -- human-readable event name
+    format      TEXT NOT NULL,     -- 'doubles' | 'singles'
+    regulation  TEXT,              -- 'M-B'
+    date        TEXT,              -- ISO date, may be NULL upstream
+    player      TEXT,
+    placing     INTEGER,
+    wins        INTEGER,
+    losses      INTEGER,
+    ties        INTEGER,
+    rating      REAL,              -- ladder rating (pokedb only)
+    field_size  INTEGER,           -- players in the event
+    -- 'full_set'      : species + item + ability + nature + 4 moves (Limitless)
+    -- 'team_and_item' : species + item only          (pokedb ladder export)
+    evidence    TEXT NOT NULL,
+    weight      REAL NOT NULL,     -- recency x field size x placement
+    team_hash   TEXT NOT NULL      -- identical lists across events collapse here
+);
+CREATE INDEX IF NOT EXISTS idx_bt_fmt ON build_teams(format, regulation);
+CREATE INDEX IF NOT EXISTS idx_bt_hash ON build_teams(team_hash);
+
+CREATE TABLE IF NOT EXISTS build_members (
+    team_id    TEXT NOT NULL,
+    slot       INTEGER NOT NULL,
+    slug       TEXT NOT NULL,      -- resolved against `pokemon`
+    item       TEXT,
+    item_slug  TEXT,
+    ability    TEXT,
+    nature     TEXT,
+    moves_json TEXT,               -- sorted JSON list, NULL when evidence is team_and_item
+    set_hash   TEXT NOT NULL       -- the joint key: slug+item+ability+nature+moves
+);
+CREATE INDEX IF NOT EXISTS idx_bm_slug ON build_members(slug);
+CREATE INDEX IF NOT EXISTS idx_bm_team ON build_members(team_id);
+CREATE INDEX IF NOT EXISTS idx_bm_set ON build_members(set_hash);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -169,6 +220,7 @@ _BUILD_TABLES = (
     "pokemon", "pokemon_types", "pokemon_abilities", "learnable_moves",
     "usage", "usage_rank", "teammates",
     "moves", "abilities", "items", "mega_forms", "type_chart", "meta",
+    "build_teams", "build_members",
 )
 
 
@@ -615,6 +667,169 @@ class Db:
             "SELECT slug, teammate_slug, teammate_name, rank FROM teammates "
             "WHERE format = ?",
             (fmt,),
+        )
+
+    # ------------------------------------------------------------------ #
+    # Observed builds read-model (build_teams / build_members)
+    # ------------------------------------------------------------------ #
+    def has_builds_tables(self) -> bool:
+        """Whether this database was built with the observed-team tables.
+
+        A mirror built by an older ``champions-mcp-pull`` has no ``build_teams``,
+        and the server must degrade to marginal-only data rather than raising
+        on every meta tool call.
+        """
+        return bool(self.query_one(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='build_teams'"
+        ))
+
+    def builds_available(self, fmt: str) -> dict[str, Any] | None:
+        """Summary of the observed-team corpus for a format, or None if empty.
+
+        Args:
+            fmt: Internal format key (``doubles``/``singles``).
+
+        Returns:
+            A dict with ``teams``, ``evidence``, ``regulations``, ``sources``
+            and the date range, or None when nothing has been ingested (or the
+            mirror predates the observed-team tables).
+        """
+        if not self.has_builds_tables():
+            return None
+        row = self.query_one(
+            "SELECT COUNT(*) AS teams, MIN(date) AS first_date, MAX(date) AS last_date "
+            "FROM build_teams WHERE format = ?",
+            (fmt,),
+        )
+        if not row or not row["teams"]:
+            return None
+        out = dict(row)
+        out["evidence"] = [
+            r["evidence"] for r in self.query(
+                "SELECT DISTINCT evidence FROM build_teams WHERE format = ?", (fmt,)
+            )
+        ]
+        out["sources"] = [
+            r["source"] for r in self.query(
+                "SELECT DISTINCT source FROM build_teams WHERE format = ?", (fmt,)
+            )
+        ]
+        out["regulations"] = [
+            r["regulation"] for r in self.query(
+                "SELECT regulation, COUNT(*) c FROM build_teams WHERE format = ? "
+                "AND regulation IS NOT NULL GROUP BY regulation ORDER BY c DESC",
+                (fmt,),
+            )
+        ]
+        return out
+
+    def observed_members(
+        self, slug: str, fmt: str, regulation: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Every observed appearance of one Pokémon, joined to its team.
+
+        Args:
+            slug: Pokemon slug.
+            fmt: Internal format key.
+            regulation: Restrict to one regulation (e.g. ``"M-B"``); None keeps all.
+
+        Returns:
+            One row per appearance, carrying the member's set fields plus the
+            owning team's provenance and weight.
+        """
+        if not self.has_builds_tables():
+            return []
+        clause, params = "", [slug, fmt]
+        if regulation:
+            clause = "AND t.regulation = ? "
+            params.append(regulation)
+        return self.query(
+            "SELECT m.team_id, m.item, m.item_slug, m.ability, m.nature, "
+            "       m.moves_json, m.set_hash, "
+            "       t.evidence, t.weight, t.event, t.player, t.placing, "
+            "       t.wins, t.losses, t.ties, t.rating, t.date, t.regulation, "
+            "       t.source, t.field_size "
+            "FROM build_members m JOIN build_teams t ON t.team_id = m.team_id "
+            f"WHERE m.slug = ? AND t.format = ? {clause}"
+            "ORDER BY t.weight DESC",
+            tuple(params),
+        )
+
+    def observed_rosters(
+        self, fmt: str, regulation: str | None = None,
+    ) -> dict[str, list[str]]:
+        """team_id -> its member slugs, for every observed team in a format.
+
+        Args:
+            fmt: Internal format key.
+            regulation: Restrict to one regulation; None keeps all.
+
+        Returns:
+            A mapping of team id to the list of slugs on that team.
+        """
+        if not self.has_builds_tables():
+            return {}
+        clause, params = "", [fmt]
+        if regulation:
+            clause = "AND t.regulation = ? "
+            params.append(regulation)
+        rosters: dict[str, list[str]] = {}
+        for r in self.query(
+            "SELECT m.team_id, m.slug FROM build_members m "
+            "JOIN build_teams t ON t.team_id = m.team_id "
+            f"WHERE t.format = ? {clause}",
+            tuple(params),
+        ):
+            rosters.setdefault(r["team_id"], []).append(r["slug"])
+        return rosters
+
+    def observed_team(self, team_id: str) -> list[dict[str, Any]]:
+        """The full member list of one observed team, in slot order.
+
+        Args:
+            team_id: Team primary key.
+
+        Returns:
+            Member rows ordered by slot.
+        """
+        return self.query(
+            "SELECT * FROM build_members WHERE team_id = ? ORDER BY slot", (team_id,)
+        )
+
+    def observed_teams_for(
+        self, fmt: str, slug: str | None, regulation: str | None, limit: int,
+    ) -> list[dict[str, Any]]:
+        """Highest-weighted observed teams for a format, optionally containing
+        a given Pokémon.
+
+        Args:
+            fmt: Internal format key.
+            slug: Restrict to teams containing this slug; None for any team.
+            regulation: Restrict to one regulation; None keeps all.
+            limit: Maximum number of teams.
+
+        Returns:
+            build_teams rows ordered by weight, deduplicated by ``team_hash``
+            so the same list entered at five events returns once.
+        """
+        clauses, params = ["t.format = ?"], [fmt]
+        if regulation:
+            clauses.append("t.regulation = ?")
+            params.append(regulation)
+        if slug:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM build_members m "
+                "WHERE m.team_id = t.team_id AND m.slug = ?)"
+            )
+            params.append(slug)
+        params.append(limit)
+        return self.query(
+            "SELECT t.*, COUNT(*) OVER (PARTITION BY t.team_hash) AS times_seen "
+            "FROM build_teams t "
+            f"WHERE {' AND '.join(clauses)} "
+            "GROUP BY t.team_hash "
+            "ORDER BY MAX(t.weight) DESC LIMIT ?",
+            tuple(params),
         )
 
     # ------------------------------------------------------------------ #

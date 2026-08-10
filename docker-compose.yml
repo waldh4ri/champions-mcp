@@ -59,7 +59,7 @@ services:
     ports:
       - "${MCP_PORT:-8000}:8000"  # host:container — override MCP_PORT to change the host side; container always listens on 8000 (FASTMCP_PORT below)
     environment:
-      MCP_TRANSPORT: "streamable-http"  # MCP transport protocol served by the app (see entrypoint.sh / FastMCP)
+      MCP_TRANSPORT: "streamable-http"  # MCP transport protocol served by the app (see entrypoint.sh / MCPServer.run)
       FASTMCP_HOST: "0.0.0.0"  # bind address inside the container; 0.0.0.0 so the published port mapping can reach it
       FASTMCP_PORT: "8000"  # container-side listen port; must match the "ports:" mapping above and EXPOSE in the Dockerfile
       PUBLISHED_PORT: "${MCP_PORT:-8000}"  # host-side port, echoed into the startup banner (entrypoint.sh) so the printed MCP URL is correct even when MCP_PORT is overridden
@@ -71,6 +71,15 @@ services:
       CHAMPIONS_MCP_CACHE_DB: "/data/pull-cache.sqlite"
       # Set to 1 to re-pull fresh data on next restart
       CHAMPIONS_MCP_PULL: "${CHAMPIONS_MCP_PULL:-0}"
+      # Observed-team corpus (Limitless teamlists + pokedb ranked ladder).
+      # All optional — see .env.example. The key only raises the rate limit;
+      # the pull works unauthenticated, it just paces itself.
+      CHAMPIONS_MCP_BUILDS_SKIP: "${CHAMPIONS_MCP_BUILDS_SKIP:-0}"  # 1 = skip the corpus (entrypoint.sh passes --skip-builds)
+      CHAMPIONS_MCP_LIMITLESS_KEY: "${CHAMPIONS_MCP_LIMITLESS_KEY:-}"
+      CHAMPIONS_MCP_BUILDS_REGULATIONS: "${CHAMPIONS_MCP_BUILDS_REGULATIONS:-M-B}"
+      CHAMPIONS_MCP_BUILDS_MAX_EVENTS: "${CHAMPIONS_MCP_BUILDS_MAX_EVENTS:-150}"
+      CHAMPIONS_MCP_BUILDS_MIN_PLAYERS: "${CHAMPIONS_MCP_BUILDS_MIN_PLAYERS:-16}"
+      CHAMPIONS_MCP_BUILDS_HALF_LIFE_DAYS: "${CHAMPIONS_MCP_BUILDS_HALF_LIFE_DAYS:-21}"
     volumes:
       - champions-data:/data  # persists champions.sqlite + pull-cache.sqlite (see CHAMPIONS_MCP_DATA_DIR above) across container restarts/rebuilds
     depends_on:
@@ -108,7 +117,7 @@ services:
     environment:
       LLAMA_PORT: "8080"  # container-side listen port passed to llama-server; must match the "ports:" mapping above
       LLAMA_ALIAS: "${LLAMA_MODEL_NAME:-qwen3.6-35b-a3b}"  # model name reported at /v1/models; champions-chat sends this as the OpenAI "model" field (its own LLAMA_MODEL_NAME below)
-      LLAMA_MODEL_FILE: "${LLAMA_MODEL_FILE:-Qwen3.6-35B-A3B-UD-Q4_K_M.gguf}"  # local GGUF in ./models
+      LLAMA_MODEL_FILE: "${LLAMA_MODEL_FILE:-unsloth_Qwen3.6-35B-A3B-UD-Q4_K_M.gguf}"  # local GGUF in ./models
       LLAMA_MODEL_HF: "${LLAMA_MODEL_HF:-}"         # e.g. unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M
       LLAMA_CTX_SIZE: "${LLAMA_CTX_SIZE:-131072}"   # 128k; GQA (2 KV heads) keeps KV cheap
       # q8_0 KV - fits 128k on 16 GB and keeps full KV quality 

@@ -1,7 +1,8 @@
 # champions-mcp Tool Reference
 
-`champions-mcp` exposes 37 MCP tools over the local `champions.sqlite` mirror
-(built by `champions-mcp-pull` from championsbattledata.com + PokeAPI text).
+`champions-mcp` exposes 40 MCP tools over the local `champions.sqlite` mirror
+(built by `champions-mcp-pull` from championsbattledata.com + PokeAPI text,
+plus a corpus of complete teams from Limitless and champs.pokedb.tokyo).
 Two tools (`calc_damage`, `create_pokepaste`) make outbound calls; everything
 else is a local read against the SQLite mirror.
 
@@ -20,6 +21,7 @@ the two.
 - [Profiles](#profiles)
 - [Roles](#roles)
 - [Meta / Usage Stats](#meta--usage-stats)
+- [Observed Builds](#observed-builds)
 - [Stat Points & Speed](#stat-points--speed)
 - [Team Analysis](#team-analysis)
 - [Damage Calc](#damage-calc)
@@ -60,6 +62,9 @@ the two.
 | [`get_top_teammates`](#get_top_teammates) | Meta | Most-paired Pokémon by usage |
 | [`suggest_cores`](#suggest_cores) | Meta | Most frequent Pokémon pairs in the format |
 | [`get_speed_tiers`](#get_speed_tiers) | Meta | Speed tiers for the most-used Pokémon |
+| [`get_observed_sets`](#get_observed_sets) | Builds | Complete builds real players brought, conditionable by item/teammate |
+| [`get_team_context`](#get_team_context) | Builds | Partners for your whole core, scored by affinity |
+| [`get_sample_teams`](#get_sample_teams) | Builds | Whole teams with event, record and source |
 | [`calc_stats`](#calc_stats) | Stats | Final Lv-50 stats from an SP spread + nature |
 | [`compute_speed`](#compute_speed) | Stats | Effective in-battle Speed with modifiers |
 | [`compute_speed_threshold`](#compute_speed_threshold) | Stats | Minimum Speed SP to outspeed a target |
@@ -386,6 +391,12 @@ popularity distributions, not ready-made sets**: the top four moves may
 never have occurred together. Use it to see what's proven viable, then build
 the set the team actually needs.
 
+When the observed-team corpus covers this Pokémon, the response carries a
+`joint_data_available` block pointing at
+[`get_observed_sets`](#get_observed_sets), which answers the same question
+jointly. Prefer it when committing to a set. This tool remains the only source
+of **Stat Point spreads**, which neither observed-build upstream publishes.
+
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `name` | `str` | *(required)* | Pokémon name |
@@ -393,7 +404,9 @@ the set the team actually needs.
 
 ### `get_top_teammates`
 
-Pokémon most frequently brought alongside this one, by usage.
+Pokémon most frequently brought alongside this one, by usage. For partners
+conditioned on your *whole* core, with an affinity score and under-explored
+options, use [`get_team_context`](#get_team_context).
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -402,7 +415,17 @@ Pokémon most frequently brought alongside this one, by usage.
 
 ### `suggest_cores`
 
-Most frequent Pokémon pairs across the format's usage teammate lists.
+Most frequent Pokémon pairs. The response's `basis` field says which
+computation produced them:
+
+- `observed_teams` — pairs that genuinely shared a team, reported as
+  `percent_of_teams`. Used whenever the observed-team corpus is present.
+- `usage_teammate_lists` — the fallback: how many per-Pokémon top-teammate
+  lists two Pokémon both appear in. A weaker signal, and not a percentage of
+  anything.
+
+A popular core is a known quantity to your opponents too — read these as the
+field you are building against as much as options to join.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -420,6 +443,86 @@ tier is a benchmark never actually faced.
 |---|---|---|---|
 | `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
 | `limit` | `int` | `40` | Maximum entries |
+
+---
+
+## Observed Builds
+
+The Meta tools above return **marginal** distributions — how often a Pokémon
+runs each move, how often it holds each item — each computed independently.
+They cannot say which moves accompany which item, so stacking their top picks
+produces a build nobody plays.
+
+These three read `build_teams`/`build_members`: complete six-Pokémon lists
+people actually brought, which makes the joint question answerable.
+
+**Evidence levels.** Every response carries an `evidence` field:
+
+| Level | Source | Contains |
+|---|---|---|
+| `full_set` | Limitless tournament open team sheets (VGC) | species, item, ability, nature, 4 moves |
+| `team_and_item` | champs.pokedb.tokyo ranked ladder (BSS) | species and held item only |
+
+BSS therefore has **no observed movesets**. Item and teammate correlations are
+real there; any moveset is your own inference and should be justified with
+`get_pokemon_moves` + `calc_damage` rather than presented as observed. Neither
+source carries Stat Points — those still come from `get_pokemon_sets`.
+
+**Reading the bands.** Each decision (item, ability, nature, and every move) is
+labelled:
+
+- `locked` — ≥85% of builds agree. Deviating is a real cost; be able to name
+  what it buys.
+- `contested` — strong players genuinely disagree. This is design space, to be
+  decided from your team's matchups rather than by a few points of popularity.
+- `fringe` — <15%, but *attested*. Precedent for a sharp idea, not an error.
+
+If the corpus has not been ingested, these tools return an explanatory `error`
+rather than failing, and the rest of the server is unaffected.
+
+### `get_observed_sets`
+
+Complete builds this Pokémon was actually given, optionally conditioned on the
+item it held or a teammate it appeared with. Also returns
+`marginal_stacking_check` — the share of real builds running exactly the four
+most individually popular moves, i.e. how wrong the naive build would be — and
+`effective_distinct_sets`, the perplexity of the set distribution (1.0 means
+everyone brings the same thing; higher means the species is a toolbox).
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | `str` | *(required)* | Pokémon name |
+| `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
+| `item` | `str \| None` | `None` | Restrict to builds holding this item (English name works for both formats) |
+| `with_teammate` | `str \| None` | `None` | Restrict to teams also containing this Pokémon |
+| `limit` | `int` | `6` | Maximum distinct sets to return |
+
+### `get_team_context`
+
+Given the Pokémon already on your team, what real teams put alongside that
+exact combination. `affinity` divides a partner's rate with *this* core by its
+format-wide rate, separating "genuinely drawn to your structure" from "merely
+popular". `underexplored_partners` lists high-affinity, low-usage options — the
+cheapest place to differentiate. A core with no matches is reported as untried,
+not refuted.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `team` | `list[str]` | *(required)* | Pokémon already chosen |
+| `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
+| `limit` | `int` | `12` | Maximum partner suggestions |
+
+### `get_sample_teams`
+
+Whole teams from the corpus with their event, record and source, deduplicated
+so the same list entered at several events appears once. Read them for
+structure, not as templates — copying a list also copies whatever it loses to.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
+| `pokemon` | `str \| None` | `None` | Restrict to teams containing this Pokémon |
+| `limit` | `int` | `3` | Maximum teams |
 
 ---
 

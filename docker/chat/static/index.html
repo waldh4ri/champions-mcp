@@ -1113,52 +1113,18 @@
       "Stat Point spread (≤32 per stat), and justify every choice with damage " +
       "benchmarks and the meta usage it's built to handle. Then summarise the team's " +
       "win conditions and its two hardest matchups.",
-    underdogs: "Build me a complete, legal 6-Pokémon 'underdogs' team for Pokémon " +
-      "Champions BSS (singles) — every member should be a genuinely low-usage / " +
-      "off-meta pick (check real usage % and usage rank data, don't guess from " +
-      "general knowledge). Pull the bottom 100 by usage rank (not just the " +
-      "bottom 50) so you have a wide enough pool to work with, and use the " +
-      "profile tags to search that pool by typing and stat spread instead of " +
-      "guessing which low-usage Pokémon are actually good at something. " +
-      "Requirements. " +
-      "(1) STRUCTURE: BSS is bring-6-pick-3, so do not build one team of six — " +
-      "build two or three overlapping 3-cores and present the six as their " +
-      "union. Every core needs a real lead, a win condition, and an answer to " +
-      "its own weakness, and the cores should answer different matchups so team " +
-      "preview is a genuine choice. Decide the roles yourself: look up which " +
-      "roles exist and are viable in singles (nothing that only works in " +
-      "doubles), and state the cores and the role of each member before naming " +
-      "any Pokémon. Any Pokémon that appears in no viable core is a wasted slot. " +
-      "If a core depends on a mode (Trick Room, Tailwind, weather, terrain), a " +
-      "member of that core must actually carry the setter — 'assumes Trick Room " +
-      "is up' is a broken core, not a caveat. Fix it before answering. " +
-      "(2) MEGAS: at least two of the six must be Mega-capable with different " +
-      "Mega Stones, since only one can Mega Evolve per battle — treat them as " +
-      "two win conditions for different matchups. Profile and calc each one as " +
-      "its MEGA form: the Mega's typing, stats and ability differ from the base, " +
-      "so its weaknesses and speed tier are not the base form's. " +
-      "(3) TYPING: no two Pokémon in the same core sharing a weakness to the " +
-      "same common attacking type. Look every matchup up with the type tools — " +
-      "do not work multipliers out in your head. " +
-      "(4) META: check the real top-5 BSS threats, and note which of them are " +
-      "actually played as their Mega (if so, calc against the Mega with its " +
-      "stone). For each threat name which member threatens it and which can " +
-      "switch into it safely. " +
-      "(5) SETS: usage data is evidence, not a template — the top four moves " +
-      "are separate popularity numbers and may never have been used together. " +
-      "Expect off-list sets here; that is the point of an underdog team. Give " +
-      "species, item, ability, four moves, nature and a full 66-point Stat " +
-      "Point spread (≤32 per stat) for each. Consider a coverage move that hits " +
-      "back the type the Pokémon is weak to, where it does not cost something " +
-      "the gameplan needs. Do not put Protect on a set unless you state a " +
-      "concrete singles reason for it. " +
-      "(6) CALCS: back every claim with a real calc — offensively aim for a " +
-      "guaranteed OHKO on what a member is meant to remove (say so if it is " +
-      "only a likely one), and defensively for your switch-ins to be 3HKO'd or " +
-      "better. Quote the %HP range or KO chance, never 'it survives'. Add one " +
-      "line per member on why it is slept on relative to the common pick in its " +
-      "role. Finish with the team's win conditions, which three you would bring " +
-      "against the current #1 threat, and its two hardest matchups.",
+    underdogs: "Build me an off-meta team for Pokémon Champions BSS (singles). " +
+      "Every member should be a genuinely low-usage pick — verify that against " +
+      "the real usage data rather than assuming what's underrated. " +
+      "Two things I care about. BSS is bring-6-pick-3, so think in overlapping " +
+      "3-cores that answer different matchups, not one team of six. And I want " +
+      "two different Mega Stones on the team as alternative win conditions, " +
+      "since only one can Mega Evolve per battle. " +
+      "Show me where the data says there's actually room to deviate, and where " +
+      "deviating would cost me. Back the load-bearing claims with calcs — quote " +
+      "%HP ranges or KO chances, not 'it survives'. " +
+      "Finish with which three you'd bring against the current #1 threat, and " +
+      "the matchup you're least happy about.",
   };
   const qpButtons = Array.from(document.querySelectorAll('.qp'));
   qpButtons.forEach(btn => btn.addEventListener('click', () => {

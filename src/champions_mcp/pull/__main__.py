@@ -30,12 +30,13 @@ from . import source as source_mod
 EXPECTED = {"pokemon": 235, "usage": 10_000}
 
 
-async def _run(offline: bool) -> int:
+async def _run(offline: bool, with_builds: bool) -> int:
     """Download (or load) the index, build into a temp DB, validate, then swap it in.
 
     Args:
         offline: If True, rebuild from the previously saved index copy
             instead of downloading a fresh one.
+        with_builds: If True, also ingest the observed-team corpus.
 
     Returns:
         Process exit code: 0 on success, 1 if the build failed validation,
@@ -68,7 +69,8 @@ async def _run(offline: bool) -> int:
     print(f"Building {db_tmp} (enriching from PokeAPI; cached) …")
     db = Db(db_tmp, create=True)
     try:
-        counts = await build_mod.build(db, settings, index)
+        counts = await build_mod.build(db, settings, index, with_builds=with_builds)
+        builds_stats = db.meta("builds", {})
     finally:
         db.close()
 
@@ -76,6 +78,10 @@ async def _run(offline: bool) -> int:
     print(f"\nDone. season={season} version={index.get('dataVersion','?')}")
     for table, n in counts.items():
         print(f"  {table:16} {n}")
+    if builds_stats:
+        print("  observed builds:")
+        for key, n in sorted(builds_stats.items()):
+            print(f"    {key:22} {n}")
 
     problems = [
         f"expected >= {expected} {table}, got {counts.get(table, 0)}"
@@ -108,8 +114,14 @@ def main() -> None:
         "--offline", action="store_true",
         help="rebuild from the saved pokemon-index.json instead of downloading",
     )
+    parser.add_argument(
+        "--skip-builds", action="store_true",
+        help="skip the observed-team corpus (Limitless teamlists + pokedb "
+             "ranked ladder). The first run fetches them over several minutes; "
+             "later runs read from the pull cache and cost nothing.",
+    )
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(_run(args.offline)))
+    raise SystemExit(asyncio.run(_run(args.offline, not args.skip_builds)))
 
 
 if __name__ == "__main__":

@@ -155,6 +155,28 @@ class PokeApiEnricher:
             "is_mega_stone": 1 if category == "mega-stones" else 0,
         }
 
+    async def item_ja_name(self, name: str) -> tuple[str, str | None]:
+        """Fetch one item's Japanese display name.
+
+        pokedb reports held items in Japanese, so the observed-build ingest
+        needs a Japanese -> slug map. Champions-exclusive Mega Stones have no
+        PokeAPI entry and come back as None; ``pull.builds`` derives those from
+        the ``<species>ナイト`` naming rule instead.
+
+        Args:
+            name: The championsbattledata item name.
+
+        Returns:
+            A tuple of (item slug, Japanese name or None).
+        """
+        it = await self._get(f"/item/{normalize_key(name)}")
+        if not it:
+            return slugify(name), None
+        for n in it.get("names", []):
+            if n.get("language", {}).get("name") in ("ja-Hrkt", "ja"):
+                return slugify(name), n["name"]
+        return slugify(name), None
+
     async def ability(self, name: str) -> dict[str, Any]:
         """Fetch one ability's reference row.
 

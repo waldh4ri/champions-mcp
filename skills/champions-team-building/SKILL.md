@@ -78,6 +78,17 @@ champions-mcp          # stdio MCP server
   `suggest_cores`, `get_top_teammates`, and `get_speed_tiers` tell you what the
   team must answer — not which Pokémon to copy. Any coherent strategy is valid
   as long as it handles the real threat landscape.
+- **Read builds jointly, never slot by slot.** `get_observed_sets(name, format)`
+  returns whole builds real players brought, so you can see that a Choice Scarf
+  Garchomp runs different moves *and* different teammates than a Life Orb one.
+  Its three bands are the point: `locked` choices are near-universal (deviate
+  deliberately, and be able to say what you gain), `contested` slots are where
+  strong players already disagree (**that is your decision to make from your own
+  matchups**, not a popularity contest), and `fringe` entries are rare but
+  attested — precedent for a sharp idea. Its `marginal_stacking_check` tells you
+  how few real builds run the "four most popular moves" set; when that number is
+  low, assembling from `get_pokemon_sets` alone would have produced a build
+  nobody plays.
 - **Roles before Pokémon.** Decide what each of the 6 slots is *for*
   (`list_roles(format=…)`), then find species that fill those roles. A team
   assembled from six individually-strong Pokémon with no speed control, no way
@@ -119,6 +130,11 @@ champions-mcp          # stdio MCP server
   underdog picks, not a guess from general knowledge.
 - `suggest_cores(format)` and `get_top_teammates(name, format)` → common pairings
   (available for both VGC and BSS). Use for synergy awareness; off-meta is fine.
+- `get_sample_teams(format, pokemon=…)` → whole teams from real events/ladder
+  with their record and source. Read them for **structure** — how speed control,
+  the defensive backbone and the win condition fit together — not as templates.
+  A copied list also copies whatever it loses to, and the field already knows
+  the answers to it.
 - `get_speed_tiers(format)` → the speed benchmarks to plan investment around.
 - **Check which threats are actually Megas.** Several top-usage species hold a
   Mega Stone in almost every game, so you never face the base form. The tools
@@ -164,6 +180,15 @@ champions-mcp          # stdio MCP server
   two axes are often opposed — Ice/Rock has near-elite coverage and the worst
   defensive profile on the board — so use it to decide what a slot's typing must
   do, and to understand why a candidate is fragile.
+- **`get_team_context(team, format)` once you have 2–3 members.** It conditions
+  partners on your *whole* core rather than on one Pokémon, and reports an
+  `affinity` score: how often a partner joined this core divided by how often it
+  appears format-wide. Affinity ≈ 1 means "merely popular"; a high affinity
+  means genuinely drawn to your structure. Read
+  `underexplored_partners` before the common list — those are real but uncommon
+  answers to the same core, and the cheapest place to differentiate. A core with
+  no matches is **untried, not refuted**: build it out and prove it with
+  `calc_damage`.
 
 ### 4. Build each set from real data
 - `get_pokemon` → Champions base stats, abilities, typing, Mega forms.
@@ -178,6 +203,22 @@ champions-mcp          # stdio MCP server
   high-usage. Remember the move must run off the Pokémon's better offensive
   stat to matter (the suggestions are ordered that way), and that the threat may
   be another type carrying the move — confirm with `calc_damage`.
+- **`get_observed_sets(name, format)` first.** This is the joint data: complete
+  builds real players brought, with the moves that actually accompany each item
+  and the teammates that came with them. Filter with `item=` or `with_teammate=`
+  to condition further. Work from its bands — take the `locked` choices unless
+  you can name what deviating buys, decide the `contested` ones from your team's
+  needs, and treat `fringe`/`fringe_sets` as attested precedent when you want an
+  angle nobody is prepared for.
+
+  **Evidence differs by format.** VGC returns `full_set` (item + ability +
+  nature + moves, from tournament open team sheets). BSS returns
+  `team_and_item`: the ranked-ladder export publishes teams and held items but
+  no moves, so item and teammate correlations are real while **any moveset is
+  your inference** — build it from `get_pokemon_moves` and justify it with
+  `calc_damage`/`compute_speed_threshold`, and say so rather than presenting it
+  as observed. Neither source carries Stat Points; those still come from
+  `get_pokemon_sets`.
 - `get_pokemon_sets(name, format)` → **evidence, not a template.** Each list it
   returns (moves, items, abilities, natures, spreads) is an independent
   popularity distribution across every build of that Pokémon — *not* a set. The
@@ -343,6 +384,26 @@ Where to be creative:
   find real off-meta candidates rather than guessing which are underrated.
 - **The angle on a known threat.** An unexpected answer to a top-usage Pokémon
   is worth more than a copied one, because it isn't played around.
+- **The contested slots.** `get_observed_sets` marks every decision `locked`,
+  `contested` or `fringe`. The contested ones are not unsolved problems — they
+  are slots where the right answer genuinely depends on the rest of the team, so
+  they are the intended place to express a plan. Its `free_slots` count says how
+  many move slots are actually yours once the mandatory ones are spent, and
+  `effective_distinct_sets` says how settled the Pokémon is overall: a low
+  number means everyone brings the same thing and a deviation will surprise
+  people; a high number means the species is already a toolbox.
+- **The under-explored partner.** `get_team_context` returns
+  `underexplored_partners` — Pokémon with high `affinity` for your exact core
+  but low overall usage. These are the strongest creative leads available,
+  because they are simultaneously *attested* (they really did appear with this
+  core) and *unexpected*.
+
+Creativity has to survive contact with the numbers, though. A deviation is
+earned when `calc_damage` or `compute_speed_threshold` shows it hits a benchmark
+the standard build misses — not merely because it is unusual. "Nobody plays
+this" is a reason to check carefully, not a reason on its own. And an empty
+result from the observed corpus means **untested**, never **refuted**: sampling
+covers tournaments and the top of the ladder, not everything that works.
 
 Every unconventional pick must clear the same four gates as an obvious one
 (`get_role_description` returns them as `creative_pick_gate`):
@@ -401,7 +462,10 @@ support it, the idea is dead, and reporting that honestly is the correct answer.
 |---|---|
 | Rules / format / SP system / data season | `get_game_rules(format=…)` |
 | Meta: usage ranking | `get_usage_stats(format=…)` |
-| Meta: how a Pokémon is played | `get_pokemon_sets(name, format=…)` |
+| **Complete builds real players brought** | `get_observed_sets(name, format=…, item=…, with_teammate=…)` |
+| Partners for your whole core (+ affinity) | `get_team_context(team=[…], format=…)` |
+| Whole teams with provenance | `get_sample_teams(format=…, pokemon=…)` |
+| Meta: how a Pokémon is played (marginal) | `get_pokemon_sets(name, format=…)` |
 | Meta: synergy / cores | `suggest_cores(format=…)`, `get_top_teammates(name, format=…)` |
 | Meta: speed benchmarks | `get_speed_tiers(format=…)` |
 | What a team slot is *for* (per format) | `list_roles(format=…)`, `get_role_description(role, format=…)` |

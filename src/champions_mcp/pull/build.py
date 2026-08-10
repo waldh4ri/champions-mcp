@@ -17,6 +17,7 @@ from ..cache import Cache
 from ..config import Settings
 from ..db import Db
 from ..normalize import slugify
+from . import builds as builds_mod
 from .known_items import KNOWN_HOLDABLE_ITEMS
 from .pokeapi import TYPES, PokeApiEnricher
 
@@ -411,13 +412,18 @@ def build_mega_forms(db: Db) -> int:
     return len(rows_out)
 
 
-async def build(db: Db, settings: Settings, index: dict[str, Any]) -> dict[str, int]:
-    """Run the full build: reset tables, parse the index, enrich, derive Megas.
+async def build(
+    db: Db, settings: Settings, index: dict[str, Any], *, with_builds: bool = True,
+) -> dict[str, int]:
+    """Run the full build: reset tables, parse the index, enrich, derive Megas,
+    then ingest the observed-team corpus.
 
     Args:
         db: Open database handle.
         settings: Runtime settings, forwarded to `enrich`.
         index: The parsed pokemon-index.json document.
+        with_builds: Fetch observed teams from Limitless/pokedb. Everything is
+            cached, so a rebuild is cheap; pass False to skip the stage entirely.
 
     Returns:
         Row counts per table, also written to the `meta` table.
@@ -426,6 +432,11 @@ async def build(db: Db, settings: Settings, index: dict[str, Any]) -> dict[str, 
     keys = parse_index(db, index)
     await enrich(db, settings, keys)
     build_mega_forms(db)
+    if with_builds:
+        # Depends on pokemon (Japanese names), items and mega_forms already
+        # being populated — it resolves both upstreams against them.
+        stats = await builds_mod.ingest_builds(db, settings)
+        db.set_meta("builds", stats)
     db.set_meta("season", index.get("defaultSeason", "Current"))
     db.set_meta("data_version", index.get("dataVersion", ""))
     db.set_meta("generated_at", index.get("generatedAt", ""))
@@ -433,6 +444,7 @@ async def build(db: Db, settings: Settings, index: dict[str, Any]) -> dict[str, 
     counts = {t: db.count(t) for t in (
         "pokemon", "learnable_moves", "usage", "moves", "abilities",
         "items", "mega_forms", "type_chart", "teammates",
+        "build_teams", "build_members",
     )}
     db.set_meta("counts", counts)
     return counts

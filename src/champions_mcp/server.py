@@ -1,9 +1,14 @@
-"""champions-mcp v2 — FastMCP server.
+"""champions-mcp v2 — MCP server.
 
 Every tool reads from the local ``champions.sqlite`` mirror built by
-``champions-mcp-pull`` (single source: championsbattledata.com + one-time
-PokeAPI text enrichment). The only runtime outbound calls are the optional
-damage-calc sidecar (``calc_damage``) and ``create_pokepaste``.
+``champions-mcp-pull`` (championsbattledata.com + a one-time PokeAPI text
+enrichment, plus the observed-team corpus). The only runtime outbound calls are
+the optional damage-calc sidecar (``calc_damage``) and ``create_pokepaste``.
+
+Built on ``mcp.server.mcpserver.MCPServer`` (MCP SDK 2.x), which replaced the
+1.x ``FastMCP`` class. The decorator surface is the same — ``@mcp.tool()``,
+``@mcp.prompt()``, ``@mcp.resource(uri)`` — but the server no longer takes
+host/port at construction; those are transport arguments to ``run()``.
 """
 
 from __future__ import annotations
@@ -12,10 +17,11 @@ import os
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP  # pyright: ignore[reportMissingImports]
+from mcp.server.mcpserver import MCPServer  # pyright: ignore[reportMissingImports]
 
 from . import legality as legality_mod
 from . import (
+    builds,
     pokedex,
     pokepaste,
     profiles,
@@ -43,7 +49,7 @@ from .champions_stats import (
 from .config import Settings
 from .damage import DamageCalculator
 from .db import Db
-from .formats import resolve_format, rules
+from .formats import game_type, resolve_format, rules
 from .names import NameError, resolve
 
 
@@ -75,11 +81,17 @@ class App:
         return cls._instance
 
 
-mcp = FastMCP(
-    "champions-mcp",
-    host=os.environ.get("FASTMCP_HOST", "127.0.0.1"),
-    port=int(os.environ.get("FASTMCP_PORT", "8000")),
-)
+def _version() -> str:
+    """This package's installed version, for the MCP handshake's serverInfo."""
+    try:
+        from importlib.metadata import version
+
+        return version("champions-mcp")
+    except Exception:  # not installed (e.g. running straight from a checkout)
+        return "0.0.0"
+
+
+mcp = MCPServer("champions-mcp", version=_version())
 
 
 def _db() -> Db:
@@ -170,6 +182,21 @@ _TOOL_GUIDE = {
              "differ sharply between vgc (doubles) and bss (singles).",
     "meta": "get_usage_stats, get_pokemon_sets, get_top_teammates, suggest_cores, "
             "get_speed_tiers — pass format=vgc|bss",
+    "observed_builds": "get_observed_sets (complete builds real players brought, "
+                       "with which moves go with which item), get_team_context "
+                       "(partners conditioned on your whole core, with an "
+                       "affinity score), get_sample_teams (whole teams with "
+                       "provenance). Prefer get_observed_sets over "
+                       "get_pokemon_sets when committing to a set: the latter "
+                       "is per-slot popularity and stacking its top picks "
+                       "produces a build nobody plays.",
+    "using_the_meta": "Usage data tells you what the field brings and therefore "
+                      "what you must beat — it is not a shopping list. Copy the "
+                      "modal team and you inherit its losses while everyone "
+                      "already knows the answers to it. Take the locked choices "
+                      "seriously, decide the contested ones from your own "
+                      "matchups, and check any idea with calc_damage / "
+                      "compute_speed_threshold rather than by its usage %.",
     "stats": "calc_stats, compute_speed, compute_speed_threshold",
     "finish": "validate_team → analyze_team → calc_damage → create_pokepaste",
 }
@@ -197,8 +224,45 @@ async def get_game_rules(format: str = "vgc") -> dict[str, Any]:
             "data_version": db.meta("data_version", ""),
             "generated_at": db.meta("generated_at", ""),
             "counts": db.meta("counts", {}),
+            "observed_builds": _observed_builds_summary(db, fmt),
         },
         "session_tool_guide": _TOOL_GUIDE,
+    }
+
+
+def _observed_builds_summary(db: Db, fmt: str) -> dict[str, Any]:
+    """Describe the observed-team corpus backing this format, if any.
+
+    Args:
+        db: Open database handle.
+        fmt: Resolved format key (``vgc``/``bss``).
+
+    Returns:
+        The corpus summary with its evidence level, or a note explaining that
+        only marginal usage data is available.
+    """
+    summary = db.builds_available(game_type(fmt))
+    if not summary:
+        return {
+            "available": False,
+            "note": "No observed-team corpus — run champions-mcp-pull to ingest it. "
+                    "Until then only marginal usage data is available.",
+        }
+    evidence = summary["evidence"]
+    return {
+        "available": True,
+        "teams": summary["teams"],
+        "regulations": summary["regulations"],
+        "sources": summary["sources"],
+        "evidence": evidence,
+        "means": (
+            "full_set: species + item + ability + nature + moves per member "
+            "(tournament open team sheets)."
+            if "full_set" in evidence else
+            "team_and_item: species + held item per member. The ranked-ladder "
+            "export publishes no moves, abilities or natures, so any moveset "
+            "you give is inference and must be justified as such."
+        ),
     }
 
 
@@ -520,14 +584,81 @@ async def get_pokemon_sets(name: str, format: str = "vgc") -> dict[str, Any]:
 
 
 @mcp.tool()
+async def get_observed_sets(
+    name: str, format: str = "vgc", item: str | None = None,
+    with_teammate: str | None = None, limit: int = 6,
+) -> dict[str, Any]:
+    """**Complete builds real players actually brought** — the joint data
+    `get_pokemon_sets` cannot give you. Use this before committing a set.
+
+    Where get_pokemon_sets says "51% Life Orb" and "80% Earthquake" separately,
+    this says what a *Life Orb* one runs versus what a *Choice Scarf* one runs —
+    they are usually different sets with different teammates. Filter with `item`
+    or `with_teammate` to condition further.
+
+    Read the three bands rather than the top row. `locked` choices are near
+    universal, so deviating is a real cost you should be able to name.
+    `contested` slots are where strong players already disagree — that is your
+    design space, decided by the matchups *your* team expects, not by which
+    option is 3% more popular. `fringe` entries are rare but attested: a
+    precedent for a sharp idea, not a mistake. `marginal_stacking_check` shows
+    how few real builds run the "four most popular moves" set, which is the
+    trap this tool exists to prevent.
+
+    Evidence differs by format: VGC gives `full_set` (item+ability+nature+moves,
+    from tournament open team sheets), BSS gives `team_and_item` (the ranked
+    ladder publishes teams and held items but no moves) — so in BSS any moveset
+    is your inference and must be justified, not presented as observed."""
+    return builds.get_observed_sets(_db(), name, format, item, with_teammate, limit)
+
+
+@mcp.tool()
+async def get_team_context(
+    team: list[str], format: str = "vgc", limit: int = 12,
+) -> dict[str, Any]:
+    """Given the Pokémon already on your team, what real teams put next to that
+    exact combination — conditioned on your whole core, not on one Pokémon.
+
+    `affinity` is the number to read: it divides how often a partner joined
+    *this* core by how often it appears format-wide, so a high value means it is
+    genuinely drawn to your structure rather than merely popular.
+    `underexplored_partners` are real but uncommon answers to the same core —
+    the most promising place to differentiate from everyone else's version.
+
+    A core with no matches is untried, not refuted: build it out with
+    get_observed_sets per member and validate with calc_damage."""
+    return builds.get_team_context(_db(), team, format, limit)
+
+
+@mcp.tool()
+async def get_sample_teams(
+    format: str = "vgc", pokemon: str | None = None, limit: int = 3,
+) -> dict[str, Any]:
+    """Whole teams from the observed corpus with their event, record and source.
+
+    Read these for *structure* — how speed control, the defensive backbone and
+    the win condition fit together — then build your own around the matchups you
+    expect. Copying a list also copies whatever it loses to, and everyone else
+    already has the answers to it."""
+    return builds.get_sample_teams(_db(), format, pokemon, limit)
+
+
+@mcp.tool()
 async def get_top_teammates(name: str, format: str = "vgc") -> dict[str, Any]:
-    """Pokémon most frequently brought alongside this one, by usage."""
+    """Pokémon most frequently brought alongside this one, by usage. For the
+    stronger version — partners conditioned on your *whole* core, with an
+    affinity score and under-explored options — use get_team_context."""
     return usage.get_top_teammates(_db(), name, format)
 
 
 @mcp.tool()
 async def suggest_cores(format: str = "vgc", limit: int = 15) -> dict[str, Any]:
-    """Most frequent Pokémon pairs across the format's usage teammate lists."""
+    """Most frequent Pokémon pairs. Uses real observed teams when the corpus is
+    available (with the share of teams each pair appears on), otherwise falls
+    back to co-occurrence across the usage teammate lists.
+
+    A popular core is a known quantity to your opponents too — treat these as
+    the field you are building against as much as options to join."""
     return usage.suggest_cores(_db(), format, limit)
 
 
@@ -752,10 +883,22 @@ def main() -> None:
     """Entry point for the `champions-mcp` console script.
 
     Reads `MCP_TRANSPORT` (`stdio` by default, or `streamable-http`/`sse`)
-    and runs the FastMCP server with that transport.
+    and runs the server with that transport.
+
+    Bind address comes from `FASTMCP_HOST`/`FASTMCP_PORT`. Those names outlived
+    the 1.x FastMCP class they were named for, but they are the documented
+    interface (docker-compose.yml, .env.example) so renaming them would break
+    existing configs for nothing. They apply only to the HTTP transports —
+    stdio has nothing to bind.
     """
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
-    mcp.run(transport=transport)  # type: ignore[arg-type]
+    kwargs: dict[str, Any] = {}
+    if transport in ("streamable-http", "sse"):
+        kwargs = {
+            "host": os.environ.get("FASTMCP_HOST", "127.0.0.1"),
+            "port": int(os.environ.get("FASTMCP_PORT", "8000")),
+        }
+    mcp.run(transport=transport, **kwargs)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

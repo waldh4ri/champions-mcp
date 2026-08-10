@@ -168,6 +168,16 @@ _SETS_REMINDER = (
     "team (see this tool's description)."
 )
 
+# When the observed-team corpus is present, the marginals stop being the best
+# available answer and this says so in the payload itself — the tool description
+# alone is too easy to skim past once the numbers are on screen.
+_JOINT_AVAILABLE = (
+    "Complete builds for this Pokémon are available from real teams: call "
+    "get_observed_sets(name, format) to see which moves actually go with which "
+    "item, and which slots are genuinely the player's choice. Prefer it over "
+    "assembling a set from the lists below."
+)
+
 
 def get_pokemon_sets(db: Db, name: str, format: str = "vgc") -> dict[str, Any]:
     """How a Pokémon is actually played: top moves/items/abilities/natures/
@@ -237,6 +247,15 @@ def get_pokemon_sets(db: Db, name: str, format: str = "vgc") -> dict[str, Any]:
     }
     if has_data:
         out["reading_this_data"] = _SETS_REMINDER
+        observed = db.observed_members(slug, fmt)
+        if observed:
+            out["joint_data_available"] = {
+                "tool": "get_observed_sets",
+                "observations": len(observed),
+                "evidence": "full_set" if any(
+                    r["moves_json"] for r in observed) else "team_and_item",
+                "why": _JOINT_AVAILABLE,
+            }
         m = mega_usage_index(db, fmt).get(slug)
         if m:
             dom = m["dominant"]
@@ -283,7 +302,13 @@ def get_top_teammates(db: Db, name: str, format: str = "vgc") -> dict[str, Any]:
 
 
 def suggest_cores(db: Db, format: str = "vgc", limit: int = 15) -> dict[str, Any]:
-    """Most frequent Pokémon pairs across all usage teammate lists.
+    """Most frequent Pokémon pairs.
+
+    Prefers the observed-team corpus, where a "core" is a pair that genuinely
+    shared a team and can be reported as a share of real teams. Falls back to
+    co-occurrence across the per-Pokémon usage teammate lists, which only counts
+    how many top-teammate lists two Pokémon both appear in — a much weaker
+    signal, and not a percentage of anything.
 
     Args:
         db: Open Champions database handle.
@@ -291,10 +316,36 @@ def suggest_cores(db: Db, format: str = "vgc", limit: int = 15) -> dict[str, Any
         limit: Maximum number of pairs to return.
 
     Returns:
-        The most common pairs with their co-occurrence counts.
+        The most common pairs, with ``basis`` naming which of the two
+        computations produced them.
     """
     fmt = game_type(format)
     nm = {r["slug"]: r["battle_name"] for r in db.query("SELECT slug, battle_name FROM pokemon")}
+
+    rosters = db.observed_rosters(fmt)
+    if rosters:
+        pair_teams: Counter = Counter()
+        for roster in rosters.values():
+            unique = sorted(set(roster))
+            for i, a in enumerate(unique):
+                for b in unique[i + 1:]:
+                    pair_teams[(a, b)] += 1
+        total = len(rosters)
+        cores = [
+            {"pair": [nm.get(a, a), nm.get(b, b)], "teams": c,
+             "percent_of_teams": round(100.0 * c / total, 1)}
+            for (a, b), c in pair_teams.most_common(limit)
+        ]
+        return {
+            "format": format, "basis": "observed_teams",
+            "teams_analysed": total, "count": len(cores), "cores": cores,
+            "note": (
+                "Share of real teams each pair appeared on together. These are "
+                "the field's default answers — well tested, and equally well "
+                "known to the people you will play against."
+            ),
+        }
+
     pair_counts: Counter = Counter()
     for r in db.all_teammate_pairs(fmt):
         a, b = r["slug"], r["teammate_slug"]
@@ -305,7 +356,13 @@ def suggest_cores(db: Db, format: str = "vgc", limit: int = 15) -> dict[str, Any
         {"pair": [nm.get(a, a), nm.get(b, b)], "co_occurrences": c}
         for (a, b), c in pair_counts.most_common(limit)
     ]
-    return {"format": format, "count": len(cores), "cores": cores}
+    return {
+        "format": format, "basis": "usage_teammate_lists",
+        "count": len(cores), "cores": cores,
+        "note": ("Counts of shared top-teammate lists, not a share of teams — "
+                 "run champions-mcp-pull to ingest the observed-team corpus for "
+                 "the stronger version."),
+    }
 
 
 def get_speed_tiers(db: Db, format: str = "vgc", limit: int = 40) -> dict[str, Any]:

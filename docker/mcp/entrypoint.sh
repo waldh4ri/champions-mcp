@@ -19,11 +19,21 @@ fi
 # refresh). Once champions.sqlite exists the server is fully offline.
 if [ ! -f "${DB_PATH}" ] || [ "${CHAMPIONS_MCP_PULL:-0}" = "1" ]; then
   echo "[champions-mcp] Building local data with champions-mcp-pull ..."
+  # The observed-team stage fetches tournament teamlists from an API that rate
+  # limits unauthenticated callers to 50 requests / 5 min, so a first build
+  # takes several minutes rather than seconds. Later starts reuse the pull
+  # cache and only fetch events that are genuinely new. Set
+  # CHAMPIONS_MCP_BUILDS_SKIP=1 to skip the stage entirely.
+  echo "[champions-mcp] (first build also ingests observed teams; this can take several minutes)"
+  BUILD_FLAGS=""
+  if [ "${CHAMPIONS_MCP_BUILDS_SKIP:-0}" = "1" ]; then
+    BUILD_FLAGS="--skip-builds"
+  fi
   # A failed pull isn't fatal by itself: on a forced refresh
   # (CHAMPIONS_MCP_PULL=1) champions-mcp-pull leaves an already-good
   # existing DB untouched when validation fails, so only bail if that left
   # us with no usable DB at all (e.g. the very first run).
-  champions-mcp-pull || echo "[champions-mcp] WARNING: data pull/refresh failed; falling back to existing data if any." >&2
+  champions-mcp-pull ${BUILD_FLAGS} || echo "[champions-mcp] WARNING: data pull/refresh failed; falling back to existing data if any." >&2
   if [ ! -f "${DB_PATH}" ]; then
     echo "[champions-mcp] ERROR: data pull failed and no database is present." >&2
     exit 1
