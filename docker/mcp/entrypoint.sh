@@ -19,10 +19,15 @@ fi
 # refresh). Once champions.sqlite exists the server is fully offline.
 if [ ! -f "${DB_PATH}" ] || [ "${CHAMPIONS_MCP_PULL:-0}" = "1" ]; then
   echo "[champions-mcp] Building local data with champions-mcp-pull ..."
-  champions-mcp-pull || {
+  # A failed pull isn't fatal by itself: on a forced refresh
+  # (CHAMPIONS_MCP_PULL=1) champions-mcp-pull leaves an already-good
+  # existing DB untouched when validation fails, so only bail if that left
+  # us with no usable DB at all (e.g. the very first run).
+  champions-mcp-pull || echo "[champions-mcp] WARNING: data pull/refresh failed; falling back to existing data if any." >&2
+  if [ ! -f "${DB_PATH}" ]; then
     echo "[champions-mcp] ERROR: data pull failed and no database is present." >&2
     exit 1
-  }
+  fi
 fi
 
 # PUBLISHED_PORT (set in docker-compose.yml) carries the *host*-side port so
