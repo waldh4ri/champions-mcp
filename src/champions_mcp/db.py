@@ -176,7 +176,7 @@ CREATE TABLE IF NOT EXISTS build_teams (
     source_ref  TEXT,              -- tournament id / ladder season
     event       TEXT,              -- human-readable event name
     format      TEXT NOT NULL,     -- 'doubles' | 'singles'
-    regulation  TEXT,              -- 'M-B'
+    regulation  TEXT,              -- 'M-C'
     date        TEXT,              -- ISO date, may be NULL upstream
     player      TEXT,
     placing     INTEGER,
@@ -261,6 +261,22 @@ class Db:
         """Close the underlying SQLite connection."""
         self._conn.close()
 
+    def ensure_schema(self) -> None:
+        """Idempotently create any table/index this version of the schema adds
+        that an existing database file predates.
+
+        Every statement in ``SCHEMA`` is ``CREATE ... IF NOT EXISTS``, so this
+        is a no-op on a fully up-to-date database and additive-only on an
+        older one — it never touches existing data. Needed because opening
+        with ``create=False`` (the normal server/refresh path) does not run
+        ``SCHEMA`` at all, so a persistent volume built by an older
+        ``champions-mcp-pull`` can be missing tables a newer pull expects
+        (e.g. ``build_teams``/``build_members``) even though the file exists.
+        """
+        with self._lock:
+            self._conn.executescript(SCHEMA)
+            self._conn.commit()
+
     # ------------------------------------------------------------------ #
     # Low-level query helpers
     # ------------------------------------------------------------------ #
@@ -300,6 +316,21 @@ class Db:
         with self._lock:
             for t in _BUILD_TABLES:
                 self._conn.execute(f"DELETE FROM {t}")
+            self._conn.commit()
+
+    def reset_observed_builds(self) -> None:
+        """Delete all rows from ``build_teams``/``build_members`` only.
+
+        Narrower than `reset_build_tables`: the observed-build corpus can be
+        refreshed on its own — independent of championsbattledata's roster
+        and usage data, which come from an entirely different upstream — so
+        this must not touch `pokemon`/`usage`/etc. Used both as the first step
+        of a full rebuild (where it is a no-op on an empty temp database) and
+        to refresh just the corpus against an already-populated database.
+        """
+        with self._lock:
+            self._conn.execute("DELETE FROM build_teams")
+            self._conn.execute("DELETE FROM build_members")
             self._conn.commit()
 
     def executemany(self, sql: str, rows: list[tuple]) -> None:

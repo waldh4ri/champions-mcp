@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import shutil
 import sys
 from pathlib import Path
 
 from ..config import Settings
 from ..db import Db
 from . import build as build_mod
+from . import builds as builds_mod
 from . import source as source_mod
 
 # `usage` is a floor, not exact: championsbattledata ranks every legal Pokémon
@@ -28,6 +30,48 @@ from . import source as source_mod
 # silently shipping (or worse, clobbering a good existing mirror with) a
 # database with no move/item/ability/spread usage % for anyone.
 EXPECTED = {"pokemon": 235, "usage": 10_000}
+
+
+async def _refresh_builds_only(settings: Settings) -> dict[str, int] | None:
+    """Refresh the observed-team corpus against the existing database, in place.
+
+    Used when the primary championsbattledata pull fails validation: that
+    upstream being mid-reset has nothing to do with whether Limitless or
+    pokedb are healthy, and blocking a fresh team corpus on an unrelated
+    outage just means the LAN-facing tools sit on stale data for no reason.
+
+    Never writes to ``settings.db_path`` directly — copies it to a temp path
+    first (same atomic-swap discipline as a full rebuild), runs
+    `ensure_schema` so a database from before the observed-build tables
+    existed gets them added rather than erroring, ingests, and only then
+    swaps the copy in. A failure here (network, a malformed upstream
+    response) is caught and reported; it never corrupts or deletes the
+    existing database.
+
+    Args:
+        settings: Runtime settings.
+
+    Returns:
+        The ingest stats on success, or None if no existing database is
+        there to refresh, or the refresh itself failed.
+    """
+    if not settings.db_path.exists():
+        return None
+    tmp = settings.db_path.with_suffix(".sqlite.buildsrefresh.tmp")
+    tmp.unlink(missing_ok=True)
+    shutil.copy2(settings.db_path, tmp)
+    db = Db(tmp)
+    try:
+        db.ensure_schema()
+        stats = await builds_mod.ingest_builds(db, settings)
+    except Exception as exc:  # pragma: no cover - defensive: never take the DB down with it
+        print(f"Observed-build refresh also failed: {exc}", file=sys.stderr)
+        tmp.unlink(missing_ok=True)
+        return None
+    finally:
+        db.close()
+    tmp.replace(settings.db_path)
+    return stats
 
 
 async def _run(offline: bool, with_builds: bool) -> int:
@@ -99,6 +143,23 @@ async def _run(offline: bool, with_builds: bool) -> int:
         db_tmp.unlink(missing_ok=True)
         if index_tmp is not None:
             index_tmp.unlink(missing_ok=True)
+
+        # The observed-team corpus (Limitless/pokedb) is unrelated to
+        # championsbattledata's health, so a failure here shouldn't leave it
+        # stale too — refresh it independently against the existing DB.
+        if with_builds and settings.db_path.exists():
+            print("Refreshing the observed-team corpus independently …")
+            refreshed = await _refresh_builds_only(settings)
+            if refreshed:
+                print("  observed builds (refreshed despite the primary failure):")
+                for key, n in sorted(refreshed.items()):
+                    print(f"    {key:22} {n}")
+            else:
+                print(
+                    "  observed-build refresh did not complete; existing data "
+                    "(if any) is unchanged.",
+                    file=sys.stderr,
+                )
         return 1
 
     db_tmp.replace(settings.db_path)

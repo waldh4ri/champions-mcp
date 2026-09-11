@@ -91,7 +91,7 @@ class Settings:
             ).rstrip("/"),
             builds_regulations=tuple(
                 r.strip() for r in os.environ.get(
-                    "CHAMPIONS_MCP_BUILDS_REGULATIONS", "M-B"
+                    "CHAMPIONS_MCP_BUILDS_REGULATIONS", "M-C"
                 ).split(",") if r.strip()
             ),
             builds_max_events=int(

@@ -72,14 +72,14 @@ _STAT_COLS = (
 
 def _base_stats(summary: dict[str, Any]) -> dict[str, int]:
     """Extract the six base stats from a raw index ``summary`` block."""
-    bs = summary.get("baseStats", {})
+    bs = summary.get("baseStats") or {}
     return {
-        "hp": bs.get("hp", 0),
-        "attack": bs.get("attack", 0),
-        "defense": bs.get("defense", 0),
-        "special_attack": bs.get("sp_attack", 0),
-        "special_defense": bs.get("sp_defense", 0),
-        "speed": bs.get("speed", 0),
+        "hp": bs.get("hp") or 0,
+        "attack": bs.get("attack") or 0,
+        "defense": bs.get("defense") or 0,
+        "special_attack": bs.get("sp_attack") or 0,
+        "special_defense": bs.get("sp_defense") or 0,
+        "speed": bs.get("speed") or 0,
     }
 
 

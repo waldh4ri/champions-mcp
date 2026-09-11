@@ -41,9 +41,16 @@ case "${LLAMA_REASONING_BUDGET:-}" in
   *) set -- "$@" --reasoning-budget "${LLAMA_REASONING_BUDGET}" ;;
 esac
 
-# --no-mmap + --mlock force the weights resident in RAM (steadier offload perf).
-[ "${LLAMA_NO_MMAP:-1}" = "1" ] && set -- "$@" --no-mmap
-[ "${LLAMA_MLOCK:-0}" = "1" ]  && set -- "$@" --mlock
+# --mmap/--no-mmap/--mlock are deprecated in favour of the single --load-mode
+# flag (llama.cpp PR #20834). mlock now always implies mmap, so our old
+# --no-mmap + --mlock combo ("no page-cache double-map, but pin CPU-resident
+# tensors") has no exact equivalent (llama.cpp#26110); mmap+mlock is the
+# closest available mode and still keeps the offloaded weights pinned in RAM.
+if [ "${LLAMA_MLOCK:-0}" = "1" ]; then
+  set -- "$@" --load-mode mmap+mlock
+elif [ "${LLAMA_NO_MMAP:-1}" = "1" ]; then
+  set -- "$@" --load-mode none
+fi
 
 # Optional MTP/speculative decoding using a draft model.
 # Kept opt-in because performance depends heavily on hardware/model pairing.

@@ -544,12 +544,24 @@ class BuildIngest:
 
     # -- write ----------------------------------------------------------- #
     def flush(self) -> dict[str, int]:
-        """Write every accumulated row into the database.
+        """Replace the database's observed-build corpus with everything
+        accumulated so far.
+
+        Clears ``build_teams``/``build_members`` first (not just the earlier
+        ``INSERT OR REPLACE``), so a team that drops out of scope — a
+        regulation no longer configured, an event the upstream stops
+        returning — does not linger as a stale row forever. Safe to call
+        against either a fresh temp database (a no-op) or an
+        already-populated one (a real refresh), which is what lets the
+        observed-build corpus be rebuilt independently of the rest of the
+        pull. Idempotent to call — a second call just re-clears and rewrites
+        the same accumulated rows.
 
         Returns:
             Counts of ``build_teams``/``build_members`` rows written, plus any
             skip reasons encountered.
         """
+        self._db.reset_observed_builds()
         self._db.executemany(
             "INSERT OR REPLACE INTO build_teams VALUES "
             "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", self.teams,
@@ -570,12 +582,16 @@ class BuildIngest:
 # ---------------------------------------------------------------------- #
 
 # pokedb numbers its exports by ladder *season* (M-1, M-2, …) while the legal
-# roster is set by *regulation* (M-A, M-B). They are not the same axis and the
-# site does not publish the mapping, so it is pinned here: season M-4 is
+# roster is set by *regulation* (M-A, M-B, M-C). They are not the same axis and
+# the site does not publish the mapping, so it is pinned here: season M-4 is
 # confirmed Reg M-B (Champions team reports tagged "M-4" carry the M-B badge),
-# and the earlier seasons predate M-B's 2026-06-20 rollout. Override with
-# CHAMPIONS_MCP_POKEDB_SEASON_REGS="1:M-A,4:M-B" if a season straddles.
-POKEDB_SEASON_REGULATION: dict[int, str] = {1: "M-A", 2: "M-A", 3: "M-A", 4: "M-B"}
+# the earlier seasons predate M-B's 2026-06-20 rollout, and season M-5 (first
+# published 2026-09-11) lines up with Reg M-C's 2026-09-09 rollout. Override
+# with CHAMPIONS_MCP_POKEDB_SEASON_REGS="1:M-A,4:M-B,5:M-C" if a season
+# straddles.
+POKEDB_SEASON_REGULATION: dict[int, str] = {
+    1: "M-A", 2: "M-A", 3: "M-A", 4: "M-B", 5: "M-C",
+}
 
 
 def _season_number(season: str) -> int | None:

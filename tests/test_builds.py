@@ -341,6 +341,83 @@ def test_stale_database_without_build_tables(tmp_path) -> None:
     assert db.observed_rosters("doubles") == {}
 
 
+def test_ensure_schema_heals_a_stale_database_without_touching_data(tmp_path) -> None:
+    """`ensure_schema` must add missing tables and leave existing rows alone.
+
+    This is the exact scenario that leaves a persistent Docker volume stuck
+    without observed builds forever: the file predates the build_teams/
+    build_members tables, and opening it normally (``create=False``, what the
+    server and a refresh both do) never runs the schema script at all.
+    """
+    db = Db(tmp_path / "stale.sqlite", create=True)
+    db.executemany(
+        "INSERT INTO pokemon VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("garchomp", "Garchomp", "Garchomp", "Garchomp", None, "[]", "[]",
+          '{"hp":1}', 600, "[]", None, "{}", None, None)],
+    )
+    db.query("DROP TABLE build_teams")
+    db.query("DROP TABLE build_members")
+    assert db.has_builds_tables() is False
+
+    db.ensure_schema()
+
+    assert db.has_builds_tables() is True
+    # A second call must be a true no-op — never re-create or wipe anything.
+    db.ensure_schema()
+    assert db.query_one("SELECT slug FROM pokemon WHERE slug = 'garchomp'")
+
+
+def test_reset_observed_builds_does_not_touch_other_tables(mini_db: Db) -> None:
+    """`reset_observed_builds` must be scoped to build_teams/build_members only.
+
+    A broader reset (like the full-rebuild `reset_build_tables`) would be
+    unsafe to run against an already-populated, currently-served database —
+    it would wipe the roster/items/mega_forms the corpus needs to resolve
+    against, plus everything else the server reads.
+    """
+    ingest = BuildIngest(mini_db, {})
+    ingest.add_limitless(
+        {"id": "t1", "name": "X", "date": "2026-08-01", "players": 32, "format": "M-B"},
+        [{"name": "A", "placing": 1, "record": {}, "decklist": [
+            _limitless_member("Garchomp", "Life Orb", ["Earthquake"])]}],
+        fmt="doubles", half_life_days=21,
+    )
+    ingest.flush()
+    assert mini_db.count("build_teams") == 1
+    pokemon_before = mini_db.count("pokemon")
+
+    mini_db.reset_observed_builds()
+
+    assert mini_db.count("build_teams") == 0
+    assert mini_db.count("build_members") == 0
+    assert mini_db.count("pokemon") == pokemon_before
+
+
+def test_flush_clears_stale_rows_from_a_previous_ingest(mini_db: Db) -> None:
+    """A team that drops out of scope must not linger after a re-ingest.
+
+    `INSERT OR REPLACE` alone only ever adds or overwrites; without an
+    explicit reset in `flush`, a team from a regulation no longer configured
+    (or an event the upstream stops returning) would never be removed.
+    """
+    first = BuildIngest(mini_db, {})
+    first.add_limitless(
+        {"id": "t1", "name": "X", "date": "2026-08-01", "players": 32, "format": "M-A"},
+        [{"name": "A", "placing": 1, "record": {}, "decklist": [
+            _limitless_member("Garchomp", "Life Orb", ["Earthquake"])]}],
+        fmt="doubles", half_life_days=21,
+    )
+    first.flush()
+    assert mini_db.count("build_teams") == 1
+
+    # A later run that no longer includes that regulation/event.
+    second = BuildIngest(mini_db, {})
+    second.flush()
+
+    assert mini_db.count("build_teams") == 0
+    assert mini_db.count("build_members") == 0
+
+
 # --------------------------------------------------------------------- #
 # Read model — analysis helpers
 # --------------------------------------------------------------------- #

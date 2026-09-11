@@ -190,7 +190,7 @@ empty upstream response never clobbers a good existing database.
 | `CHAMPIONS_MCP_LIMITLESS_BASE` | `https://play.limitlesstcg.com/api` | VGC observed builds (pull) |
 | `CHAMPIONS_MCP_LIMITLESS_KEY` | unset | Optional Limitless API key — only raises the rate limit |
 | `CHAMPIONS_MCP_POKEDB_BASE` | `https://champs.pokedb.tokyo` | BSS observed builds (pull) |
-| `CHAMPIONS_MCP_BUILDS_REGULATIONS` | `M-B` | Regulations to ingest, comma-separated |
+| `CHAMPIONS_MCP_BUILDS_REGULATIONS` | `M-C` | Regulations to ingest, comma-separated |
 | `CHAMPIONS_MCP_BUILDS_MAX_EVENTS` | `150` | Cap on tournaments fetched per regulation |
 | `CHAMPIONS_MCP_BUILDS_MIN_PLAYERS` | `16` | Skip events smaller than this |
 | `CHAMPIONS_MCP_BUILDS_HALF_LIFE_DAYS` | `21` | Recency half-life for observation weights |
