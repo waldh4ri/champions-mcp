@@ -73,9 +73,16 @@ the chosen plan cannot work.
 **3. Roles and core (1–2 tool rounds).** `list_roles(format)`; assign each slot a
 role. Fill them: `search_pokemon_by_profile(tags, format)`,
 `get_team_context(core, format)`, `get_observed_sets(name, format)`.
+Take candidates **from these results, not from memory** — a recalled name may not
+be in the Champions roster at all (`get_pokemon` says so and suggests the
+nearest roster names).
 → `get_team_building_guide('roles')` for the VGC / BSS skeletons and checks.
 
 **4. Core — COMMIT POINT.** Name the six (BSS: as 2–3 overlapping 3-cores).
+Before choosing the last slot, run `analyze_team(format)` on the first five and
+pick slot six against its `shared_weaknesses` — don't build that table by hand.
+**BSS: a battle allows one Mega, so each 3-core may depend on at most one Mega**
+(a team can carry several stones; a single bring uses one).
 After this, research only what a specific set needs.
 
 **5. Sets (per member).** `get_observed_sets` → `get_pokemon_moves` → item from
@@ -116,7 +123,8 @@ Every item answered from tool results. Any "no" is a fix, not a caveat.
 - [ ] Each of the top 4–6 threats has a named answer, backed by a `calc_damage` that meets the benchmark rules.
 - [ ] Each slot names its phase (lead / switch / endgame) and the matchup it is for.
 - [ ] Every item and every bulk investment points at a calc or Speed tier.
-- [ ] VGC: 3–4 bring-4 plans, each with its own speed control. BSS: 2–3 cores, each with lead + win condition + answer to its own weakness.
+- [ ] VGC: 3–4 bring-4 plans, each with its own speed control. BSS: 2–3 cores, each with lead + win condition + answer to its own weakness, and at most one Mega per core.
+- [ ] The write-up's spreads, natures and moves match the Poképaste exactly.
 - [ ] `validate_team` is clean and `create_pokepaste` accepted the team.
 
 ## Tool quick map

@@ -310,6 +310,14 @@ def analyze_team(db: Db, team: list[dict[str, Any]], format: str = "vgc") -> dic
                      "or name the member that covers it."),
         },
     }
+    megas_held = [f["form"] for f in forms if f["is_mega"]]
+    if gt == "singles" and len(megas_held) > 1:
+        out["mega_per_bring"] = {
+            "mega_holders": megas_held,
+            "rule": ("Only one Pokémon may Mega Evolve per battle, and BSS brings 3. "
+                     "Carrying several stones is fine, but no 3-core may depend on "
+                     "two of these Megas — say which one each core Mega-evolves."),
+        }
     protect = _protect_warnings(db, team, gt)
     if protect:
         out["protect_in_singles"] = {

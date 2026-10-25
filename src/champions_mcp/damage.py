@@ -46,7 +46,8 @@ CHAMPIONS_GEN = 0  # @smogon/calc native Pokémon Champions generation
 _CALC_BASE_NAME = {"Floette": "Floette-Eternal", "Meowstic (Male)": "Meowstic",
                    "Aegislash": "Aegislash-Shield"}
 _CALC_MEGA_NAME = {"Mega Meowstic (Male)": "Meowstic-M-Mega",
-                   "Mega Meowstic (Female)": "Meowstic-F-Mega"}
+                   "Mega Meowstic (Female)": "Meowstic-F-Mega",
+                   "Mega Floette": "Floette-Mega"}
 
 
 class DamageCalculator:

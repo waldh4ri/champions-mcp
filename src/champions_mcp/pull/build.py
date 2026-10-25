@@ -156,7 +156,13 @@ def _resolve_mega_stones(
     stone_for_form: dict[str, str] = {}
     for species, forms in forms_by_species.items():
         species = _PAREN_SUFFIX_RE.sub("", species).strip()
-        candidates = stones_by_species.get(species, [])
+        # Some stones name a form-qualified species: Floettite "allows Eternal
+        # Flower Floette to Mega Evolve" — match the trailing species name too,
+        # or Mega Floette ends up with no stone at all.
+        candidates = stones_by_species.get(species) or [
+            st for key, sts in stones_by_species.items()
+            if key.endswith(" " + species) for st in sts
+        ]
         if len(candidates) == 1:
             # One stone for the species: either a single Mega option, or (as
             # with Meowstic's Male/Female Megas) multiple forms that genuinely

@@ -53,9 +53,16 @@ def resolve(db: Db, name: str) -> str:
     match = difflib.get_close_matches(slugify(name), db.all_pokemon_slugs(), n=1, cutoff=0.8)
     if match:
         return match[0]
+    # Say plainly that it is not in the roster and offer the nearest names: a
+    # model that misremembers a name ("Noivade") otherwise loops on spellings,
+    # and one that asks for a species Champions doesn't have keeps retrying it.
+    near = difflib.get_close_matches(slugify(name), db.all_pokemon_slugs(), n=3, cutoff=0.6)
+    names = [db.get_pokemon_row(s)["battle_name"] for s in near]
+    hint = f" Closest roster names: {', '.join(names)}." if names else ""
     raise NameError(
-        f"Could not resolve Pokémon {name!r}. Try the English name, a form "
-        f"name (e.g. 'Alolan Ninetales'), or a slug."
+        f"No Pokémon {name!r} in the current Champions roster — it is either "
+        f"misspelled or not in this game.{hint} Find candidates with "
+        f"search_pokemon / search_pokemon_by_profile rather than recalling names."
     )
 
 

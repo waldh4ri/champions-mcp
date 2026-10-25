@@ -152,6 +152,7 @@ def get_usage_stats(
         entry: dict[str, Any] = {
             "rank": r["rank"], "name": r["battle_name"],
             "slug": r["slug"], "base_stat_total": r["bst"],
+            "played_as": played["form"],
             "types": played["types"], "abilities": played["abilities"],
             "base_speed": played["base_speed"],
         }
@@ -218,6 +219,8 @@ def get_threat_profile(db: Db, format: str = "vgc", top: int = 12) -> dict[str, 
     threats = []
     weak_count: Counter = Counter()
     stab_count: Counter = Counter()
+    by_type: dict[str, dict[str, list[str]]] = {
+        t: {"weak": [], "resist": [], "immune": []} for t in TYPES_18}
     for r in db.usage_ranking(fmt, top, "top", False):
         slug = r["slug"]
         played = as_played(db, slug, megas)
@@ -246,6 +249,10 @@ def get_threat_profile(db: Db, format: str = "vgc", top: int = 12) -> dict[str, 
         threats.append(t)
         for atk in table["4x"] + table["2x"]:
             weak_count[atk] += 1
+        for label, bucket in (("4x", "weak"), ("2x", "weak"), ("0.5x", "resist"),
+                              ("0.25x", "resist"), ("0x", "immune")):
+            for atk in table[label]:
+                by_type[atk][bucket].append(played["form"])
         for typ in played["types"]:
             stab_count[typ] += 1
 
@@ -255,7 +262,9 @@ def get_threat_profile(db: Db, format: str = "vgc", top: int = 12) -> dict[str, 
         "threats": threats,
         "field_summary": {
             "attacking_types_by_threats_hit": [
-                {"type": typ, "threats_weak": weak_count[typ]}
+                {"type": typ, "threats_weak": weak_count[typ],
+                 "weak": by_type[typ]["weak"], "resist": by_type[typ]["resist"],
+                 "immune": by_type[typ]["immune"]}
                 for typ in sorted(TYPES_18, key=lambda x: -weak_count[x])
                 if weak_count[typ]
             ],
@@ -265,7 +274,10 @@ def get_threat_profile(db: Db, format: str = "vgc", top: int = 12) -> dict[str, 
         },
         "note": (
             "All fields are Champions data for the form actually played (Megas "
-            "already resolved). top_moves/top_items are per-slot popularity — "
+            "already resolved). attacking_types_by_threats_hit lists, per type, "
+            "which threats are weak to it, resist it and are immune — read 'who "
+            "resists Fire' from it instead of working it out. top_moves/top_items "
+            "are per-slot popularity — "
             "enough to know what coverage a threat carries, not a set. Use "
             "attacking_types_by_threats_hit for offensive relevance and "
             "threat_stab_types for what your team must take hits from; confirm "

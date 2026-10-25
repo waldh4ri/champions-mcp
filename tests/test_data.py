@@ -596,3 +596,43 @@ def test_showdown_names_are_showdown_spellings(db):
            and not r["showdown_name"].startswith("Mr. ")]
     assert bad == []
     assert db.get_pokemon_row("wash-rotom")["showdown_name"] == "Rotom-Wash"
+
+
+def test_every_mega_maps_to_a_calc_forme(db):
+    """Each Mega must reach the calc as its own forme. A forme name derived
+    from a corrected Showdown name ("Floette-Eternal" -> "Floette-Eternal-Mega")
+    silently stopped matching the calc's "Floette-Mega"."""
+    from champions_mcp.damage import DamageCalculator
+    calc = DamageCalculator.__new__(DamageCalculator)
+    calc._db = db
+    names = {mf["form_name"]: calc._species_name(mf["form_name"]) for mf in db.list_mega_forms()}
+    assert names["Mega Floette"] == "Floette-Mega"
+    assert names["Mega Lucario Z"] == "Lucario-Mega-Z"
+    assert names["Mega Charizard X"] == "Charizard-Mega-X"
+    assert names["Mega Meowstic (Male)"] == "Meowstic-M-Mega"
+    assert all("-Mega" in n for n in names.values())
+
+
+def test_mega_ability_is_legal_on_its_stone_holder(db):
+    ok = legality.validate_team(db, [{"species": "Camerupt", "item": "Cameruptite",
+                                      "ability": "Sheer Force"}], "bss")
+    assert not [w for w in ok["warnings"] if w["rule"] == "ability"]
+    bad = legality.validate_team(db, [{"species": "Camerupt", "item": "Leftovers",
+                                       "ability": "Sheer Force"}], "bss")
+    assert [w for w in bad["warnings"] if w["rule"] == "ability"]
+
+
+def test_unknown_species_error_suggests_roster_names(db):
+    err = pokedex.get_pokemon(db, "Noivade")["error"]
+    assert "not in this game" in err and "Noivern" in err
+
+
+def test_every_mega_has_its_stone(db):
+    assert [m["form_name"] for m in db.list_mega_forms() if not m["mega_stone"]] == []
+
+
+def test_bss_team_with_several_megas_gets_the_one_per_bring_rule(db):
+    team = [{"species": "Camerupt", "item": "Cameruptite"},
+            {"species": "Feraligatr", "item": "Feraligite"}, {"species": "Skarmory"}]
+    assert "mega_per_bring" in teambuilder.analyze_team(db, team, "bss")
+    assert "mega_per_bring" not in teambuilder.analyze_team(db, team, "vgc")

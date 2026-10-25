@@ -115,7 +115,8 @@ small model never has to hold the whole guide at once.
 Champions types, abilities, base stats and Mega forms for a Pokémon. Accepts
 localized and form names. A Mega name (`"Mega Altaria"`, `"Mega Charizard X"`)
 returns that Mega's own typing, ability, stats and stone, with `base_form`
-alongside. Its `base_stats` are the Lv-50 stats at 0 SP (31 IVs), not classic
+alongside. An unknown name says it is not in the Champions roster and suggests
+the closest roster names. Its `base_stats` are the Lv-50 stats at 0 SP (31 IVs), not classic
 base stats; use
 `calc_stats` for final stats from an SP spread.
 
@@ -415,7 +416,8 @@ an id, name or alias; ambiguous input returns candidates.
 played (Megas resolved), typing, ability, Speed tier (neutral/positive max),
 4x/2x weaknesses and immunities, and the top moves and items the field runs on
 it. A `field_summary` ranks attacking types by how many threats they hit
-super-effectively and lists the STAB types the threats attack with.
+super-effectively — with, per type, the threats weak to it, resisting it and
+immune to it — and lists the STAB types the threats attack with.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -424,8 +426,9 @@ super-effectively and lists the STAB types the threats attack with.
 
 ### `get_usage_stats`
 
-Usage ranking for VGC or BSS. Each row carries the `types`, `abilities` and
-`base_speed` of the form actually played (the Mega's when `played_as_mega`).
+Usage ranking for VGC or BSS. Each row carries `played_as` (the form actually
+met — the Mega's name when `played_as_mega`) and that form's `types`,
+`abilities` and `base_speed`.
 `order="top"` returns the most-used Pokémon
 first; `order="bottom"` ranks every legal Pokémon with no cutoff, the
 correct way to find real off-meta/underdog picks.
@@ -688,6 +691,8 @@ it holds its stone)/BST/usage rank and the top meta threats not on the team.
 `shared_weaknesses` lists every attacking type that hits 2+ members
 super-effectively (typing plus listed abilities such as Levitate or Thick Fat),
 with the members that resist it; `flagged` marks types hitting 3+ members.
+For a BSS team carrying several Mega Stones, `mega_per_bring` restates that
+only one Pokémon may Mega Evolve per battle, so no 3-core may depend on two.
 Also reports `dependency_gaps`: members
 whose plan needs a field effect nobody on the team provides. **Fix these
 before presenting the team**: an unmet dependency is a broken build, not a

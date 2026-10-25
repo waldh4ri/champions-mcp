@@ -92,6 +92,16 @@ def validate_team(db: Db, team: list[dict[str, Any]], format: str = "vgc") -> di
                 "SELECT 1 FROM pokemon_abilities WHERE slug = ? AND ability_slug = ?",
                 (slug, slugify(ability)),
             )
+            if not ok and item:
+                # A Mega's ability is legal on a member holding that Mega's
+                # stone — it battles as the Mega. Warning on it left a model no
+                # clean option: create_pokepaste requires the field.
+                ok = any(
+                    mf["species_slug"] == slug
+                    and slugify(mf["mega_stone"] or "") == slugify(item)
+                    and slugify(mf["ability"] or "") == slugify(ability)
+                    for mf in db.list_mega_forms()
+                )
             if not ok:
                 warnings.append({"member": label, "rule": "ability",
                                  "detail": f"{ability!r} is not a listed ability for {label}."})
