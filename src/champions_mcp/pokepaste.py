@@ -25,12 +25,27 @@ def _title(s: str) -> str:
     return " ".join(p.capitalize() for p in s.replace("_", " ").replace("-", " ").split())
 
 
+# Names a paste must not use even though they are the Showdown/calc spelling.
+# Battle-only forms are not team members — a paste lists the species the team
+# brings (Showdown rejects "Aegislash-Blade" on import). And pokepast.es has no
+# sprite for some forms (Floette-Eternal renders a broken image), while
+# "Floette" holding Floettite is how the paste should read.
+_PASTE_NAME = {
+    "Floette-Eternal": "Floette",
+    "Aegislash-Blade": "Aegislash",
+    "Castform-Rainy": "Castform", "Castform-Snowy": "Castform",
+    "Castform-Sunny": "Castform",
+    "Morpeko-Hangry": "Morpeko",
+    "Palafin-Hero": "Palafin",
+}
+
+
 def _species_name(db: Db, species: str) -> str:
     slug = try_resolve(db, species)
     if slug:
         row = db.get_pokemon_row(slug)
         if row:
-            return row["showdown_name"]
+            return _PASTE_NAME.get(row["showdown_name"], row["showdown_name"])
     return _title(species)
 
 

@@ -65,3 +65,12 @@ def test_evs_key_is_accepted_but_ev_values_are_not(db):
     report = legality.validate_team(db, [ev_scale], "vgc")
     assert any("looks like EVs" in v["detail"] for v in report["violations"])
     assert not report["legal"]
+
+
+def test_paste_species_names_render_and_import(db):
+    """Floette-Eternal has no pokepast.es sprite (broken image) and battle-only
+    forms are not team members, so the paste uses the bringable species."""
+    block = pokepaste.member_to_showdown(db, {**FULL, "species": "Floette", "item": "Floettite"})
+    assert block.startswith("Floette @ Floettite")
+    assert pokepaste.member_to_showdown(db, {**FULL, "species": "Aegislash (Blade)"}).startswith("Aegislash @")
+    assert pokepaste.member_to_showdown(db, {**FULL, "species": "Wash Rotom"}).startswith("Rotom-Wash @")
