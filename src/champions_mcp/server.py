@@ -53,6 +53,7 @@ from .damage import DamageCalculator
 from .db import Db
 from .formats import game_type, resolve_format, rules
 from .names import NameError, resolve
+from .names import try_resolve as names_try_resolve
 
 
 class App:
@@ -176,8 +177,11 @@ _STAT_POINTS_RULES: dict[str, Any] = {
     "minimum_per_stat": 0,
     "stats": list(ALL_STATS),
     "effect": "1 SP = +1 to the pre-nature stat value at Level 50",
-    "formula_non_hp": "floor( (2*base + 31)//2 + 5 + sp ) * nature_modifier",
-    "formula_hp": "(2*base + 31)//2 + 60 + sp  (nature never affects HP)",
+    "listed_stats": "The base_stats every tool returns are the Lv-50 stats at 0 SP "
+                    "(31 IVs fixed) — not classic base stats. Never run a level "
+                    "formula on them.",
+    "formula_non_hp": "floor( (listed_stat + sp) * nature_modifier )",
+    "formula_hp": "listed_hp + sp  (nature never affects HP)",
     "speed_plus_natures": SPEED_PLUS_NATURES,
     "speed_minus_natures": SPEED_MINUS_NATURES,
     "note": "SP are NOT EVs — 1 SP = +1 stat, not +¼ like EVs. Budget is 66, not 510.",
@@ -318,8 +322,8 @@ async def get_pokemon(name: str) -> dict[str, Any]:
     """Champions types, abilities, base stats and Mega forms for a Pokémon.
     Accepts localized and form names; a Mega name ("Mega Altaria", "Mega
     Charizard X") returns that Mega's own typing/ability/stats with the base form
-    alongside. Base stats are Champions Lv-50 base values — use calc_stats for
-    final stats from an SP spread."""
+    alongside. Its base_stats are the Lv-50 stats at 0 SP (not classic base
+    stats) — use calc_stats for final stats from an SP spread."""
     return pokedex.get_pokemon(_db(), name)
 
 
@@ -780,17 +784,31 @@ async def get_speed_tiers(format: str = "vgc", limit: int = 40) -> dict[str, Any
 # ----------------------- Stat Points & Speed -------------------------
 
 def _base_stats(species: str) -> tuple[str, dict[str, int]]:
-    """Resolve a species name to its display name and Champions Lv-50 base stats.
+    """Resolve a species or Mega name to its display name and listed stats
+    (the Lv-50 values at 0 SP).
+
+    A Mega name resolves to the Mega's own stats. The plain resolver maps
+    "Mega X" back to its base species (and rejects "Mega Lucario Z" outright),
+    so Speed tiers against a Mega threat came out on the base form's Speed.
 
     Args:
-        species: A Pokémon name, localized name, or slug.
+        species: A Pokémon name, localized name, slug, or Mega form name.
 
     Returns:
-        A tuple of (battle_name, base_stats_by_key).
+        A tuple of (battle_name, listed_stats_by_key).
 
     Raises:
         NameError: If `species` does not resolve to a roster entry.
     """
+    ekey = profiles.resolve_entity(_db(), species)
+    ent = profiles._entities(_db()).get(ekey or "")
+    if ent and ent["is_mega"]:
+        bs = ent["stats"]
+        return ent["name"], {
+            "hp": bs["hp"], "attack": bs["attack"], "defense": bs["defense"],
+            "special-attack": bs["special_attack"],
+            "special-defense": bs["special_defense"], "speed": bs["speed"],
+        }
     slug = resolve(_db(), species)
     row = _db().get_pokemon_row(slug)
     if row is None:
@@ -808,7 +826,9 @@ async def calc_stats(
     name: str, stat_points: dict[str, int] | None = None, nature: str = "serious",
 ) -> dict[str, Any]:
     """Compute all six final Champions stats (Lv 50, 31 IVs) for an SP spread +
-    nature; validates the 66-total / 32-per-stat budget. Accepts localized names."""
+    nature; validates the 66-total / 32-per-stat budget. Accepts localized names
+    and Mega names ("Mega Lucario Z" uses the Mega's stats). Matches the stats
+    calc_damage uses."""
     sp = normalize_spread(stat_points or {})
     chk = validate_spread(sp)
     try:
@@ -829,10 +849,13 @@ async def calc_stats(
 @mcp.tool()
 async def compute_speed(
     name: str, speed_sp: int = 0, nature: str = "serious", stage: int = 0,
-    choice_scarf: bool = False, tailwind: bool = False, paralyzed: bool = False,
+    choice_scarf: bool = False, speed_ability: bool = False,
+    tailwind: bool = False, paralyzed: bool = False,
 ) -> dict[str, Any]:
     """Effective in-battle Speed with modifiers: raw → stage → Choice Scarf (×1.5)
-    → Tailwind (×2) → paralysis (×0.5), flooring each step."""
+    → Speed-doubling ability (×2: Swift Swim/Chlorophyll/Sand Rush/Slush Rush/
+    Surge Surfer with its field active) → Tailwind (×2) → paralysis (×0.5),
+    flooring each step. Accepts Mega names (uses the Mega's Speed)."""
     try:
         name, base = _base_stats(name)
         nat = normalize_nature(nature)
@@ -840,11 +863,13 @@ async def compute_speed(
         return {"error": str(exc)}
     raw = compute_stat(base["speed"], speed_sp, "speed", nat)
     eff = effective_speed(base["speed"], speed_sp, nat, stage=stage,
-                          choice_scarf=choice_scarf, tailwind=tailwind, paralyzed=paralyzed)
+                          choice_scarf=choice_scarf, speed_ability=speed_ability,
+                          tailwind=tailwind, paralyzed=paralyzed)
     return {
         "species": name, "base_speed": base["speed"], "speed_sp": speed_sp,
         "nature": nat, "raw_speed": raw, "effective_speed": eff,
         "modifiers": {"stage": stage, "choice_scarf": choice_scarf,
+                      "speed_ability": speed_ability,
                       "tailwind": tailwind, "paralyzed": paralyzed},
     }
 
@@ -857,10 +882,14 @@ async def compute_speed_threshold(
     attacker_choice_scarf: bool = False, attacker_tailwind: bool = False,
     attacker_paralyzed: bool = False, defender_stage: int = 0,
     defender_choice_scarf: bool = False, defender_tailwind: bool = False,
-    defender_paralyzed: bool = False,
+    defender_paralyzed: bool = False, attacker_speed_ability: bool = False,
+    defender_speed_ability: bool = False,
 ) -> dict[str, Any]:
     """Minimum Speed SP for `attacker` to outspeed `defender` (per nature), with
-    SP left from the 66 budget. Default natures: neutral + Jolly."""
+    SP left from the 66 budget. Default natures: neutral + Jolly. Both sides
+    accept Mega names: pass "Mega Lucario Z", not "Lucario", to tier against
+    the Mega. *_speed_ability = a Speed-doubling ability is active (Swift Swim,
+    Chlorophyll, Sand Rush, Slush Rush, Surge Surfer)."""
     natures = tuple(attacker_natures or ["serious", "jolly"])
     try:
         a_name, a_base = _base_stats(attacker)
@@ -872,10 +901,12 @@ async def compute_speed_threshold(
         return {"error": str(exc)}
     target = effective_speed(
         d_base["speed"], defender_speed_sp, defender_nature, stage=defender_stage,
-        choice_scarf=defender_choice_scarf, tailwind=defender_tailwind, paralyzed=defender_paralyzed)
+        choice_scarf=defender_choice_scarf, speed_ability=defender_speed_ability,
+        tailwind=defender_tailwind, paralyzed=defender_paralyzed)
     results = min_sp_to_outspeed(
         a_base["speed"], target, natures=natures, tie_is_enough=tie_is_enough,
         attacker_mods={"stage": attacker_stage, "choice_scarf": attacker_choice_scarf,
+                       "speed_ability": attacker_speed_ability,
                        "tailwind": attacker_tailwind, "paralyzed": attacker_paralyzed})
     return {
         "attacker": a_name, "attacker_base_speed": a_base["speed"],
@@ -950,7 +981,57 @@ async def calc_damage(
         "helping_hand": helping_hand, "attacker_tailwind": attacker_tailwind,
         "crit": crit, "move_hits": move_hits,
     }
-    return await App.get().damage.calculate(req)
+    # A move the calc doesn't know comes back as "0%, immune" rather than an
+    # error — a model read Hidden Power Fire (not in Champions) that way and
+    # concluded Mega Golisopod was immune to Fire. Refuse it instead.
+    if not _db().get_move(move):
+        return {"error": f"{move!r} is not a move in Champions — no damage can be "
+                         "calculated. Check the attacker's legal moves with "
+                         "get_pokemon_moves or search_moves."}
+    result = await App.get().damage.calculate(req)
+    if isinstance(result, dict) and "error" not in result:
+        explained = _explain_damage(move, defender, defender_item, defender_ability)
+        if explained:
+            result["explain"] = explained
+    return result
+
+
+def _explain_damage(move: str, defender: str, defender_item: str | None,
+                    defender_ability: str | None) -> dict[str, Any] | None:
+    """The type effectiveness behind a calc, and the defender form/ability it
+    hit. A small model that sees a number lower than it expected otherwise
+    spends pages re-deriving the type chart and the damage formula (it did, for
+    Close Combat into Aura Guard Mega Lucario Z) instead of reading why."""
+    db = _db()
+    mv = db.get_move(move)
+    if not mv or not mv.get("type"):
+        return None
+    ekey = profiles.resolve_entity(db, defender)
+    ent = profiles._entities(db).get(ekey or "")
+    if ent and ent["is_mega"]:
+        form = {"form": ent["name"], "types": ent["types"], "ability": ent["ability"]}
+    else:
+        slug = names_try_resolve(db, defender)
+        if not slug:
+            return None
+        form = teambuilder._member_form(db, {"item": defender_item, "ability": defender_ability}, slug)
+    atk = str(mv["type"]).capitalize()
+    mult = 1.0
+    for t in form["types"]:
+        mult *= db.type_multiplier(atk, t)
+    ability = defender_ability or form.get("ability")
+    out = {
+        "move_type": atk, "move_category": mv.get("damage_class"),
+        "defender_form": form["form"], "defender_types": form["types"],
+        "type_effectiveness": f"{mult:g}x",
+    }
+    if ability:
+        out["defender_ability"] = ability
+    out["note"] = ("Type effectiveness is from the Champions chart. Any gap between it "
+                   "and the damage comes from abilities, items, weather, boosts or "
+                   "screens named in `description` (e.g. Aura Guard halves contact "
+                   "damage) — read them there; don't re-derive the formula.")
+    return out
 
 
 # ----------------------------- Export --------------------------------

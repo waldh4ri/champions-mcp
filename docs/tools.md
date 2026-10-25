@@ -115,7 +115,8 @@ small model never has to hold the whole guide at once.
 Champions types, abilities, base stats and Mega forms for a Pokémon. Accepts
 localized and form names. A Mega name (`"Mega Altaria"`, `"Mega Charizard X"`)
 returns that Mega's own typing, ability, stats and stone, with `base_form`
-alongside. Base stats are Champions Lv-50 base values; use
+alongside. Its `base_stats` are the Lv-50 stats at 0 SP (31 IVs), not classic
+base stats; use
 `calc_stats` for final stats from an SP spread.
 
 | Parameter | Type | Default | Description |
@@ -606,7 +607,9 @@ surfaces this same data automatically as `historical_sets` when its own
 
 Compute all six final Champions stats (Lv 50, 31 IVs) for an SP spread +
 nature; validates the 66-total / 32-per-stat budget. Accepts localized
-names.
+names and Mega names (a Mega uses its own stats). The listed stats every tool
+returns are the Lv-50 values at 0 SP, so final stat = listed + SP, then nature
+(HP: listed + SP) — the same numbers `calc_damage` uses.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -617,7 +620,8 @@ names.
 ### `compute_speed`
 
 Effective in-battle Speed with modifiers applied in order: raw → stage →
-Choice Scarf (×1.5) → Tailwind (×2) → paralysis (×0.5), flooring each step.
+Choice Scarf (×1.5) → Speed-doubling ability (×2) → Tailwind (×2) →
+paralysis (×0.5), flooring each step. Accepts Mega names.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -626,6 +630,7 @@ Choice Scarf (×1.5) → Tailwind (×2) → paralysis (×0.5), flooring each ste
 | `nature` | `str` | `"serious"` | Nature name |
 | `stage` | `int` | `0` | Speed stat-stage modifier (-6 to +6) |
 | `choice_scarf` | `bool` | `False` | Apply the ×1.5 Choice Scarf modifier |
+| `speed_ability` | `bool` | `False` | A Speed-doubling ability is active (Swift Swim, Chlorophyll, Sand Rush, Slush Rush, Surge Surfer) |
 | `tailwind` | `bool` | `False` | Apply the ×2 Tailwind modifier |
 | `paralyzed` | `bool` | `False` | Apply the ×0.5 paralysis modifier |
 
@@ -633,6 +638,8 @@ Choice Scarf (×1.5) → Tailwind (×2) → paralysis (×0.5), flooring each ste
 
 Minimum Speed SP for `attacker` to outspeed `defender` (per nature), with SP
 left from the 66 budget. Default attacker natures checked: neutral + Jolly.
+Both sides accept Mega names — pass `"Mega Lucario Z"`, not `"Lucario"`, to
+tier against the Mega.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -650,6 +657,8 @@ left from the 66 budget. Default attacker natures checked: neutral + Jolly.
 | `defender_choice_scarf` | `bool` | `False` | Defender holds Choice Scarf |
 | `defender_tailwind` | `bool` | `False` | Defender's side has Tailwind |
 | `defender_paralyzed` | `bool` | `False` | Defender is paralyzed |
+| `attacker_speed_ability` | `bool` | `False` | Attacker's Speed-doubling ability is active |
+| `defender_speed_ability` | `bool` | `False` | Defender's Speed-doubling ability is active |
 
 ---
 
@@ -696,10 +705,14 @@ caveat. Singles teams also get `protect_in_singles`.
 ### `calc_damage`
 
 Champions damage calc via `@smogon/calc` (gen-0 native mode), Lv 50 / 31
-IVs. For a Mega, pass the Mega Stone as the item; Mega evolution is
-auto-applied from the held stone. **Always set `game_type`.** Requires the
+IVs. For a Mega, pass the Mega Stone as the item or the Mega's name
+(`"Mega Lucario Z"`); the server resolves the exact Mega forme itself,
+including the Z-Megas. **Always set `game_type`.** A move that is not in
+Champions is refused rather than reported as 0% damage. Requires the
 `champions-calc` Docker image (or `CHAMPIONS_MCP_CALC_HTTP`). Returns rolls,
-%HP, KO chance and a description.
+%HP, KO chance, a description, and `explain`: the move's type, the defender's
+battle form, typing and ability, and the type effectiveness applied — read it
+when a number surprises you instead of re-deriving the formula.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|

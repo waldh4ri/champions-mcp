@@ -21,6 +21,7 @@ from .champions_stats import (
 from .config import Settings
 from .db import Db
 from .names import try_resolve
+from .normalize import slugify
 
 # Champions stat name -> @smogon/calc StatsTable key
 _STAT_KEY = {
@@ -39,6 +40,14 @@ _TERRAIN = {
 
 CHAMPIONS_GEN = 0  # @smogon/calc native Pokémon Champions generation
 
+# Roster names the calc's Champions dataset spells differently. Its gen-0 table
+# has only the Eternal Flower Floette and the gendered Meowstic Megas, so the
+# plain names below would come back from the sidecar as an unknown species.
+_CALC_BASE_NAME = {"Floette": "Floette-Eternal", "Meowstic (Male)": "Meowstic",
+                   "Aegislash": "Aegislash-Shield"}
+_CALC_MEGA_NAME = {"Mega Meowstic (Male)": "Meowstic-M-Mega",
+                   "Mega Meowstic (Female)": "Meowstic-F-Mega"}
+
 
 class DamageCalculator:
     """Builds an @smogon/calc request from Champions-shaped input and runs it."""
@@ -54,15 +63,40 @@ class DamageCalculator:
         self._s = settings
         self._db = db
 
-    def _species_name(self, species: str) -> str:
+    def _species_name(self, species: str, item: str | None = None) -> str:
         """Resolve a species to the name @smogon/calc expects, falling back to
-        the raw input if it can't be resolved locally."""
-        slug = try_resolve(self._db, species)
-        if slug:
-            row = self._db.get_pokemon_row(slug)
-            if row:
-                return row["showdown_name"]
-        return species  # let the calc try the raw name
+        the raw input if it can't be resolved locally.
+
+        Megas are resolved here to their exact calc forme ("Lucario-Mega-Z"),
+        from either a Mega name or the held stone. The sidecar's own lookup
+        (``Pokemon.getForme``) does not know the Z-Mega stones and silently
+        falls back to the plain Mega — Lucarionite Z calced as Mega Lucario
+        (Speed 132, no Aura Guard) instead of Mega Lucario Z — and a Mega
+        *name* without its stone resolved to the base form."""
+        from .profiles import _entities, resolve_entity
+
+        ent = _entities(self._db).get(resolve_entity(self._db, species) or "")
+        slug = ent["species_slug"] if ent else try_resolve(self._db, species)
+        if not slug:
+            return species  # let the calc try the raw name
+        row = self._db.get_pokemon_row(slug)
+        if not row:
+            return species
+        mega = None
+        if ent and ent["is_mega"]:
+            mega = self._db.get_mega_form(ent["name"])
+        elif item:
+            for mf in self._db.list_mega_forms():
+                if mf["species_slug"] == slug and slugify(mf["mega_stone"] or "") == slugify(item):
+                    mega = mf
+                    break
+        if mega:
+            if mega["form_name"] in _CALC_MEGA_NAME:
+                return _CALC_MEGA_NAME[mega["form_name"]]
+            kind = (mega.get("mega_kind") or "Mega").split()
+            suffix = f"-{kind[1]}" if len(kind) > 1 else ""
+            return f"{row['showdown_name']}-Mega{suffix}"
+        return _CALC_BASE_NAME.get(row["showdown_name"], row["showdown_name"])
 
     def _side_options(
         self, nature, stat_points, boosts, ability, item, status,
@@ -103,8 +137,8 @@ class DamageCalculator:
             The calc result dict (rolls, %HP, KO chance) with a `champions`
             metadata block attached, or `{"error": ...}` on failure.
         """
-        atk_name = self._species_name(req["attacker"])
-        def_name = self._species_name(req["defender"])
+        atk_name = self._species_name(req["attacker"], req.get("attacker_item"))
+        def_name = self._species_name(req["defender"], req.get("defender_item"))
 
         atk_opts, w1 = self._side_options(
             req.get("attacker_nature"), req.get("attacker_stat_points"),

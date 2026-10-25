@@ -62,6 +62,29 @@ SHOWDOWN_OVERRIDES: dict[str, str] = {
     "paldean-tauros-aqua-breed": "Tauros-Paldea-Aqua",
     "paldean-tauros-blaze-breed": "Tauros-Paldea-Blaze",
     "paldean-tauros-combat-breed": "Tauros-Paldea-Combat",
+    # Without these the display name leaked through as the Showdown name
+    # ("Wash Rotom" for Rotom-Wash): Poképastes would not import, and the
+    # damage calc could not find the species at all.
+    "aegislash-blade": "Aegislash-Blade",
+    "alolan-persian": "Persian-Alola",
+    "castform-rainy": "Castform-Rainy",
+    "castform-snowy": "Castform-Snowy",
+    "castform-sunny": "Castform-Sunny",
+    "fan-rotom": "Rotom-Fan",
+    "floette": "Floette-Eternal",
+    "frost-rotom": "Rotom-Frost",
+    "heat-rotom": "Rotom-Heat",
+    "indeedee-female": "Indeedee-F",
+    "indeedee-male": "Indeedee",
+    "lycanroc-dusk": "Lycanroc-Dusk",
+    "lycanroc-midnight": "Lycanroc-Midnight",
+    "meowstic-male": "Meowstic",
+    "morpeko-hangry-mode": "Morpeko-Hangry",
+    "mow-rotom": "Rotom-Mow",
+    "palafin-hero": "Palafin-Hero",
+    "squawkabilly-yellow-plumage": "Squawkabilly-Yellow",
+    "toxtricity-low-key": "Toxtricity-Low-Key",
+    "wash-rotom": "Rotom-Wash",
 }
 
 # usage.py category strings each per-format usage list maps onto.

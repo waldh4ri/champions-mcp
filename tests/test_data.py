@@ -565,3 +565,34 @@ def test_field_effects_resolve_moves_abilities_and_groups(db):
 def test_type_chart_answers_claim_authority(db):
     assert "authoritative" in pokedex.get_pokemon_weaknesses(db, "Annihilape")["chart"]
     assert "authoritative" in pokedex.get_type_matchups(db, "Fire")["chart"]
+
+
+def test_listed_stats_are_level_50_values_at_zero_sp(db):
+    """pokechamp lists Lv-50 stats at 0 SP, not classic base stats: Garchomp's
+    row is its classic 108/130/95/80/85/102 run through the Lv-50 formula. The
+    stat tools must add SP to these directly (as calc_damage does) — applying
+    the level formula again inflated every number."""
+    row = db.get_pokemon_row("garchomp")["base_stats"]
+    assert row == {"hp": 183, "attack": 150, "defense": 115,
+                   "special_attack": 100, "special_defense": 105, "speed": 122}
+    assert compute_stat(row["speed"], 32, "speed", "jolly") == 169
+    assert compute_stat(db.get_pokemon_row("beartic")["base_stats"]["speed"], 32,
+                        "speed", "jolly") == 112
+
+
+def test_stat_tools_resolve_mega_names(db):
+    from champions_mcp import profiles
+    ent = profiles._entities(db)[profiles.resolve_entity(db, "Mega Lucario Z")]
+    assert ent["is_mega"] and ent["stats"]["speed"] == 171
+    assert compute_stat(ent["stats"]["speed"], 32, "speed", "serious") == 203
+
+
+def test_showdown_names_are_showdown_spellings(db):
+    """The display name must not leak through as the Showdown name — Poképastes
+    with "Wash Rotom" don't import, and the damage calc can't find it."""
+    bad = [r["showdown_name"] for s in db.all_pokemon_slugs()
+           for r in [db.get_pokemon_row(s)]
+           if ("(" in r["showdown_name"] or " " in r["showdown_name"])
+           and not r["showdown_name"].startswith("Mr. ")]
+    assert bad == []
+    assert db.get_pokemon_row("wash-rotom")["showdown_name"] == "Rotom-Wash"

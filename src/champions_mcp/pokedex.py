@@ -179,7 +179,8 @@ def get_pokemon(db: Db, name: str) -> dict[str, Any]:
             "doubles": row.get("rank_doubles"),
             "singles": row.get("rank_singles"),
         },
-        "note": "Base stats are Champions Lv-50 base values; use calc_stats for "
+        "note": "base_stats are the Lv-50 stats at 0 SP (31 IVs), not classic "
+                "base stats — never run a level formula on them; use calc_stats for "
                 "final stats from an SP spread + nature.",
     }
 

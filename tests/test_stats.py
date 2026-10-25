@@ -43,15 +43,17 @@ from champions_mcp.champions_stats import (
 
 
 def test_garchomp_speed_benchmarks():
-    # base Spe 102 in SV terms — but Champions uses its own base; check the formula
-    # invariants with a known base.
-    base = 102
-    assert compute_stat(base, 0, "speed", "serious") == 122
-    assert compute_stat(base, 32, "speed", "jolly") == 169
+    # The listed stat is already the Lv-50 value at 0 SP (classic base 102 ->
+    # listed 122); SP adds directly and the nature multiplies — no second
+    # level formula.
+    listed = 122
+    assert compute_stat(listed, 0, "speed", "serious") == 122
+    assert compute_stat(listed, 32, "speed", "jolly") == 169
 
 
 def test_hp_formula_and_shedinja():
-    assert compute_stat(108, 0, "hp", "serious") == 60 + (2 * 108 + 31) // 2
+    assert compute_stat(183, 0, "hp", "serious") == 183      # Garchomp listed HP
+    assert compute_stat(183, 32, "hp", "adamant") == 215     # nature never touches HP
     assert compute_stat(1, 32, "hp", "serious") == 1  # Shedinja-style
 
 

@@ -7,11 +7,15 @@ Champions stat model (verified 2026-05 from Centro leak + community guides):
     not divided by 4 like EVs).
   - Natures still apply the usual +10% / -10% to one non-HP stat.
 
-Non-HP:  floor( ( (2*Base + 31)//2 + 5 + SP ) * nature )
-HP:      (2*Base + 31)//2 + 60 + SP        (nature never affects HP)
+The listed stats in this data are already the Level-50 values at 0 SP (31 IVs),
+so the level formula is NOT applied again:
 
-Cross-check: Garchomp (base Spe 102) -> 0 SP neutral = 122; 32 SP +Spe = 169
-(identical to a 252+ Jolly Garchomp in the old EV system).
+Non-HP:  floor( (Listed + SP) * nature )
+HP:      Listed + SP                       (nature never affects HP)
+
+Cross-check: Garchomp (listed Spe 122, i.e. classic base 102) -> 0 SP neutral =
+122; 32 SP +Spe = 169 (identical to a 252+ Jolly Garchomp in the old EV system),
+and identical to what calc_damage uses.
 """
 
 from __future__ import annotations
@@ -168,8 +172,16 @@ def nature_effect(nature: str | None, stat: str) -> str:
 def compute_stat(base: int, sp: int, stat: str, nature: str | None) -> int:
     """Final Champions stat value at Level 50.
 
+    The "base stats" in this data (pokechamp.gg) are already the **Level-50
+    stats at 0 SP** with the fixed 31 IVs — Garchomp's 183/150/115/100/105/122
+    is exactly its classic base stats run through the Lv-50 formula. So the
+    level formula must not be applied again: 1 SP adds +1 to that value, then
+    the nature multiplies non-HP stats. (Applying the formula a second time
+    inflated every stat — Jolly 32-SP Garchomp read 191 Speed instead of 169 —
+    and disagreed with calc_damage, which uses the right numbers.)
+
     Args:
-        base: The Pokémon's base stat value.
+        base: The Pokémon's listed stat — its Lv-50 value at 0 SP.
         sp: Stat Points invested in this stat (0..`MAX_PER_STAT_SP`).
         stat: One of `ALL_STATS`.
         nature: A nature name, or None for neutral.
@@ -182,12 +194,11 @@ def compute_stat(base: int, sp: int, stat: str, nature: str | None) -> int:
     """
     if sp < 0 or sp > MAX_PER_STAT_SP:
         raise StatError(f"SP for {stat} must be 0..{MAX_PER_STAT_SP}, got {sp}")
-    floor_half = (2 * base + FIXED_IV) // 2
     if stat == "hp":
         if base == 1:  # Shedinja-style
             return 1
-        return floor_half + 60 + sp
-    pre = floor_half + 5 + sp
+        return base + sp
+    pre = base + sp
     effect = nature_effect(nature, stat)
     if effect == "+":
         return pre * 11 // 10
@@ -245,10 +256,12 @@ def effective_speed(
     *,
     stage: int = 0,
     choice_scarf: bool = False,
+    speed_ability: bool = False,
     tailwind: bool = False,
     paralyzed: bool = False,
 ) -> int:
-    """In-battle Speed: raw stat -> stage -> Scarf -> Tailwind -> paralysis.
+    """In-battle Speed: raw stat -> stage -> Scarf -> Speed-doubling ability ->
+    Tailwind -> paralysis.
 
     Each multiplier floors, matching modern-gen mechanics.
 
@@ -258,6 +271,9 @@ def effective_speed(
         nature: A nature name, or None for neutral.
         stage: Speed stat stage, clamped to -6..6.
         choice_scarf: Whether to apply the Choice Scarf ×1.5 multiplier.
+        speed_ability: Whether a Speed-doubling ability is active (Swift Swim
+            in rain, Chlorophyll in sun, Sand Rush in sand, Slush Rush in snow,
+            Surge Surfer in Electric Terrain): ×2.
         tailwind: Whether to apply the Tailwind ×2 multiplier.
         paralyzed: Whether to apply the paralysis ×0.5 multiplier.
 
@@ -273,6 +289,8 @@ def effective_speed(
             spd = spd * 2 // (2 - stage)
     if choice_scarf:
         spd = spd * 3 // 2
+    if speed_ability:
+        spd = spd * 2
     if tailwind:
         spd = spd * 2
     if paralyzed:
@@ -306,7 +324,7 @@ def min_sp_to_outspeed(
             investment or decide if a +Spe nature is needed.
         tie_is_enough: If True, an exact tie with `target_speed` counts as a win.
         attacker_mods: Extra keyword args forwarded to `effective_speed` (stage,
-            choice_scarf, tailwind, paralyzed).
+            choice_scarf, speed_ability, tailwind, paralyzed).
 
     Returns:
         One `ThresholdResult` per requested nature.

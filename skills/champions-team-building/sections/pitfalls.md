@@ -17,8 +17,9 @@
   Boost-style accumulating turn, scaling passive damage behind reliable
   recovery, scouting a Choice lock, or triggering a turn-based item. `analyze_team`
   flags it on singles teams — justify each one or cut it.
-- **Champions Speed is on its own scale** (roster 40-162, median ~98), so Speed
-  numbers remembered from other games mean nothing. `get_pokemon` returns
+- **Listed stats are Lv-50 values at 0 SP**, not classic base stats (roster Speed
+  runs 40-162, median ~98). Final stat = listed + SP, then nature — never run a
+  level formula on them; `calc_stats` / `compute_speed` do it for you. `get_pokemon` returns
   `speed_context` with the roster percentile: a species in the slowest ~10% is a
   Trick Room piece (setter or abuser) unless it is slow *on purpose* — a slow
   pivot, Baton Passer, Gyro Ball user, or a wall that never races. Slow with no

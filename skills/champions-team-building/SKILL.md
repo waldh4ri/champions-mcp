@@ -86,6 +86,17 @@ After this, research only what a specific set needs.
 `calc_stats`, then `calc_damage` against each key threat until every benchmark
 passes. Offensively aim for a guaranteed OHKO; a 3HKO never justifies a pick.
 Defensively the answer wants to be 3HKO'd or worse. Report % ranges.
+- **Calc budget:** per member, only the 2–4 calcs that decide its job (the
+  threats it must remove or survive). One batch per member, at most ~8 calcs a
+  call. Do not re-run a suite you already have.
+- Pass Mega names ("Mega Lucario Z") or the stone as item, `weather`/`terrain`
+  when the plan sets them, and `game_type='singles'` for BSS.
+- **When a number surprises you, read the result's `explain` and
+  `description`** (type effectiveness, the defender's form and ability — e.g.
+  Aura Guard halves contact damage). Never re-derive the damage formula or the
+  stat formula; the listed stats are Lv-50 values and the tools already apply
+  SP correctly.
+- A spread change after a failed benchmark is one re-calc, not a new suite.
 
 **7. Validate.** `validate_team` → `analyze_team(format)`: fix every
 `dependency_gaps` entry and every `flagged` type in `shared_weaknesses`.
