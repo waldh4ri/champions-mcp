@@ -170,6 +170,63 @@ def _mode_dependency_gaps(
     return gaps
 
 
+# Abilities that change what a type does to their holder. Only abilities a
+# member actually lists are applied — a typing-only table is what a model would
+# otherwise build by hand, and getting Levitate or Flash Fire wrong in it is
+# the kind of error that silently mis-states a whole team's weak points.
+_ABILITY_TYPE_MULT = {
+    "levitate": {"Ground": 0.0}, "eelevate": {"Ground": 0.0},
+    "earth-eater": {"Ground": 0.0},
+    "flash-fire": {"Fire": 0.0}, "well-baked-body": {"Fire": 0.0},
+    "water-absorb": {"Water": 0.0}, "storm-drain": {"Water": 0.0},
+    "dry-skin": {"Water": 0.0},
+    "volt-absorb": {"Electric": 0.0}, "lightning-rod": {"Electric": 0.0},
+    "motor-drive": {"Electric": 0.0},
+    "sap-sipper": {"Grass": 0.0},
+    "thick-fat": {"Fire": 0.5, "Ice": 0.5}, "heatproof": {"Fire": 0.5},
+    "water-bubble": {"Fire": 0.5}, "purifying-salt": {"Ghost": 0.5},
+}
+
+
+def _member_form(db: Db, member: dict[str, Any], slug: str) -> dict[str, Any]:
+    """Typing/ability a member actually battles with: its Mega's when it holds
+    that Mega's stone, else the base form's (with the set's ability)."""
+    item = slugify(str(member.get("item") or ""))
+    if item:
+        for mf in db.list_mega_forms():
+            if mf["species_slug"] == slug and slugify(mf["mega_stone"] or "") == item:
+                return {"form": mf["form_name"], "types": mf["types"],
+                        "ability": mf["ability"], "is_mega": True}
+    row = db.get_pokemon_row(slug)
+    return {"form": row["battle_name"], "types": row.get("types", []),
+            "ability": member.get("ability"), "is_mega": False}
+
+
+def _shared_weaknesses(db: Db, forms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per attacking type: which members it hits super-effectively and which
+    resist or are immune, flagging any type that hits 3+ members."""
+    from .pokedex import TYPES_18
+
+    rows = []
+    for atk in TYPES_18:
+        weak, cover = [], []
+        for f in forms:
+            mult = 1.0
+            for dfn in f["types"]:
+                mult *= db.type_multiplier(atk, dfn)
+            mult *= _ABILITY_TYPE_MULT.get(slugify(str(f.get("ability") or "")), {}).get(atk, 1.0)
+            label = f"{f['form']} ({mult:g}x)"
+            if mult >= 2.0:
+                weak.append(label)
+            elif mult < 1.0:
+                cover.append(label)
+        if len(weak) >= 2:
+            rows.append({"type": atk, "weak": weak, "resist_or_immune": cover,
+                         "flagged": len(weak) >= 3})
+    rows.sort(key=lambda r: -len(r["weak"]))
+    return rows
+
+
 def analyze_team(db: Db, team: list[dict[str, Any]], format: str = "vgc") -> dict[str, Any]:
     """Legality plus meta context: per-member usage/typing, top absent threats,
     a singles Protect check, and field-effect dependency gaps.
@@ -189,6 +246,7 @@ def analyze_team(db: Db, team: list[dict[str, Any]], format: str = "vgc") -> dic
     report = validate_team(db, team, fmt)
 
     members: list[dict[str, Any]] = []
+    forms: list[dict[str, Any]] = []
     on_team: set[str] = set()
     for m in team:
         slug = try_resolve(db, m.get("species") or "")
@@ -198,10 +256,16 @@ def analyze_team(db: Db, team: list[dict[str, Any]], format: str = "vgc") -> dic
         on_team.add(slug)
         row = db.get_pokemon_row(slug)
         rank = row.get("rank_doubles") if gt == "doubles" else row.get("rank_singles")
-        members.append({
-            "name": row["battle_name"], "types": row.get("types", []),
+        form = _member_form(db, m, slug)
+        forms.append(form)
+        entry = {
+            "name": row["battle_name"], "types": form["types"],
             "base_stat_total": row.get("bst"), "usage_rank": rank,
-        })
+        }
+        if form["is_mega"]:
+            entry["as_mega"] = form["form"]
+            entry["ability"] = form["ability"]
+        members.append(entry)
 
     megas = mega_usage_index(db, gt)
     threats = []
@@ -237,6 +301,14 @@ def analyze_team(db: Db, team: list[dict[str, Any]], format: str = "vgc") -> dic
         "members": members,
         "top_meta_threats_not_on_team": threats,
         "note": note,
+        "shared_weaknesses": {
+            "types": _shared_weaknesses(db, forms),
+            "rule": ("Attacking types that hit 2+ members super-effectively, from "
+                     "each member's battle typing (Mega typing when it holds its "
+                     "stone) and listed ability. `flagged` = hits 3+ members: one "
+                     "attacker of that type threatens most of the team — fix it "
+                     "or name the member that covers it."),
+        },
     }
     protect = _protect_warnings(db, team, gt)
     if protect:

@@ -25,7 +25,15 @@ def get_move(db: Db, name: str) -> dict[str, Any]:
     """
     m = db.get_move(name)
     if not m:
-        return {"error": f"Move {name!r} not found in the Champions move set."}
+        err = {"error": f"Move {name!r} not found in the Champions move set."}
+        from .fields import get_field_effects
+        if "error" not in get_field_effects(db, name):
+            err["hint"] = (f"{name!r} is a field effect, not a move — call "
+                           f"get_field_effects({name!r}) for what it does.")
+        return err
+    from .fields import get_field_effects
+    if m.get("damage_class") == "status" and "error" not in get_field_effects(db, m.get("name") or name):
+        m = {**m, "field_effect": f"call get_field_effects({m.get('name')!r}) for what it does"}
     return m
 
 

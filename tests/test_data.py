@@ -501,3 +501,67 @@ def test_validate_team_flags_unspent_sp(db):
     assert any(
         w["rule"] == "stat_points" and "0/66" in w["detail"] for w in unset["warnings"]
     )
+
+
+def test_usage_rows_carry_the_played_forms_typing(db):
+    rows = usage.get_usage_stats(db, "bss", top=40)["ranking"]
+    assert all(r["types"] and r["base_speed"] for r in rows)
+    for r in rows:
+        if "played_as_mega" in r:
+            mega = r["played_as_mega"]["forms"][0]["mega"]
+            assert r["types"] == pokedex.get_pokemon(db, mega)["types"]
+
+
+def test_threat_profile_is_one_compact_fact_sheet(db):
+    import json
+    out = usage.get_threat_profile(db, "bss", top=12)
+    assert out["count"] == 12
+    assert len(json.dumps(out)) < 20000          # one tool result, not a dump
+    for t in out["threats"]:
+        assert t["types"] and t["top_moves"] and "neutral_max" in t["speed"]
+        table = pokedex.get_pokemon_weaknesses(db, t["played_as"])["by_multiplier"]
+        assert t["weak_4x"] == table["4x"] and t["weak_2x"] == table["2x"]
+    hit = {r["type"]: r["threats_weak"] for r in out["field_summary"]["attacking_types_by_threats_hit"]}
+    assert hit and max(hit.values()) <= 12
+
+
+def test_get_pokemon_with_a_mega_name_returns_the_mega(db):
+    p = pokedex.get_pokemon(db, "Mega Charizard X")
+    assert p["is_mega"] and p["types"] == ["Fire", "Dragon"]
+    assert p["mega_stone"] == "Charizardite X"
+    assert p["base_form"]["types"] == ["Fire", "Flying"]
+    alt = pokedex.get_pokemon(db, "Mega Altaria")
+    assert alt["is_mega"] and alt["types"] != alt["base_form"]["types"]
+    assert pokedex.get_pokemon(db, "Garchomp").get("is_mega") is None
+
+
+def test_analyze_team_reports_shared_weaknesses_with_mega_typing_and_abilities(db):
+    team = [{"species": "Froslass", "item": "Froslassite"},
+            {"species": "Mamoswine", "ability": "Thick Fat"},
+            {"species": "Beartic"}, {"species": "Abomasnow"},
+            {"species": "Eelektross", "ability": "Levitate"}, {"species": "Garchomp"}]
+    out = teambuilder.analyze_team(db, team, "bss")
+    assert out["members"][0]["as_mega"] == "Mega Froslass"
+    rows = {r["type"]: r for r in out["shared_weaknesses"]["types"]}
+    assert rows["Steel"]["flagged"] and len(rows["Steel"]["weak"]) >= 3
+    fire_weak = " ".join(rows["Fire"]["weak"])
+    assert "Mamoswine" not in fire_weak          # Thick Fat halves Fire
+    ground = rows.get("Ground", {"resist_or_immune": []})
+    assert not any("Eelektross" in w for w in ground.get("weak", []))   # Levitate
+
+
+def test_field_effects_resolve_moves_abilities_and_groups(db):
+    from champions_mcp import fields
+    snow = fields.get_field_effects(db, "Snow Warning")["effects"]
+    assert list(snow) == ["snow"] and snow["snow"]["extender"]["effect"]
+    assert set(fields.get_field_effects(db, "terrain")["effects"]) == {
+        "electric-terrain", "grassy-terrain", "psychic-terrain", "misty-terrain"}
+    assert "error" in fields.get_field_effects(db, "Earthquake")
+    assert "hint" in reference.get_move(db, "Snow")
+    assert "field_effect" in reference.get_move(db, "Snowscape")
+    assert "field_effect" not in reference.get_move(db, "Earthquake")
+
+
+def test_type_chart_answers_claim_authority(db):
+    assert "authoritative" in pokedex.get_pokemon_weaknesses(db, "Annihilape")["chart"]
+    assert "authoritative" in pokedex.get_type_matchups(db, "Fire")["chart"]

@@ -87,6 +87,39 @@ def mega_usage_index(db: Db, fmt: str) -> dict[str, dict[str, Any]]:
     return out
 
 
+def as_played(db: Db, slug: str, megas: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """The form a species is actually met as: its dominant Mega when it is
+    played as one, else the base form — typing, ability and base Speed.
+
+    Usage rows used to carry only a name and BST, so a model reading the threat
+    list had to recall each threat's typing from memory, which is exactly the
+    fact it gets wrong (and Megas change typing). Every threat row carries the
+    real numbers instead.
+
+    Args:
+        db: Open Champions database handle.
+        slug: Base species slug.
+        megas: The format's ``mega_usage_index``.
+
+    Returns:
+        ``{"form", "types", "abilities", "base_speed"}`` for the played form.
+    """
+    m = megas.get(slug)
+    if m and m["dominant"].get("types"):
+        dom = m["dominant"]
+        return {
+            "form": dom["mega"], "types": dom["types"],
+            "abilities": [dom["ability"]] if dom.get("ability") else [],
+            "base_speed": (dom.get("base_stats") or {}).get("speed"),
+        }
+    row = db.get_pokemon_row(slug) or {}
+    return {
+        "form": row.get("battle_name"), "types": row.get("types", []),
+        "abilities": row.get("abilities", []),
+        "base_speed": (row.get("base_stats") or {}).get("speed"),
+    }
+
+
 def get_usage_stats(
     db: Db, format: str = "vgc", top: int = 30, order: str = "top",
     megas_only: bool = False,
@@ -115,9 +148,12 @@ def get_usage_stats(
 
     ranking = []
     for r in rows:
+        played = as_played(db, r["slug"], megas)
         entry: dict[str, Any] = {
             "rank": r["rank"], "name": r["battle_name"],
             "slug": r["slug"], "base_stat_total": r["bst"],
+            "types": played["types"], "abilities": played["abilities"],
+            "base_speed": played["base_speed"],
         }
         m = megas.get(r["slug"])
         if m:
@@ -141,13 +177,101 @@ def get_usage_stats(
     if any("played_as_mega" in e for e in ranking):
         out["mega_warning"] = (
             "Entries with `played_as_mega` are usually NOT played in the base "
-            "form shown here — their listed base_stat_total, and the base stats/"
-            "typing/ability get_pokemon returns, do not describe what you will "
-            "face. When checking these as threats, use the Mega's numbers: pass "
-            "the Mega Stone as the item to calc_damage (it auto-Mega-evolves), "
-            "and read the Mega's stats from list_megas(query=<species>)."
+            "form: their `types`, `abilities` and `base_speed` here already "
+            "describe the Mega you will face (base_stat_total is the base "
+            "form's). Calc against them with the Mega Stone as the item "
+            "(calc_damage auto-Mega-evolves); list_megas(query=<species>) has "
+            "the Mega's full stats."
         )
+    out["note"] = ("`types`/`abilities`/`base_speed` are the Champions data for "
+                   "the form actually played — quote these, not memory. For the "
+                   "top threats with weaknesses, moves and items in one call, "
+                   "use get_threat_profile.")
     return out
+
+
+def get_threat_profile(db: Db, format: str = "vgc", top: int = 12) -> dict[str, Any]:
+    """The threat map in one call: for each top-usage Pokémon, the form it is
+    actually played as, its typing, ability, Speed tier, defensive weaknesses,
+    and the moves/items/abilities the field runs on it — plus which attacking
+    types the whole threat list is weak to and attacks with.
+
+    This is the fact sheet a model otherwise assembles over several turns, and
+    fills from memory while doing so: typings, Mega forms, coverage moves. Every
+    field here is Champions data.
+
+    Args:
+        db: Open Champions database handle.
+        format: A Champions format (``vgc``/``bss``).
+        top: Number of top-usage threats to profile (clamped to 1-30).
+
+    Returns:
+        ``threats`` (one fact sheet each) and ``field_summary`` (attacking
+        types ranked by how many threats they hit super-effectively, and the
+        STAB types the threats attack with).
+    """
+    from .pokedex import TYPES_18, _weakness_table
+
+    fmt = game_type(format)
+    top = max(1, min(int(top), 30))
+    megas = mega_usage_index(db, fmt)
+    threats = []
+    weak_count: Counter = Counter()
+    stab_count: Counter = Counter()
+    for r in db.usage_ranking(fmt, top, "top", False):
+        slug = r["slug"]
+        played = as_played(db, slug, megas)
+        table = _weakness_table(db, played["types"])
+        spe = played["base_speed"] or 0
+        t: dict[str, Any] = {
+            "rank": r["rank"], "name": r["battle_name"],
+            "played_as": played["form"],
+            "types": played["types"], "abilities": played["abilities"],
+            "speed": {"base": spe,
+                      "neutral_max": compute_stat(spe, 32, "speed", "serious"),
+                      "positive_max": compute_stat(spe, 32, "speed", "jolly")},
+            "weak_4x": table["4x"], "weak_2x": table["2x"], "immune": table["0x"],
+            "top_moves": [f"{x['name']} {x['percent']}%" for x in
+                          _pct_list(db.usage_rows(slug, fmt, "move"))[:6]],
+            "top_items": [f"{x['name']} {x['percent']}%" for x in
+                          _pct_list(db.usage_rows(slug, fmt, "held_item"))[:3]],
+        }
+        m = megas.get(slug)
+        if m:
+            t["mega_stone"] = m["dominant"]["stone"]
+            t["mega_usage_percent"] = m["mega_usage_percent"]
+        else:
+            t["top_abilities"] = [f"{x['name']} {x['percent']}%" for x in
+                                  _pct_list(db.usage_rows(slug, fmt, "ability"))[:2]]
+        threats.append(t)
+        for atk in table["4x"] + table["2x"]:
+            weak_count[atk] += 1
+        for typ in played["types"]:
+            stab_count[typ] += 1
+
+    n = len(threats)
+    return {
+        "format": format, "game_type": fmt, "count": n,
+        "threats": threats,
+        "field_summary": {
+            "attacking_types_by_threats_hit": [
+                {"type": typ, "threats_weak": weak_count[typ]}
+                for typ in sorted(TYPES_18, key=lambda x: -weak_count[x])
+                if weak_count[typ]
+            ],
+            "threat_stab_types": [
+                {"type": typ, "threats": c} for typ, c in stab_count.most_common()
+            ],
+        },
+        "note": (
+            "All fields are Champions data for the form actually played (Megas "
+            "already resolved). top_moves/top_items are per-slot popularity — "
+            "enough to know what coverage a threat carries, not a set. Use "
+            "attacking_types_by_threats_hit for offensive relevance and "
+            "threat_stab_types for what your team must take hits from; confirm "
+            "any specific answer with calc_damage."
+        ),
+    }
 
 
 # Each list below is a *marginal* frequency distribution for one slot, computed

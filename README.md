@@ -100,14 +100,18 @@ Call `get_game_rules(format)` first (`format='vgc'` for doubles, `'bss'` for sin
 
 **Pokedex** - `get_pokemon`, `search_pokemon`, `get_random_pokemon`, `list_megas`,
 `get_move`, `search_moves`, `list_items`, `get_item`, `search_items`, `get_ability`,
-`get_type_matchups`, `get_pokemon_weaknesses`. `list_items` returns the whole item
+`get_type_matchups`, `get_pokemon_weaknesses`, `get_field_effects` (what a weather,
+terrain, Trick Room, Tailwind or screen does). A Mega name passed to `get_pokemon`
+returns the Mega itself. `list_items` returns the whole item
 pool grouped by category (Mega Stones hidden by default - they are around half of
 the ~166 items); if an item is not in it, it does not exist in Champions.
 
 **Roster and movepool** - `list_pokemon`, `search_pokemon_by_type`, `search_pokemon_by_ability`,
 `search_pokemon_by_move`, `get_pokemon_moves`, `is_legal_move`, `is_legal_pokemon`
 
-**Meta, both formats** - `get_usage_stats`, `get_pokemon_sets`, `get_top_teammates`,
+**Meta, both formats** - `get_threat_profile` (the threat map in one call: played
+form, typing, Speed tier, weaknesses, common moves/items), `get_usage_stats` (rows
+carry the played form's typing/ability/Speed), `get_pokemon_sets`, `get_top_teammates`,
 `suggest_cores`, `get_speed_tiers`
 
 **Observed builds** - `get_observed_sets`, `get_team_context`, `get_sample_teams`.
@@ -155,7 +159,10 @@ returned.
 `create_pokepaste` (uploads to pokepast.es, the only runtime outbound call besides the pull)
 
 A team-building [`SKILL.md`](skills/champions-team-building/SKILL.md) ships with the repo
-and is exposed as the `champions_team_building` MCP prompt. A `pokedex://champions` MCP
+and is exposed as the `champions_team_building` MCP prompt. It is a short core (hard
+rules, order of work with commit points, pre-flight, output format); the deeper
+guidance lives in `skills/champions-team-building/sections/` and is served one
+section at a time by the `get_team_building_guide(section)` tool. A `pokedex://champions` MCP
 resource exposes the full roster as JSON.
 
 ## How the data pull works

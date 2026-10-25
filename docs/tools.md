@@ -34,6 +34,7 @@ the two.
 | Tool | Category | Summary |
 |---|---|---|
 | [`get_game_rules`](#get_game_rules) | Session | Format rules, Stat-Point system, Mega rules, tool guide; call first |
+| [`get_team_building_guide`](#get_team_building_guide) | Session | The skill's core workflow, or one deeper section on demand |
 | [`get_pokemon`](#get_pokemon) | Pokédex | Types, abilities, base stats, Mega forms |
 | [`search_pokemon`](#search_pokemon) | Pokédex | Substring search over the roster |
 | [`get_random_pokemon`](#get_random_pokemon) | Pokédex | One uniformly random roster Pokémon |
@@ -46,6 +47,7 @@ the two.
 | [`get_ability`](#get_ability) | Pokédex | Effect text for an ability |
 | [`get_type_matchups`](#get_type_matchups) | Pokédex | Offensive/defensive effectiveness for a type or dual-type |
 | [`get_pokemon_weaknesses`](#get_pokemon_weaknesses) | Pokédex | Full defensive type chart for a Pokémon or type pair |
+| [`get_field_effects`](#get_field_effects) | Pokédex | What a weather/terrain/Trick Room/Tailwind/screen does |
 | [`list_pokemon`](#list_pokemon) | Roster | Roster pick list, filterable, optionally usage-sorted |
 | [`search_pokemon_by_type`](#search_pokemon_by_type) | Roster | Pokémon of a given type or exact type pair |
 | [`search_pokemon_by_ability`](#search_pokemon_by_ability) | Roster | Pokémon with a given ability |
@@ -58,7 +60,8 @@ the two.
 | [`search_pokemon_by_profile`](#search_pokemon_by_profile) | Profiles | Find roster Pokémon by profile tag |
 | [`list_roles`](#list_roles) | Roles | Competitive role vocabulary, graded per format |
 | [`get_role_description`](#get_role_description) | Roles | Full brief on one role: signature, SP guidance, pairings |
-| [`get_usage_stats`](#get_usage_stats) | Meta | Usage ranking, top or bottom |
+| [`get_threat_profile`](#get_threat_profile) | Meta | Threat map in one call: played form, typing, Speed, weaknesses, moves/items |
+| [`get_usage_stats`](#get_usage_stats) | Meta | Usage ranking, top or bottom, with the played form's typing/ability/Speed |
 | [`get_pokemon_sets`](#get_pokemon_sets) | Meta | Popularity distributions: moves/items/spreads/teammates |
 | [`get_top_teammates`](#get_top_teammates) | Meta | Most-paired Pokémon by usage |
 | [`suggest_cores`](#suggest_cores) | Meta | Most frequent Pokémon pairs in the format |
@@ -89,6 +92,20 @@ later tools take the same `format` argument this call establishes.
 |---|---|---|---|
 | `format` | `str` | `"vgc"` | `"vgc"` (doubles, bring 4) or `"bss"` (singles, bring 3) |
 
+### `get_team_building_guide`
+
+The team-building skill, one piece at a time. With no argument it returns the
+**core** (hard rules, the order of work with its commit points, the pre-flight
+checklist, the output format) — the same text as the `champions_team_building`
+prompt — plus the section index. Pass a section name to get that section:
+`lenses`, `roles`, `workflow`, `principles`, `creative`, `pitfalls`,
+`iterate`, `setup`. Meant to be called at the step that needs a section, so a
+small model never has to hold the whole guide at once.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `section` | `str \| None` | `None` | Section name; omit for the core + index |
+
 ---
 
 ## Pokédex
@@ -96,7 +113,9 @@ later tools take the same `format` argument this call establishes.
 ### `get_pokemon`
 
 Champions types, abilities, base stats and Mega forms for a Pokémon. Accepts
-localized and form names. Base stats are Champions Lv-50 base values; use
+localized and form names. A Mega name (`"Mega Altaria"`, `"Mega Charizard X"`)
+returns that Mega's own typing, ability, stats and stone, with `base_form`
+alongside. Base stats are Champions Lv-50 base values; use
 `calc_stats` for final stats from an SP spread.
 
 | Parameter | Type | Default | Description |
@@ -220,6 +239,22 @@ product and an immunity on either half wins outright.
 | `name` | `str \| None` | `None` | Pokémon name (picks up its Champions typing) |
 | `type1` | `str \| None` | `None` | Explicit first type, used if `name` is omitted |
 | `type2` | `str \| None` | `None` | Explicit second type |
+
+Both type-chart tools carry a `chart` line stating the Champions chart is
+authoritative, so a model does not argue with a correct result from memory.
+
+### `get_field_effects`
+
+What a field effect actually does: sun, rain, sand, snow, the four terrains,
+Trick Room, Tailwind and screens — modifiers, accuracy changes, Speed
+abilities, setters, duration and extender item (from the Champions data), and
+the `calc_damage` argument for it. The move/ability text in the data only says
+"Summons snow for 5 turns", so without this a model recalls mechanics from
+older games (snow is not hail: no chip damage, no Ice power boost).
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | `str \| None` | `None` | Effect, setting move or ability (`"snow"`, `"Snowscape"`, `"Snow Warning"`); `"weather"`/`"terrain"` for a group; omit for all |
 
 ---
 
@@ -373,9 +408,24 @@ an id, name or alias; ambiguous input returns candidates.
 
 ## Meta / Usage Stats
 
+### `get_threat_profile`
+
+**The threat map in one call.** For each top-usage Pokémon: the form actually
+played (Megas resolved), typing, ability, Speed tier (neutral/positive max),
+4x/2x weaknesses and immunities, and the top moves and items the field runs on
+it. A `field_summary` ranks attacking types by how many threats they hit
+super-effectively and lists the STAB types the threats attack with.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
+| `top` | `int` | `12` | Threats to profile (1–30) |
+
 ### `get_usage_stats`
 
-Usage ranking for VGC or BSS. `order="top"` returns the most-used Pokémon
+Usage ranking for VGC or BSS. Each row carries the `types`, `abilities` and
+`base_speed` of the form actually played (the Mega's when `played_as_mega`).
+`order="top"` returns the most-used Pokémon
 first; `order="bottom"` ranks every legal Pokémon with no cutoff, the
 correct way to find real off-meta/underdog picks.
 
@@ -624,8 +674,12 @@ movepool, Item/Species Clause, SP budget and natures.
 
 ### `analyze_team`
 
-Legality + meta context for a team: per-member types/BST/usage rank and the
-top meta threats not on the team. Also reports `dependency_gaps`: members
+Legality + meta context for a team: per-member battle typing (the Mega's when
+it holds its stone)/BST/usage rank and the top meta threats not on the team.
+`shared_weaknesses` lists every attacking type that hits 2+ members
+super-effectively (typing plus listed abilities such as Levitate or Thick Fat),
+with the members that resist it; `flagged` marks types hitting 3+ members.
+Also reports `dependency_gaps`: members
 whose plan needs a field effect nobody on the team provides. **Fix these
 before presenting the team**: an unmet dependency is a broken build, not a
 caveat. Singles teams also get `protect_in_singles`.

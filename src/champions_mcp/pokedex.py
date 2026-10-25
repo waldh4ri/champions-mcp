@@ -12,6 +12,12 @@ from . import profiles
 from .db import Db
 from .names import NameError, resolve
 
+# Rides along with every type-chart answer. A small model will otherwise argue
+# with a correct result ("Champions' chart might differ") and re-derive the
+# multiplier from memory — which is where the wrong answers came from.
+CHART_AUTHORITY = ("Champions type chart, applied by this server: authoritative. "
+                   "If it disagrees with what you remember, your memory is wrong.")
+
 TYPES_18 = (
     "Normal", "Fire", "Water", "Electric", "Grass", "Ice", "Fighting",
     "Poison", "Ground", "Flying", "Psychic", "Bug", "Rock", "Ghost",
@@ -125,6 +131,14 @@ def get_pokemon(db: Db, name: str) -> dict[str, Any]:
         The species record, or ``{"error": ...}`` if ``name`` cannot be
         resolved or is not in the roster.
     """
+    # A Mega name must answer for the Mega. The ordinary resolver maps "Mega X"
+    # back to its base species, so this used to return the base form's typing
+    # and ability under a Mega query, with nothing saying so — a confidently
+    # wrong answer to exactly the question that matters.
+    ekey = profiles.resolve_entity(db, name)
+    ent = profiles._entities(db).get(ekey or "")
+    if ent and ent["is_mega"]:
+        return _get_mega(db, ent)
     try:
         slug = resolve(db, name)
     except NameError as exc:
@@ -167,6 +181,38 @@ def get_pokemon(db: Db, name: str) -> dict[str, Any]:
         },
         "note": "Base stats are Champions Lv-50 base values; use calc_stats for "
                 "final stats from an SP spread + nature.",
+    }
+
+
+def _get_mega(db: Db, ent: dict[str, Any]) -> dict[str, Any]:
+    """The record for a Mega form asked for by name: the Mega's own typing,
+    ability, stats and Speed tier first, with the base form alongside."""
+    base = db.get_pokemon_row(ent["species_slug"]) or {}
+    row = db.get_mega_form(ent["name"]) or {}
+    return {
+        "slug": ent["species_slug"],
+        "name": ent["name"],
+        "form_kind": "Mega",
+        "is_mega": True,
+        "mega_stone": ent["mega_stone"],
+        "types": ent["types"],
+        "abilities": [ent["ability"]] if ent["ability"] else [],
+        "base_stats": ent["stats"],
+        "base_stat_total": ent["bst"],
+        "stat_changes": row.get("stat_changes", {}),
+        "speed_context": speed_context(db, ent["stats"]["speed"]),
+        "profile": profiles.pokemon_profile(db, ent["key"]),
+        "base_form": {
+            "name": base.get("battle_name"), "types": base.get("types", []),
+            "abilities": base.get("abilities", []),
+            "base_stats": base.get("base_stats", {}),
+        },
+        "usage_rank": {"doubles": base.get("rank_doubles"),
+                       "singles": base.get("rank_singles")},
+        "note": (f"This is the Mega form: it needs {ent['mega_stone']} as its "
+                 "held item and has its own typing/ability/stats (base_form is "
+                 "the unevolved Pokémon). Legality and movepool are the base "
+                 "species'."),
     }
 
 
@@ -346,6 +392,7 @@ def get_type_matchups(
         "types": types,
         "offensive": offensive,
         "defensive": defensive,
+        "chart": CHART_AUTHORITY,
     }
 
 
@@ -392,7 +439,8 @@ def get_pokemon_weaknesses(
         if ent and ent["is_mega"]:
             return {"target": ent["name"], "types": ent["types"], "is_mega": True,
                     "by_multiplier": _weakness_table(db, ent["types"]),
-                    "note": "Mega typing — differs from the base form."}
+                    "note": "Mega typing — differs from the base form.",
+                    "chart": CHART_AUTHORITY}
         try:
             slug = resolve(db, name)
         except NameError as exc:
@@ -411,4 +459,5 @@ def get_pokemon_weaknesses(
             return {"error": error.replace("Provide at least one type.",
                                            "Provide a Pokémon name or at least one type.")}
         label = "/".join(types)
-    return {"target": label, "types": types, "by_multiplier": _weakness_table(db, types)}
+    return {"target": label, "types": types, "by_multiplier": _weakness_table(db, types),
+            "chart": CHART_AUTHORITY}

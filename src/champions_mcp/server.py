@@ -22,6 +22,7 @@ from mcp.server.mcpserver import MCPServer  # pyright: ignore[reportMissingImpor
 from . import legality as legality_mod
 from . import (
     builds,
+    fields,
     historical_sets,
     pokedex,
     pokepaste,
@@ -137,6 +138,36 @@ def champions_team_building() -> str:
     return _load_skill_md()
 
 
+# The skill is split into a short core (the prompt above) and sections fetched
+# on demand. A small model given the whole 45k-character guide up front loses the
+# thread before it starts; one that reads the core and pulls a section at the
+# step that needs it keeps the rules that matter in view.
+_SECTION_DIRS = tuple(p.parent / "sections" for p in _SKILL_MD_CANDIDATES)
+
+
+def _sections() -> dict[str, Path]:
+    for d in _SECTION_DIRS:
+        if d.is_dir():
+            return {p.stem: p for p in sorted(d.glob("*.md"))}
+    return {}
+
+
+@mcp.tool()
+async def get_team_building_guide(section: str | None = None) -> dict[str, Any]:
+    """Deeper team-building guidance, one section at a time. Call with no
+    argument for the core rules and workflow (the champions_team_building
+    prompt) plus the section index; pass a section name (lenses, roles,
+    workflow, principles, creative, pitfalls, iterate, setup) when you reach the
+    step that needs it — not all up front."""
+    secs = _sections()
+    if not section:
+        return {"core": _load_skill_md(), "sections": sorted(secs)}
+    key = section.strip().lower().replace(" ", "-")
+    if key not in secs:
+        return {"error": f"Unknown section {section!r}.", "sections": sorted(secs)}
+    return {"section": key, "content": secs[key].read_text(encoding="utf-8")}
+
+
 # ----------------------- Game-rules baseline -------------------------
 
 _STAT_POINTS_RULES: dict[str, Any] = {
@@ -166,11 +197,17 @@ _MEGA_RULES = {
 }
 
 _TOOL_GUIDE = {
-    "session_start": "get_game_rules(format) — call first.",
-    "pokedex": "get_pokemon, search_pokemon, get_random_pokemon, list_megas, get_move, "
+    "session_start": "get_game_rules(format) — call first; then "
+                     "get_threat_profile(format) for the threat map in one call.",
+    "guide": "get_team_building_guide() for the core workflow; "
+             "get_team_building_guide(section) for one deeper section when a "
+             "step needs it.",
+    "pokedex": "get_pokemon (a Mega name returns the Mega), search_pokemon, "
+               "get_random_pokemon, list_megas, get_move, "
                "search_moves, list_items (the whole item pool — call before "
                "assigning items), get_item, search_items, get_ability, "
-               "get_type_matchups, get_pokemon_weaknesses",
+               "get_type_matchups, get_pokemon_weaknesses, get_field_effects "
+               "(weather/terrain/Trick Room/Tailwind/screens mechanics)",
     "build": "list_pokemon, search_pokemon_by_type/ability/move, get_pokemon_moves "
              "(legal movepool), is_legal_move, is_legal_pokemon",
     "profiles": "list_type_profiles (rank every typing offensively/defensively), "
@@ -181,8 +218,12 @@ _TOOL_GUIDE = {
              "format; get_role_description(role, format) — what a slot is for, "
              "its Champions-verified move/item signature and SP guidance. Roles "
              "differ sharply between vgc (doubles) and bss (singles).",
-    "meta": "get_usage_stats, get_pokemon_sets, get_top_teammates, suggest_cores, "
-            "get_speed_tiers — pass format=vgc|bss",
+    "meta": "get_threat_profile, get_usage_stats, get_pokemon_sets, "
+            "get_top_teammates, suggest_cores, get_speed_tiers — pass format=vgc|bss",
+    "no_mental_math": "Type multipliers, Speed, damage and field mechanics all "
+                      "have tools (get_pokemon_weaknesses, compute_speed, "
+                      "calc_damage, get_field_effects). Their answers are "
+                      "authoritative — never re-derive or argue with them.",
     "observed_builds": "get_observed_sets (complete builds real players brought, "
                        "with which moves go with which item), get_team_context "
                        "(partners conditioned on your whole core, with an "
@@ -275,8 +316,10 @@ def _observed_builds_summary(db: Db, fmt: str) -> dict[str, Any]:
 @mcp.tool()
 async def get_pokemon(name: str) -> dict[str, Any]:
     """Champions types, abilities, base stats and Mega forms for a Pokémon.
-    Accepts localized and form names. Base stats are Champions Lv-50 base values —
-    use calc_stats for final stats from an SP spread."""
+    Accepts localized and form names; a Mega name ("Mega Altaria", "Mega
+    Charizard X") returns that Mega's own typing/ability/stats with the base form
+    alongside. Base stats are Champions Lv-50 base values — use calc_stats for
+    final stats from an SP spread."""
     return pokedex.get_pokemon(_db(), name)
 
 
@@ -361,6 +404,18 @@ async def search_items(query: str | None = None, limit: int = 50) -> dict[str, A
 async def get_ability(name: str) -> dict[str, Any]:
     """Effect text for an ability."""
     return reference.get_ability(_db(), name)
+
+
+@mcp.tool()
+async def get_field_effects(name: str | None = None) -> dict[str, Any]:
+    """What a weather, terrain, Trick Room, Tailwind or screen actually does in
+    Champions: damage/stat modifiers, accuracy changes, speed abilities, who sets
+    it, its duration and extender item, and the calc_damage argument for it.
+    Accepts the effect, its move or its ability ("snow", "Snowscape", "Snow
+    Warning", "grassy", "Trick Room"); "weather"/"terrain" list that group; no
+    argument lists all. Use it instead of recalling mechanics from older games
+    (e.g. snow is not hail: no chip damage, no Ice power boost)."""
+    return fields.get_field_effects(_db(), name)
 
 
 @mcp.tool()
@@ -560,7 +615,9 @@ async def get_role_description(role: str, format: str | None = None) -> dict[str
 async def get_usage_stats(
     format: str = "vgc", top: int = 30, order: str = "top", megas_only: bool = False,
 ) -> dict[str, Any]:
-    """Usage ranking for VGC (doubles) or BSS (singles). order='top' (default)
+    """Usage ranking for VGC (doubles) or BSS (singles). Each row carries the
+    `types`, `abilities` and `base_speed` of the form actually played (the Mega's
+    when `played_as_mega`). order='top' (default)
     returns the most-used Pokémon first. order='bottom' returns the
     least-used Pokémon first — every legal Pokémon is ranked (no cutoff), so
     this is the correct way to find real off-meta/underdog picks instead of
@@ -568,6 +625,18 @@ async def get_usage_stats(
     ranking to species with a Mega Evolution (e.g. to find the best or most
     slept-on Mega)."""
     return usage.get_usage_stats(_db(), format, top, order, megas_only)
+
+
+@mcp.tool()
+async def get_threat_profile(format: str = "vgc", top: int = 12) -> dict[str, Any]:
+    """**The threat map in one call — use it first when reading the meta.** For
+    each of the top-usage Pokémon: the form actually played (Megas resolved),
+    its typing, ability, Speed tier (neutral/positive max), 4x/2x weaknesses and
+    immunities, and the moves/items the field runs on it. Plus a field summary:
+    attacking types ranked by how many threats they hit super-effectively, and
+    the STAB types the threats attack with. Every field is Champions data —
+    quote it instead of recalling typings or coverage from memory."""
+    return usage.get_threat_profile(_db(), format, top)
 
 
 @mcp.tool()
@@ -835,8 +904,10 @@ async def validate_team(team: list[dict[str, Any]], format: str = "vgc") -> dict
 
 @mcp.tool()
 async def analyze_team(team: list[dict[str, Any]], format: str = "vgc") -> dict[str, Any]:
-    """Legality + meta context for a team: per-member types/BST/usage rank and the
-    top meta threats not on the team.
+    """Legality + meta context for a team: per-member battle typing (the Mega's
+    when it holds its stone)/BST/usage rank, the top meta threats not on the
+    team, and `shared_weaknesses` — attacking types that hit 2+ members, with
+    `flagged` on any that hit 3+ (fix those).
 
     Also reports `dependency_gaps` — members whose plan needs a field effect
     nobody on the team provides (slow attackers with no Trick Room/Tailwind/Speed
