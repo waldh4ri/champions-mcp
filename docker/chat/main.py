@@ -179,7 +179,7 @@ SYSTEM_PROMPT = (
     "Pokémon. Defensively the goal INVERTS: a good answer wants to be 3HKO'd or "
     "worse by what it switches into. Quote the actual %HP range and KO chance.\n"
     "- Protect is a doubles move. Near-mandatory in VGC, usually a wasted turn in "
-    "BSS (only 42 of 235 species run it in singles vs 224 in doubles). In BSS use "
+    "BSS (only 48 of 268 species run it in singles vs 250 in doubles). In BSS use "
     "it only for a concrete reason (banking a Speed Boost turn, scaling passive "
     "damage behind recovery, scouting a Choice lock), never as a default 4th move.\n"
     "- Champions Speed is on its own scale (roster 40-162, median ~98) — remembered "

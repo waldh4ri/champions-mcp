@@ -1,7 +1,7 @@
 [project]
 name = "champions-mcp"
 version = "2.0.0"
-description = "MCP server for AI-assisted Pokémon Champions team building, served entirely from a local SQLite mirror of championsbattledata.com (single data source)."
+description = "MCP server for AI-assisted Pokémon Champions team building, served entirely from a local SQLite mirror of pokechamp.gg (single data source)."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -1,6 +1,6 @@
 """Competitive role vocabulary (curated reference, not source data).
 
-Every other module in champions-mcp reads the championsbattledata mirror. This
+Every other module in champions-mcp reads the pokechamp.gg-built mirror. This
 one does not: roles are *analytical* concepts from the wider competitive scene
 (Smogon's Pokémon Dictionary and the OU Role Compendiums for singles, the VGC
 teambuilding-framework literature for doubles), not a field in the data source.
@@ -1580,10 +1580,10 @@ _ROLES: list[dict[str, Any]] = [
             "— blocks priority moves against grounded Pokémon; Misty Terrain "
             "blocks status and halves Dragon damage. Which terrain you pick is "
             "usually decided by the protective clause, not the damage boost. "
-            "Champions note: Electric Surge is the only terrain-setting ability "
-            "in this game and there is no Terrain Extender, so terrain here is "
-            "almost always set by the move — meaning it costs a turn and lasts "
-            "only five."
+            "Champions note: Electric Surge (Pincurchin), Grassy Surge "
+            "(Rillaboom) and Psychic Surge (Indeedee) exist on the current "
+            "roster — no Misty Surge — and Terrain Extender exists, so a "
+            "surge setter running it gets 8 turns instead of the move's 5."
         ),
         "formats": _f(
             vgc=("common", "Psychic Terrain shutting off Fake Out and priority, "
@@ -1900,7 +1900,7 @@ _CREATIVE_PICK_GATE = {
 }
 
 _DISCLAIMER = (
-    "Roles are analytical vocabulary, not data from championsbattledata. They "
+    "Roles are analytical vocabulary, not data from the game mirror. They "
     "describe what a team slot is *for*. Confirm every concrete pick against "
     "the Champions tools — is_legal_pokemon, get_pokemon_moves, get_item and "
     "get_pokemon_sets — because Champions movepools and items differ from "

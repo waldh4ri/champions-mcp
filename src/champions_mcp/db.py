@@ -1,24 +1,25 @@
 """SQLite data layer for champions-mcp v2.
 
 A single file, ``champions.sqlite``, is the entire runtime data source. It is
-built by ``champions-mcp-pull`` from championsbattledata.com (+ a one-time
-PokeAPI text enrichment) and read by the MCP server with **zero** network
-access. All SQL lives here so the read-model modules stay declarative.
+built by ``champions-mcp-pull`` from pokechamp.gg (+ PokeAPI for the type
+chart and localized species names) and read by the MCP server with **zero**
+network access. All SQL lives here so the read-model modules stay declarative.
 
 Tables
 ------
-pokemon            one row per playable battle entry (235), incl. forms/Megas
+pokemon            one row per playable battle entry (~268), incl. forms
 pokemon_types      (slug, type)                        -> pokemons_by_type
 pokemon_abilities  (slug, ability_slug, ability_name)  -> pokemons_by_ability
 learnable_moves    (slug, move_slug, move_name)        -> movepool / pokemons_by_move
 usage              parsed usage rows per format         -> get_pokemon_sets
 usage_rank         (format, rank, slug)                 -> get_usage_stats top-N
 teammates          (slug, format, rank, teammate_*)     -> suggest_cores
-moves/abilities/items   PokeAPI-enriched reference text
+moves/abilities/items   pokechamp.gg reference text
 mega_forms         (form_name, species_slug, mega_kind, ...)  -> Mega Evolution data
 type_chart         (attacking, defending, multiplier)   -> weaknesses
 build_teams        one observed team per row + provenance  -> get_observed_sets
 build_members      that team's six members and their sets  -> get_team_context
+smogon_sets        curated cross-game sets (Smogon/Showdown)  -> get_historical_sets
 meta               key/value build markers (season, data_version, counts)
 
 ``usage`` and ``build_*`` answer different questions and are not interchangeable.
@@ -26,6 +27,8 @@ meta               key/value build markers (season, data_version, counts)
 computed independently per slot — so it can never say which moves accompany
 which item. ``build_teams``/``build_members`` hold complete lists people
 actually brought, which is what makes those joint questions answerable.
+``smogon_sets`` is neither: it's curated cross-game evidence (not Champions
+tournaments), kept as a fallback for when the observed corpus is thin.
 """
 
 from __future__ import annotations
@@ -209,6 +212,28 @@ CREATE INDEX IF NOT EXISTS idx_bm_slug ON build_members(slug);
 CREATE INDEX IF NOT EXISTS idx_bm_team ON build_members(team_id);
 CREATE INDEX IF NOT EXISTS idx_bm_set ON build_members(set_hash);
 
+-- Curated competitive sets from Smogon/Pokémon Showdown (every generation and
+-- tier they publish), kept as a historical-builds fallback for when the real
+-- observed-team corpus (build_teams/build_members, above) is thin or empty —
+-- which it is right after a regulation rollover, before real Champions
+-- tournaments/ladder games exist. Not Champions-verified: legality against
+-- the current roster/movepool/item pool is checked at read time, not here.
+CREATE TABLE IF NOT EXISTS smogon_sets (
+    id            TEXT PRIMARY KEY,  -- sha1(slug|format|source_format|set_name)
+    slug          TEXT NOT NULL,     -- resolved against `pokemon`
+    format        TEXT NOT NULL,     -- 'doubles' | 'singles'
+    source_format TEXT NOT NULL,     -- raw Showdown format id, e.g. 'gen9ou'
+    generation    INTEGER NOT NULL,  -- 1-9; prefer higher when deduping
+    set_name      TEXT NOT NULL,     -- e.g. 'Choice Scarf'
+    ability       TEXT,
+    item          TEXT,
+    nature        TEXT,
+    moves_json    TEXT NOT NULL,     -- JSON list, as Smogon gives it
+    evs_json      TEXT,              -- JSON dict, canonical champions_stats keys
+    set_hash      TEXT NOT NULL      -- item+ability+nature+moves, dedup across gens/tiers
+);
+CREATE INDEX IF NOT EXISTS idx_smogon_slug_fmt ON smogon_sets(slug, format);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -220,7 +245,7 @@ _BUILD_TABLES = (
     "pokemon", "pokemon_types", "pokemon_abilities", "learnable_moves",
     "usage", "usage_rank", "teammates",
     "moves", "abilities", "items", "mega_forms", "type_chart", "meta",
-    "build_teams", "build_members",
+    "build_teams", "build_members", "smogon_sets",
 )
 
 
@@ -322,8 +347,8 @@ class Db:
         """Delete all rows from ``build_teams``/``build_members`` only.
 
         Narrower than `reset_build_tables`: the observed-build corpus can be
-        refreshed on its own — independent of championsbattledata's roster
-        and usage data, which come from an entirely different upstream — so
+        refreshed on its own — independent of pokechamp's roster and usage
+        data, which come from an entirely different upstream — so
         this must not touch `pokemon`/`usage`/etc. Used both as the first step
         of a full rebuild (where it is a no-op on an empty temp database) and
         to refresh just the corpus against an already-populated database.
@@ -331,6 +356,18 @@ class Db:
         with self._lock:
             self._conn.execute("DELETE FROM build_teams")
             self._conn.execute("DELETE FROM build_members")
+            self._conn.commit()
+
+    def reset_smogon_sets(self) -> None:
+        """Delete all rows from ``smogon_sets`` only.
+
+        Same rationale as `reset_observed_builds`: this corpus (Smogon/
+        Showdown sets) can be refreshed independently of the roster pull and
+        of the observed-team corpus, since it comes from a third, unrelated
+        upstream that changes on its own schedule.
+        """
+        with self._lock:
+            self._conn.execute("DELETE FROM smogon_sets")
             self._conn.commit()
 
     def executemany(self, sql: str, rows: list[tuple]) -> None:

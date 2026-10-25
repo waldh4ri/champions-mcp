@@ -26,7 +26,7 @@ The `champions-mcp` server is the source of truth. **Build from the tools, not
 from memory.** "Meta-accurate" means the team is derived from real usage data,
 not from generic Pokémon knowledge.
 
-All of champions-mcp's data comes from a single source, **championsbattledata.com**,
+All of champions-mcp's data comes from a single source, **pokechamp.gg**,
 pulled into a local database. Usage data (moves, items, abilities, natures, SP
 spreads, teammates, rankings) exists for **both** VGC (doubles) and BSS
 (singles).
@@ -43,7 +43,7 @@ to memory/Scarlet-Violet assumptions.
 docker compose up -d --build
 ```
 
-On first start the server builds its local database from championsbattledata.com
+On first start the server builds its local database from pokechamp.gg
 (takes ~30s), then prints the ready URL:
 
 ```
@@ -429,14 +429,13 @@ support it, the idea is dead, and reporting that honestly is the correct answer.
 - **Items**: call `list_items` once — if an item is not in it, it does not exist
   here. The Champions item pool is much smaller than other games'.
   **Choice Scarf is the only Choice item** — there is no Choice Band or Specs —
-  and there is no Assault Vest, Rocky Helmet, Heavy-Duty Boots, Covert Cloak,
-  Safety Goggles or Terrain Extender. Bulk and power must come from Stat Points,
-  typing and abilities instead. Confirm with `search_items` before planning
-  around any item.
+  and there is no Assault Vest, Heavy-Duty Boots, Covert Cloak or Safety
+  Goggles. Bulk and power must come from Stat Points, typing and abilities
+  instead. Confirm with `search_items` before planning around any item.
 - **Stats**: Stat Points (66/32, 1 SP = +1), not 252-EV math.
-- **Protect is a doubles move.** In VGC it is near-mandatory (224 of 235 species
-  run it, many above 90%). In BSS it is usually a wasted turn — only 42 of 235
-  species run it at all, 13 of the top 60. With one Pokémon per side it buys no
+- **Protect is a doubles move.** In VGC it is near-mandatory (250 of 268 species
+  run it, many above 90%). In BSS it is usually a wasted turn — only 48 of 268
+  species run it at all, 15 of the top 60. With one Pokémon per side it buys no
   partner action, and a wasted turn in a 3-Pokémon game is free setup for the
   opponent. Put it on a BSS set only for a concrete reason: banking a Speed
   Boost-style accumulating turn, scaling passive damage behind reliable

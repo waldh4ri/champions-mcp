@@ -1,6 +1,6 @@
 """Pokédex read-model: species, types, abilities, Champions stats, weaknesses.
 
-All values are Champions-accurate (from championsbattledata), including Mega and
+All values are Champions-accurate (from pokechamp.gg), including Mega and
 regional forms with their own stats/types/abilities.
 """
 
@@ -187,14 +187,15 @@ def get_random_pokemon(db: Db) -> dict[str, Any]:
 
 
 def list_megas(
-    db: Db, query: str | None = None, limit: int = 80,
+    db: Db, query: str | None = None, limit: int = 100,
 ) -> dict[str, Any]:
     """Species with a Mega Evolution in Champions: required Mega Stone,
     typing/ability change, and the stat deltas vs. the base form.
 
-    Champions has 75 Mega forms, and the full per-Mega record (both the absolute
-    base stats *and* the deltas) totals ~33k characters — more than a typical MCP
-    client will accept in one tool result, so an unfiltered dump came back
+    Champions has 80+ Mega forms (a number that only grows as regulations add
+    more), and the full per-Mega record (both the absolute base stats *and*
+    the deltas) totals tens of thousands of characters — more than a typical
+    MCP client will accept in one tool result, so an unfiltered dump came back
     silently truncated. Unfiltered calls therefore return a compact index; pass
     ``query`` to narrow to specific Megas and get the full stat breakdown for
     those. ``limit`` bounds either mode.
@@ -228,15 +229,17 @@ def list_megas(
             "types": r["types"],
             "ability": r["ability"],
             "base_stat_total": r["bst"],
-            "base_stat_total_change": r["bst_change"],
         }
         # Full numbers only when the caller narrowed the set — that's when they
-        # are actually comparing Megas rather than browsing what exists.
-        # mega_kind is redundant in the index (form_name already reads
-        # "Mega ... X"/"Primal ..."), so it rides along with the detail too.
+        # are actually comparing Megas rather than browsing what exists. Keeps
+        # the compact index (all Megas, growing every regulation) inside a
+        # single MCP tool result. mega_kind is redundant in the index
+        # (form_name already reads "Mega ... X"/"Primal ..."), so it rides
+        # along with the detail too.
         if query:
             e["mega_kind"] = r["mega_kind"]
             e["base_stats"] = r["base_stats"]
+            e["base_stat_total_change"] = r["bst_change"]
             e["stat_changes"] = r["stat_changes"]
         return e
 

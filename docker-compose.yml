@@ -17,8 +17,9 @@
 #   docker compose --profile ai up -d --build    # core stack + local-LLM chat UI
 #
 # On first start champions-mcp runs `champions-mcp-pull` to build the local
-# champions.sqlite from championsbattledata.com (+ one-time PokeAPI enrichment),
-# persisted in the champions-data volume. After that the server is fully offline.
+# champions.sqlite from pokechamp.gg (+ PokeAPI for the type chart and
+# localized species names), persisted in the champions-data volume. After
+# that the server is fully offline.
 # Force a data refresh with CHAMPIONS_MCP_PULL=1.
 #
 # The MCP URL is printed after startup. Default: http://localhost:8000/mcp
@@ -71,6 +72,8 @@ services:
       CHAMPIONS_MCP_CACHE_DB: "/data/pull-cache.sqlite"
       # Set to 1 to re-pull fresh data on next restart
       CHAMPIONS_MCP_PULL: "${CHAMPIONS_MCP_PULL:-0}"
+      # Roster/movepool/reference/usage source (see .env.example)
+      CHAMPIONS_MCP_POKECHAMP_BASE: "${CHAMPIONS_MCP_POKECHAMP_BASE:-https://pokechamp.gg}"
       # Observed-team corpus (Limitless teamlists + pokedb ranked ladder).
       # All optional — see .env.example. The key only raises the rate limit;
       # the pull works unauthenticated, it just paces itself.

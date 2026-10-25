@@ -1,9 +1,9 @@
 """Fetch *observed teams* — real six-Pokémon lists people actually brought.
 
-championsbattledata gives marginal frequencies (how often Garchomp runs
-Earthquake, how often it holds a Choice Scarf) but never the joint fact that a
-*Scarf* Garchomp runs a different four moves than a Life Orb one. Two sources
-close that gap, and they split cleanly by format:
+pokechamp.gg gives marginal frequencies (how often Garchomp runs Earthquake,
+how often it holds a Choice Scarf) but never the joint fact that a *Scarf*
+Garchomp runs a different four moves than a Life Orb one. Two sources close
+that gap, and they split cleanly by format:
 
 * **Limitless** (`play.limitlesstcg.com/api`) — VGC/doubles. Tournament
   standings carry every player's full teamlist: species, item, ability, nature

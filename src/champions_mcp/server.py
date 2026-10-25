@@ -1,8 +1,8 @@
 """champions-mcp v2 — MCP server.
 
 Every tool reads from the local ``champions.sqlite`` mirror built by
-``champions-mcp-pull`` (championsbattledata.com + a one-time PokeAPI text
-enrichment, plus the observed-team corpus). The only runtime outbound calls are
+``champions-mcp-pull`` (pokechamp.gg + PokeAPI for the type chart/localized
+names, plus the observed-team corpus). The only runtime outbound calls are
 the optional damage-calc sidecar (``calc_damage``) and ``create_pokepaste``.
 
 Built on ``mcp.server.mcpserver.MCPServer`` (MCP SDK 2.x), which replaced the
@@ -22,6 +22,7 @@ from mcp.server.mcpserver import MCPServer  # pyright: ignore[reportMissingImpor
 from . import legality as legality_mod
 from . import (
     builds,
+    historical_sets,
     pokedex,
     pokepaste,
     profiles,
@@ -189,7 +190,10 @@ _TOOL_GUIDE = {
                        "provenance). Prefer get_observed_sets over "
                        "get_pokemon_sets when committing to a set: the latter "
                        "is per-slot popularity and stacking its top picks "
-                       "produces a build nobody plays.",
+                       "produces a build nobody plays. get_historical_sets is "
+                       "a cross-game (Smogon/Showdown) fallback for when that "
+                       "corpus is thin — get_observed_sets surfaces it "
+                       "automatically in that case too.",
     "using_the_meta": "Usage data tells you what the field brings and therefore "
                       "what you must beat — it is not a shopping list. Copy the "
                       "modal team and you inherit its losses while everyone "
@@ -219,7 +223,7 @@ async def get_game_rules(format: str = "vgc") -> dict[str, Any]:
         "speed_modifiers": _SPEED_MODIFIERS,
         "mega_evolution": _MEGA_RULES,
         "data": {
-            "source": "championsbattledata.com",
+            "source": "pokechamp.gg",
             "season": db.meta("season", "Current"),
             "data_version": db.meta("data_version", ""),
             "generated_at": db.meta("generated_at", ""),
@@ -291,11 +295,11 @@ async def get_random_pokemon() -> dict[str, Any]:
 
 
 @mcp.tool()
-async def list_megas(query: str | None = None, limit: int = 80) -> dict[str, Any]:
+async def list_megas(query: str | None = None, limit: int = 100) -> dict[str, Any]:
     """Species with a Mega Evolution in Champions: the Mega Stone that unlocks
     it, typing/ability change, and stat deltas vs. the base form.
 
-    Champions has 75 Megas, so omitting `query` returns a **compact index**
+    Champions has 80+ Megas, so omitting `query` returns a **compact index**
     (stone, typing, ability, BST change) — enough to see what exists. Pass a
     species/Mega name substring to get the **full** base stats and per-stat
     changes for the matches. `count` vs `matched` tells you if `limit` cut the
@@ -335,12 +339,11 @@ async def list_items(
     remember from another game.
 
     Champions' pool is much smaller than other games': Choice Scarf is the only
-    Choice item, and there is no Assault Vest, Rocky Helmet, Heavy-Duty Boots,
-    Covert Cloak or Safety Goggles. **If an item is not in this list, it does not
-    exist here.**
+    Choice item, and there is no Assault Vest, Heavy-Duty Boots, Covert Cloak or
+    Safety Goggles. **If an item is not in this list, it does not exist here.**
 
-    Mega Stones are hidden by default (75 of the 148 items, and the stone is
-    decided by which Mega you want — see list_megas); pass
+    Mega Stones are hidden by default (around half of the item pool, and the
+    stone is decided by which Mega you want — see list_megas); pass
     include_mega_stones=True for them. Filter with `category` (held-items,
     type-enhancement, type-protection, medicine, choice, bad-held-items,
     species-specific) or a `query` substring."""
@@ -425,7 +428,7 @@ async def search_pokemon_by_move(move: str) -> dict[str, Any]:
 @mcp.tool()
 async def get_pokemon_moves(name: str) -> dict[str, Any]:
     """**Call before assigning moves.** Full Champions-legal movepool for a
-    Pokémon (championsbattledata learnsets; SV/PokeAPI learnsets are wrong).
+    Pokémon (pokechamp.gg learnsets; SV/PokeAPI learnsets are wrong).
 
     Also returns `coverage_for_weaknesses`: for each type this Pokémon is weak
     to, the legal moves it owns that hit that type back super-effectively (e.g.
@@ -542,8 +545,8 @@ async def get_role_description(role: str, format: str | None = None) -> dict[str
 
     Anything under `not_in_champions` does not exist in this game — Champions'
     item pool is much smaller than other games': Choice Scarf is the only Choice
-    item, and there is no Assault Vest, Rocky Helmet, Heavy-Duty Boots, Covert
-    Cloak or Safety Goggles. Bulk and power come from Stat Points and typing.
+    item, and there is no Assault Vest, Heavy-Duty Boots, Covert Cloak or Safety
+    Goggles. Bulk and power come from Stat Points and typing.
 
     Accepts an id, name or alias ('offensive pivot', 'scarfer', 'follow me
     user'); ambiguous input returns candidates. Pass format='vgc'|'bss' for an
@@ -608,8 +611,39 @@ async def get_observed_sets(
     Evidence differs by format: VGC gives `full_set` (item+ability+nature+moves,
     from tournament open team sheets), BSS gives `team_and_item` (the ranked
     ladder publishes teams and held items but no moves) — so in BSS any moveset
-    is your inference and must be justified, not presented as observed."""
+    is your inference and must be justified, not presented as observed.
+
+    When the real observed-team corpus is thin or empty for this Pokémon/format
+    (e.g. right after a regulation rollover, before tournaments exist yet), the
+    response also carries `historical_sets` — curated cross-game Smogon/
+    Showdown sets, each flagged with whether its move/item/ability is even
+    legal in Champions today. That is a fallback, not Champions evidence; see
+    get_historical_sets to pull the same thing directly."""
     return builds.get_observed_sets(_db(), name, format, item, with_teammate, limit)
+
+
+@mcp.tool()
+async def get_historical_sets(
+    name: str, format: str = "vgc", limit: int = 8,
+) -> dict[str, Any]:
+    """Curated cross-game sets for a Pokémon from Smogon/Pokémon Showdown —
+    every generation and tier Smogon has ever published, filtered only to this
+    format's battle type (doubles for vgc, singles for bss; the specific tier/
+    generation inside that doesn't matter).
+
+    **Not Champions tournament data** — Champions predates all of it, has a
+    much smaller item pool, and a different movepool per species. Every set
+    carries `legal_in_champions` (overall) and per-move/item/ability flags, so
+    a build that doesn't translate is visible rather than silently offered as
+    fact. `invested_stats` names which stats the original EV spread favoured —
+    turn that into a real Stat Point spread with calc_stats/
+    compute_speed_threshold rather than converting the EV numbers directly;
+    Champions' 66-SP budget doesn't map 1:1 onto 510 EVs.
+
+    Use this as a last resort when get_observed_sets/get_pokemon_sets have
+    little or nothing — it's also surfaced automatically inside
+    get_observed_sets when its real corpus is thin."""
+    return historical_sets.get_historical_sets(_db(), name, format, limit)
 
 
 @mcp.tool()

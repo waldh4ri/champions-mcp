@@ -1,16 +1,27 @@
-"""Parse the championsbattledata index into champions.sqlite, then enrich.
+"""Parse pokechamp.gg into champions.sqlite, then enrich with PokeAPI.
 
 Run order:
-  1. parse index -> pokemon / types / abilities / learnable_moves / usage /
-     usage_rank / teammates  (the single source, no network beyond the index)
-  2. PokeAPI enrichment       -> moves / abilities / items / type_chart + names
-  3. write meta markers, report counts
+  1. parse pokechamp.gg -> pokemon / types / abilities / learnable_moves /
+     moves / abilities / items (the current legal roster + the whole
+     move/ability/item pool, from a handful of whole-game requests)
+  2. one page fetch per non-Mega legal entry -> usage / usage_rank / teammates
+     (the only pokechamp data that needs a per-entry request)
+  3. build_mega_forms -> mega_forms, from the Mega/Z-Mega legal entries
+     already parsed in step 1
+  4. PokeAPI enrichment -> type_chart + localized species names (unrelated to
+     which roster source is used; ``pull.builds``' pokedb ingestion resolves
+     Japanese names against the latter)
+  5. ingest_smogon_sets -> smogon_sets, a historical-builds fallback pool
+     (independent of the observed-team corpus below)
+  6. ingest_builds (Limitless + pokedb) -> build_teams / build_members
+  7. write meta markers, report counts
 """
 
 from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from ..cache import Cache
@@ -18,21 +29,22 @@ from ..config import Settings
 from ..db import Db
 from ..normalize import slugify
 from . import builds as builds_mod
-from .known_items import KNOWN_HOLDABLE_ITEMS
 from .pokeapi import TYPES, PokeApiEnricher
+from .pokechamp_source import PokechampClient
+from .smogon import ingest_smogon_sets
 
-# championsbattledata battle name -> @smogon/calc + Showdown species name.
-# Only the 33 non-trivial form entries need an override; base entries already
-# carry a valid Showdown name in their battle_name. Doubles as the pokepaste
-# export name and the damage-calc species name.
+# pokechamp slug -> @smogon/calc + Showdown species name. Only entries whose
+# Showdown name genuinely differs from pokechamp's own display name need one;
+# a handful of the old championsbattledata overrides (Rotom's appliance
+# formes, Aegislash "Shield Forme", Lycanroc "Dusk/Midnight Form", Florges
+# "Red Flower", Furfrou "Natural Form", Palafin "Zero Form") don't apply here
+# because pokechamp doesn't track those as separate legal slugs at all — the
+# plain species slug already *is* the base/default form Showdown expects.
 SHOWDOWN_OVERRIDES: dict[str, str] = {
-    "aegislash-shield-forme": "Aegislash",
     "alolan-ninetales": "Ninetales-Alola",
     "alolan-raichu": "Raichu-Alola",
     "basculegion-female": "Basculegion-F",
     "basculegion-male": "Basculegion",
-    "florges-red-flower": "Florges",
-    "furfrou-natural-form": "Furfrou",
     "galarian-slowbro": "Slowbro-Galar",
     "galarian-slowking": "Slowking-Galar",
     "galarian-stunfisk": "Stunfisk-Galar",
@@ -46,23 +58,20 @@ SHOWDOWN_OVERRIDES: dict[str, str] = {
     "hisuian-samurott": "Samurott-Hisui",
     "hisuian-typhlosion": "Typhlosion-Hisui",
     "hisuian-zoroark": "Zoroark-Hisui",
-    "lycanroc-dusk-form": "Lycanroc-Dusk",
-    "lycanroc-midnight-form": "Lycanroc-Midnight",
     "meowstic-female": "Meowstic-F",
-    "palafin-zero-form": "Palafin",
     "paldean-tauros-aqua-breed": "Tauros-Paldea-Aqua",
     "paldean-tauros-blaze-breed": "Tauros-Paldea-Blaze",
     "paldean-tauros-combat-breed": "Tauros-Paldea-Combat",
-    "rotom-fan": "Rotom-Fan",
-    "rotom-frost": "Rotom-Frost",
-    "rotom-heat": "Rotom-Heat",
-    "rotom-mow": "Rotom-Mow",
-    "rotom-wash": "Rotom-Wash",
-    "vivillon-fancy-pattern": "Vivillon-Fancy",
 }
 
-# index format folder -> internal format key
-FORMAT_KEY = {"Doubles": "doubles", "Singles": "singles"}
+# usage.py category strings each per-format usage list maps onto.
+_USAGE_CATEGORY = {
+    "moveUsage": "move", "itemUsage": "held_item", "abilityUsage": "ability",
+}
+
+_RAISED = {
+    "atk": "Atk", "def": "Def", "spatk": "SpA", "spdef": "SpD", "spe": "Spe",
+}
 
 _STAT_COLS = (
     "hp_points", "attack_points", "defense_points",
@@ -70,129 +79,223 @@ _STAT_COLS = (
 )
 
 
-def _base_stats(summary: dict[str, Any]) -> dict[str, int]:
-    """Extract the six base stats from a raw index ``summary`` block."""
-    bs = summary.get("baseStats") or {}
+def _stat_dict(bs: dict[str, Any]) -> dict[str, int]:
+    """Map pokechamp's ``{hp,atk,def,spatk,spdef,spe}`` to the schema's stat keys."""
     return {
-        "hp": bs.get("hp") or 0,
-        "attack": bs.get("attack") or 0,
-        "defense": bs.get("defense") or 0,
-        "special_attack": bs.get("sp_attack") or 0,
-        "special_defense": bs.get("sp_defense") or 0,
-        "speed": bs.get("speed") or 0,
+        "hp": bs.get("hp") or 0, "attack": bs.get("atk") or 0,
+        "defense": bs.get("def") or 0, "special_attack": bs.get("spatk") or 0,
+        "special_defense": bs.get("spdef") or 0, "speed": bs.get("spe") or 0,
     }
 
 
-def _split_abilities(raw: str) -> list[str]:
-    """Split a ``"AbilityA|AbilityB"``-style raw ability string into a clean list."""
-    return [a.strip() for a in (raw or "").split("|") if a.strip()]
+def _mega_kind(form_name: str) -> str:
+    """"Mega X"/"Mega Y"/"Mega Z" for a disambiguated Mega, else plain "Mega"."""
+    for suffix in (" X", " Y", " Z"):
+        if form_name.endswith(suffix):
+            return f"Mega {suffix.strip()}"
+    return "Mega"
 
 
-def parse_index(db: Db, index: dict[str, Any]) -> dict[str, Any]:
-    """Populate every source-derived table from the raw championsbattledata index.
+_STONE_SPECIES_RE = re.compile(r"allows (.+?) to Mega Evolve")
+_STONE_TARGET_RE = re.compile(r"Mega Evolve into (Mega [^.]+)")
+_PAREN_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def _resolve_mega_stones(
+    items: list[dict[str, Any]], forms_by_species: dict[str, list[str]],
+) -> dict[str, str]:
+    """Match each Mega/Z-Mega form name to the item that unlocks it.
+
+    pokechamp's Mega Stone descriptions name the base species always, and the
+    exact target Mega form only when a species has more than one Mega option
+    (e.g. Charizardite X/Y, Absolite vs. Absolite Z) — a single-Mega species'
+    stone just says "...allows Absol to Mega Evolve.", generically.
 
     Args:
-        db: Open database handle with `SCHEMA` already applied.
-        index: The parsed pokemon-index.json document.
+        items: Rows from :meth:`PokechampClient.items_listing`.
+        forms_by_species: Base species display name -> its legal Mega form
+            names (as in ``pokemon.formName``), grouped by shared dex number.
 
     Returns:
-        Collected enrichment keys for the PokeAPI pass: sorted ``moves``,
-        ``items``, ``abilities``, ``species`` names, plus a ``name_to_slug``
-        lookup used while parsing teammate rows.
+        Mega form name -> the item name that unlocks it. Omits any form left
+        genuinely ambiguous (none observed as of Regulation M-C).
     """
-    pokemon = index["pokemon"]
-    name_to_slug = {p["battleName"]: p["slug"] for p in pokemon}
+    stones_by_species: dict[str, list[dict[str, Any]]] = {}
+    for it in items:
+        if it.get("category") != "Mega Stone":
+            continue
+        m = _STONE_SPECIES_RE.search(it.get("description") or "")
+        if not m:
+            continue
+        species = _PAREN_SUFFIX_RE.sub("", m.group(1)).strip()
+        stones_by_species.setdefault(species, []).append(it)
+
+    stone_for_form: dict[str, str] = {}
+    for species, forms in forms_by_species.items():
+        species = _PAREN_SUFFIX_RE.sub("", species).strip()
+        candidates = stones_by_species.get(species, [])
+        if len(candidates) == 1:
+            # One stone for the species: either a single Mega option, or (as
+            # with Meowstic's Male/Female Megas) multiple forms that genuinely
+            # share the one item.
+            for form in forms:
+                stone_for_form[form] = candidates[0]["name"]
+            continue
+        for it in candidates:
+            m = _STONE_TARGET_RE.search(it.get("description") or "")
+            if m:
+                stone_for_form[m.group(1).strip()] = it["name"]
+        unresolved = [f for f in forms if f not in stone_for_form]
+        leftover = [it for it in candidates if it["name"] not in stone_for_form.values()]
+        if len(unresolved) == 1 and len(leftover) == 1:
+            stone_for_form[unresolved[0]] = leftover[0]["name"]
+    return stone_for_form
+
+
+async def parse_pokechamp(
+    db: Db, client: PokechampClient,
+) -> dict[str, Any]:
+    """Populate every pokechamp-derived table: roster, reference pools, and
+    (via one page fetch per legal non-Mega entry) usage/teammates.
+
+    Args:
+        db: Open database handle with ``SCHEMA`` already applied.
+        client: Open :class:`PokechampClient`.
+
+    Returns:
+        Diagnostics: row counts written and any skip reasons encountered.
+    """
+    filter_index, listing, moves_listing, moves_options, abilities_listing, \
+        abilities_options, items_listing, regulations = await client.gather([
+            client.filter_index(), client.pokemon_listing(),
+            client.moves_listing(), client.moves_options(),
+            client.abilities_listing(), client.abilities_options(),
+            client.items_listing(), client.regulations(),
+        ])
+
+    move_by_id: dict[int, dict[str, Any]] = {}
+    for m in moves_listing:
+        # Lowercase to match this table's existing (PokeAPI-derived)
+        # convention — unlike pokemon_types/type_chart, which are Capitalized.
+        move_by_id[m["id"]] = {
+            "slug": slugify(m["name"]), "name": m["name"],
+            "type": (m.get("type") or "").lower() or None,
+            "damage_class": (m.get("category") or "").lower() or None,
+            "power": m.get("power") or None,
+            "accuracy": m.get("accuracy"), "pp": m.get("pp"),
+            "priority": m.get("priority", 0), "target": None,
+            "effect": m.get("description"),
+        }
+    for m in moves_options:
+        move_by_id.setdefault(m["value"], {
+            "slug": slugify(m["label"]), "name": m["label"], "type": None,
+            "damage_class": None, "power": None, "accuracy": None, "pp": None,
+            "priority": 0, "target": None, "effect": None,
+        })
+
+    ability_by_id: dict[int, dict[str, Any]] = {}
+    for a in abilities_listing:
+        ability_by_id[a["id"]] = {
+            "slug": slugify(a["name"]), "name": a["name"],
+            "effect": a.get("description"), "short_effect": a.get("description"),
+        }
+    for a in abilities_options:
+        ability_by_id.setdefault(a["value"], {
+            "slug": slugify(a["label"]), "name": a["label"],
+            "effect": None, "short_effect": None,
+        })
+
+    items_by_slug: dict[str, tuple] = {}
+    for it in items_listing:
+        is_mega_stone = 1 if it.get("category") == "Mega Stone" else 0
+        category = (it.get("category") or "other").strip().lower().replace(" ", "-")
+        items_by_slug[slugify(it["name"])] = (
+            slugify(it["name"]), it["name"], category, it.get("description"),
+            is_mega_stone,
+        )
+
+    by_id = {p["id"]: p for p in listing}
+    legal = [{**e, **by_id[e["id"]]} for e in filter_index if e["id"] in by_id]
+    by_no: dict[int, list[dict[str, Any]]] = {}
+    for e in legal:
+        by_no.setdefault(e["no"], []).append(e)
+
+    base_entries = [e for e in legal if not (e["formName"] or "").startswith("Mega")]
+    mega_entries = [e for e in legal if (e["formName"] or "").startswith("Mega")]
+
+    def _ability_names(ability_ids: dict[str, Any]) -> list[str]:
+        names, seen = [], set()
+        ids = list(ability_ids.get("standard") or [])
+        if ability_ids.get("hidden") is not None:
+            ids.append(ability_ids["hidden"])
+        for aid in ids:
+            a = ability_by_id.get(aid)
+            if a and a["slug"] not in seen:
+                seen.add(a["slug"])
+                names.append(a["name"])
+        return names
+
+    # Mega sub-form entries per base species' `no`, in the exact shape
+    # pokedex._form_view expects (mirrors the old forms_json convention).
+    mega_forms_json: dict[int, list[dict[str, Any]]] = {}
+    for e in mega_entries:
+        base = _stat_dict(e["baseStats"])
+        mega_forms_json.setdefault(e["no"], []).append({
+            "form_name": e["displayName"], "form_kind": _mega_kind(e["displayName"]),
+            "types": e.get("types", []),
+            "abilities": "|".join(_ability_names(e["abilityIds"])),
+            "hp": base["hp"], "attack": base["attack"], "defense": base["defense"],
+            "sp_attack": base["special_attack"], "sp_defense": base["special_defense"],
+            "speed": base["speed"], "base_stat_total": e.get("bst"),
+        })
 
     rows_pokemon: list[tuple] = []
     rows_types: list[tuple] = []
     rows_abilities: list[tuple] = []
     rows_moves: list[tuple] = []
-    rows_usage: list[tuple] = []
-    rows_rank: list[tuple] = []
-    rows_teammates: list[tuple] = []
+    skipped: dict[str, int] = {}
 
-    move_names: set[str] = set()
-    item_names: set[str] = set()
-    ability_names: set[str] = set()
-    base_species: set[str] = set()
+    def _skip(reason: str) -> None:
+        skipped[reason] = skipped.get(reason, 0) + 1
 
-    for p in pokemon:
-        slug = p["slug"]
-        battle_name = p["battleName"]
-        summary = p["summary"]
-        primary = summary["primary"]
-        base_name = primary.get("pokemon_name") or battle_name
-        showdown = SHOWDOWN_OVERRIDES.get(slug, battle_name)
-        types = summary.get("types", [])
-        base_stats = _base_stats(summary)
-        bst = summary.get("baseStatTotal", sum(base_stats.values()))
-        forms = summary.get("forms", [])
-
-        battle = summary.get("battleSummary", {})
-        rank_by_fmt: dict[str, int | None] = {"doubles": None, "singles": None}
-        season = index.get("defaultSeason", "Current")
-        season_block = battle.get(season, {})
-        for raw_fmt, fmt in FORMAT_KEY.items():
-            block = season_block.get(raw_fmt)
-            if not block:
-                continue
-            for row in block.get("rows", []):
-                cat = row.get("category")
-                rank = row.get("rank")
-                cp = row.get("column_position")
-                if rank_by_fmt[fmt] is None and cp is not None:
-                    rank_by_fmt[fmt] = cp
-                nm = row.get("name") or ""
-                nm_slug = slugify(nm) if nm else None
-                rows_usage.append((
-                    slug, fmt, cat, rank, nm or None, nm_slug,
-                    row.get("percentage") or None, row.get("percentage_value"),
-                    row.get("stat_up") or None, row.get("stat_down") or None,
-                    row.get("hp_points"), row.get("attack_points"),
-                    row.get("defense_points"), row.get("sp_atk_points"),
-                    row.get("sp_def_points"), row.get("speed_points"),
-                ))
-                if cat == "held_item" and nm:
-                    item_names.add(nm)
-                if cat == "teammate" and nm:
-                    tslug = name_to_slug.get(nm, slugify(nm))
-                    rows_teammates.append((slug, fmt, rank, nm, tslug))
-            if rank_by_fmt[fmt] is not None:
-                rows_rank.append((fmt, rank_by_fmt[fmt], slug))
-
+    for e in base_entries:
+        slug = e["slug"]
+        showdown = SHOWDOWN_OVERRIDES.get(slug, e["displayName"])
+        # The species-level name (for PokeAPI's /pokemon-species lookup),
+        # which for a regional/gendered alt form is its base sibling's name,
+        # not this form's own display name (e.g. "Ninetales", not "Alolan
+        # Ninetales" — PokeAPI groups regional forms under one species
+        # entry). The base sibling is normally formNo==0, but a couple of
+        # species (e.g. Floette, whose only tracked non-Mega form is "Eternal
+        # Flower" at formNo 5) don't have one, so use whichever non-Mega
+        # sibling has the lowest formNo instead of requiring exactly 0.
+        non_mega_siblings = [
+            s for s in by_no[e["no"]] if not (s["formName"] or "").startswith("Mega")
+        ]
+        species_sibling = min(
+            non_mega_siblings or [e], key=lambda s: s["formNo"],
+        )
+        base_name = species_sibling["displayName"]
         rows_pokemon.append((
-            slug, battle_name, base_name, showdown, primary.get("form_kind"),
-            json.dumps(types), json.dumps(_split_abilities(primary.get("abilities", ""))),
-            json.dumps(base_stats), bst, json.dumps(forms),
-            summary.get("sprite"), "{}", rank_by_fmt["doubles"], rank_by_fmt["singles"],
+            slug, e["displayName"], base_name, showdown,
+            e["formName"] or "Base",
+            json.dumps(e.get("types", [])),
+            json.dumps(_ability_names(e["abilityIds"])),
+            json.dumps(_stat_dict(e["baseStats"])), e.get("bst"),
+            json.dumps(mega_forms_json.get(e["no"], [])),
+            e.get("spriteUrl"), "{}", None, None,
         ))
-        for t in types:
+        for t in e.get("types", []):
             rows_types.append((slug, t))
-
-        # abilities across primary + every form (captures Mega-only abilities)
-        seen_ab: set[tuple[str, str]] = set()
-        for f in [primary, *forms]:
-            fname = f.get("form_name") or battle_name
-            for ab in _split_abilities(f.get("abilities", "")):
-                ability_names.add(ab)
-                key = (slugify(ab), fname)
-                if key in seen_ab:
-                    continue
-                seen_ab.add(key)
-                rows_abilities.append((slug, slugify(ab), ab, fname))
-            ha = f.get("hidden_ability")
-            if ha:
-                ability_names.add(ha)
-                key = (slugify(ha), fname)
-                if key not in seen_ab:
-                    seen_ab.add(key)
-                    rows_abilities.append((slug, slugify(ha), ha, fname))
-
-        for mv in p.get("learnableMoveNames", []):
-            move_names.add(mv)
-            rows_moves.append((slug, slugify(mv), mv))
-
-        base_species.add(slugify(base_name))
+        for name in _ability_names(e["abilityIds"]):
+            ability_slug = slugify(name)
+            rows_abilities.append((slug, ability_slug, name, None))
+        for move_id in e.get("learnset", []):
+            m = move_by_id.get(move_id)
+            if not m:
+                _skip("unresolved_move")
+                continue
+            rows_moves.append((slug, m["slug"], m["name"]))
 
     db.executemany(
         "INSERT INTO pokemon VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows_pokemon
@@ -200,61 +303,204 @@ def parse_index(db: Db, index: dict[str, Any]) -> dict[str, Any]:
     db.executemany("INSERT INTO pokemon_types VALUES (?,?)", rows_types)
     db.executemany("INSERT INTO pokemon_abilities VALUES (?,?,?,?)", rows_abilities)
     db.executemany("INSERT INTO learnable_moves VALUES (?,?,?)", rows_moves)
+
+    move_rows = {m["slug"]: (
+        m["slug"], m["name"], m["type"], m["damage_class"], m["power"],
+        m["accuracy"], m["pp"], m["priority"], m["target"], m["effect"],
+    ) for m in move_by_id.values()}
+    db.executemany(
+        "INSERT OR REPLACE INTO moves VALUES (?,?,?,?,?,?,?,?,?,?)",
+        list(move_rows.values()),
+    )
+    ability_rows = {a["slug"]: (
+        a["slug"], a["name"], a["effect"], a["short_effect"],
+    ) for a in ability_by_id.values()}
+    db.executemany(
+        "INSERT OR REPLACE INTO abilities VALUES (?,?,?,?)",
+        list(ability_rows.values()),
+    )
+    db.executemany(
+        "INSERT OR REPLACE INTO items VALUES (?,?,?,?,?)",
+        list(items_by_slug.values()),
+    )
+
+    usage_stats = await _ingest_usage(db, client, base_entries)
+    return {
+        "pokemon": len(rows_pokemon), "moves": len(move_rows),
+        "abilities": len(ability_rows), "items": len(items_by_slug),
+        **{f"skipped_{k}": v for k, v in skipped.items()},
+        **usage_stats,
+        # carried through to build_mega_forms / build
+        "_mega_entries": mega_entries, "_by_no": by_no,
+        "_items_listing": items_listing, "_ability_by_id": ability_by_id,
+        "_regulations": regulations,
+    }
+
+
+def _spread_points(raw: str) -> dict[str, int]:
+    """Decode an ``evSpreadUsage`` hex spread (``"20-20-00-00-02-00"``) into
+    the schema's per-stat SP columns, in hp/atk/def/spatk/spdef/spe order."""
+    parts = [int(tok, 16) for tok in raw.split("-")]
+    return dict(zip(_STAT_COLS, parts))
+
+
+async def _ingest_usage(
+    db: Db, client: PokechampClient, base_entries: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Fetch each legal non-Mega entry's page and write its per-format usage.
+
+    This is the one part of the pokechamp pull that costs one request per
+    roster entry — everything else (roster, movepool, reference pools) comes
+    from whole-game listing endpoints.
+
+    Args:
+        db: Open database handle, already holding `pokemon` rows.
+        client: Open `PokechampClient`.
+        base_entries: The (non-Mega) legal entries just written to `pokemon`.
+
+    Returns:
+        Row counts for `usage`, `usage_rank` and `teammates`.
+    """
+    pages = await client.gather([client.pokemon_page(e["slug"]) for e in base_entries])
+
+    rows_usage: list[tuple] = []
+    rows_rank: list[tuple] = []
+    rows_teammates: list[tuple] = []
+    rank_updates: list[tuple] = []
+
+    for entry, page in zip(base_entries, pages):
+        slug = entry["slug"]
+        ranks: dict[str, int | None] = {"doubles": None, "singles": None}
+        for fmt, block in page["usage"].items():
+            if fmt not in ("singles", "doubles"):
+                continue
+            ranks[fmt] = block.get("overallRank")
+            if block.get("overallRank") is not None:
+                rows_rank.append((fmt, block["overallRank"], slug))
+            for key, category in _USAGE_CATEGORY.items():
+                for rank, row in enumerate(block.get(key) or [], start=1):
+                    rows_usage.append((
+                        slug, fmt, category, rank, row["name"], row["slug"],
+                        f"{row['rate']}%", row["rate"],
+                        None, None, None, None, None, None, None, None,
+                    ))
+            for rank, row in enumerate(block.get("natureUsage") or [], start=1):
+                rows_usage.append((
+                    slug, fmt, "stat_alignment", rank, row["name"], row["slug"],
+                    f"{row['rate']}%", row["rate"],
+                    _RAISED.get(row.get("raisedStat"), row.get("raisedStat")),
+                    _RAISED.get(row.get("loweredStat"), row.get("loweredStat")),
+                    None, None, None, None, None, None,
+                ))
+            for rank, row in enumerate(block.get("evSpreadUsage") or [], start=1):
+                pts = _spread_points(row["raw"])
+                rows_usage.append((
+                    slug, fmt, "stat_points", rank, None, None,
+                    f"{row['rate']}%", row["rate"], None, None,
+                    pts["hp_points"], pts["attack_points"], pts["defense_points"],
+                    pts["sp_atk_points"], pts["sp_def_points"], pts["speed_points"],
+                ))
+            for rank, row in enumerate(block.get("teamTtog") or [], start=1):
+                rows_teammates.append((slug, fmt, rank, row["name"], row["slug"]))
+        rank_updates.append((ranks["doubles"], ranks["singles"], slug))
+
     db.executemany(
         "INSERT INTO usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows_usage
     )
     db.executemany("INSERT INTO usage_rank VALUES (?,?,?)", rows_rank)
     db.executemany("INSERT INTO teammates VALUES (?,?,?,?,?)", rows_teammates)
+    db.executemany(
+        "UPDATE pokemon SET rank_doubles = ?, rank_singles = ? WHERE slug = ?",
+        [(d, s, slug) for d, s, slug in rank_updates],
+    )
+    return {"usage": len(rows_usage), "usage_rank": len(rows_rank),
+            "teammates": len(rows_teammates)}
 
-    # championsbattledata only reports each Pokémon's top-10 held items per
-    # format, so items that never crack a top-10 (e.g. status berries) are
-    # missing from usage-derived item_names. Fill in the rest of the known
-    # holdable item pool so search_items/get_item cover every real item.
-    item_names.update(KNOWN_HOLDABLE_ITEMS)
 
-    return {
-        "moves": sorted(move_names),
-        "items": sorted(item_names),
-        "abilities": sorted(ability_names),
-        "species": sorted(base_species),
-        "name_to_slug": name_to_slug,
+def build_mega_forms(
+    db: Db,
+    mega_entries: list[dict[str, Any]],
+    items_listing: list[dict[str, Any]],
+    ability_by_id: dict[int, dict[str, Any]],
+) -> int:
+    """Derive one row per Mega/Z-Mega form: stats, ability, typing, the Mega
+    Stone that unlocks it, and its stat deltas vs. the base species.
+
+    Args:
+        db: Open database handle, with `pokemon` already populated (used for
+            each base species' own stats/name).
+        mega_entries: The Mega/Z-Mega legal entries collected by
+            :func:`parse_pokechamp`, each already carrying a `_species_name`
+            key (its base species' display name).
+        items_listing: Raw item rows from :meth:`PokechampClient.items_listing`,
+            used to resolve each form's Mega Stone by description text.
+        ability_by_id: id -> {slug, name, ...}, from :func:`parse_pokechamp`.
+
+    Returns:
+        The number of `mega_forms` rows written.
+    """
+    forms_by_species: dict[str, list[str]] = {}
+    for e in mega_entries:
+        forms_by_species.setdefault(e["_species_name"], []).append(e["displayName"])
+    stone_for_form = _resolve_mega_stones(items_listing, forms_by_species)
+
+    base_by_name = {
+        r["battle_name"]: r for r in
+        db.query("SELECT slug, battle_name, base_stats_json FROM pokemon")
     }
+
+    rows_out: list[tuple] = []
+    for e in mega_entries:
+        base_row = base_by_name.get(e["_species_name"])
+        if not base_row:
+            continue
+        base_stats = json.loads(base_row["base_stats_json"])
+        mega_stats = _stat_dict(e["baseStats"])
+        stat_changes = {k: mega_stats[k] - base_stats.get(k, 0) for k in mega_stats}
+        bst = e.get("bst")
+        base_bst = sum(base_stats.values())
+        bst_change = bst - base_bst if bst is not None else None
+        name = e["displayName"]
+        ability_ids = e["abilityIds"]
+        ability_slugs_seen: set[str] = set()
+        ability_names: list[str] = []
+        for aid in [
+            *(ability_ids.get("standard") or []),
+            *([ability_ids["hidden"]] if ability_ids.get("hidden") is not None else []),
+        ]:
+            a = ability_by_id.get(aid)
+            if a and a["slug"] not in ability_slugs_seen:
+                ability_slugs_seen.add(a["slug"])
+                ability_names.append(a["name"])
+        ability = "|".join(ability_names)
+        rows_out.append((
+            name, base_row["slug"], e["_species_name"], _mega_kind(name),
+            stone_for_form.get(name),
+            json.dumps(e.get("types", [])), ability,
+            json.dumps(mega_stats), bst,
+            json.dumps(stat_changes), bst_change,
+        ))
+    db.executemany(
+        "INSERT OR REPLACE INTO mega_forms VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows_out
+    )
+    return len(rows_out)
 
 
 async def enrich(db: Db, settings: Settings, keys: dict[str, Any]) -> None:
-    """Fetch reference text + type chart from PokeAPI into the DB.
+    """Fetch the type chart + localized species names from PokeAPI.
+
+    Unrelated to which roster source is used — kept as-is because it's cheap,
+    the type chart is game-invariant, and ``pull.builds``' pokedb ingestion
+    resolves Japanese species names against ``pokemon.names_json``.
 
     Args:
-        db: Open database handle, already populated by `parse_index`.
+        db: Open database handle, already populated by `parse_pokechamp`.
         settings: Runtime settings (PokeAPI base URL, HTTP cache path).
-        keys: The enrichment keys returned by `parse_index` (moves, items,
-            abilities, species).
+        keys: ``{"species": [...]}`` — base species display names to look up.
     """
     cache = Cache(settings.cache_db)
     api = PokeApiEnricher(settings, cache)
     try:
-        # moves
-        moves = await api.gather([api.move(n) for n in keys["moves"]])
-        db.executemany(
-            "INSERT OR REPLACE INTO moves VALUES (?,?,?,?,?,?,?,?,?,?)",
-            [(m["slug"], m["name"], m.get("type"), m.get("damage_class"),
-              m.get("power"), m.get("accuracy"), m.get("pp"), m.get("priority"),
-              m.get("target"), m.get("effect")) for m in moves],
-        )
-        # abilities
-        abils = await api.gather([api.ability(n) for n in keys["abilities"]])
-        db.executemany(
-            "INSERT OR REPLACE INTO abilities VALUES (?,?,?,?)",
-            [(a["slug"], a["name"], a.get("effect"), a.get("short_effect")) for a in abils],
-        )
-        # items
-        items = await api.gather([api.item(n) for n in keys["items"]])
-        db.executemany(
-            "INSERT OR REPLACE INTO items VALUES (?,?,?,?,?)",
-            [(i["slug"], i["name"], i.get("category"), i.get("effect"),
-              i.get("is_mega_stone", 0)) for i in items],
-        )
-        # type chart (offensive multipliers, expanded to all 18 defenders)
         chart_rows: list[tuple] = []
         rels = await api.gather([api.type_relations(t) for t in TYPES])
         for atk, rel in zip(TYPES, rels):
@@ -267,17 +513,16 @@ async def enrich(db: Db, settings: Settings, keys: dict[str, Any]) -> None:
                 elif dfn in rel["half"]:
                     mult = 0.5
                 chart_rows.append((atk.capitalize(), dfn.capitalize(), mult))
-        db.executemany(
-            "INSERT OR REPLACE INTO type_chart VALUES (?,?,?)", chart_rows
-        )
-        # localized species names -> attach to each pokemon sharing the base
+        db.executemany("INSERT OR REPLACE INTO type_chart VALUES (?,?,?)", chart_rows)
+
         species_names = await api.gather(
             [api.species_names(s) for s in keys["species"]]
         )
         names_by_species = dict(zip(keys["species"], species_names))
         updates: list[tuple] = []
         for row in db.query("SELECT slug, base_name FROM pokemon"):
-            names = names_by_species.get(slugify(row["base_name"]), {})
+            key = slugify(_PAREN_SUFFIX_RE.sub("", row["base_name"]))
+            names = names_by_species.get(key, {})
             updates.append((json.dumps(names), row["slug"]))
         db.executemany("UPDATE pokemon SET names_json = ? WHERE slug = ?", updates)
     finally:
@@ -285,143 +530,13 @@ async def enrich(db: Db, settings: Settings, keys: dict[str, Any]) -> None:
         cache.close()
 
 
-def _stat_dict(f: dict[str, Any]) -> dict[str, int | None]:
-    """Extract the six base stats from a raw ``forms_json`` form entry."""
-    return {
-        "hp": f.get("hp"), "attack": f.get("attack"), "defense": f.get("defense"),
-        "special_attack": f.get("sp_attack"), "special_defense": f.get("sp_defense"),
-        "speed": f.get("speed"),
-    }
-
-
-_MEGA_STONE_EFFECT_RE = re.compile(r"Mega Evolve into (Mega .+?)\.\s*$")
-
-# Champions-exclusive Mega Stones with no PokeAPI entry, so there's no effect
-# text to parse the target species from (see build_mega_forms). Verified by
-# name against https://www.serebii.net/pokemonchampions/items.shtml.
-CUSTOM_MEGA_STONES: dict[str, str] = {
-    "barbaracite": "Mega Barbaracle",
-    "chandelurite": "Mega Chandelure",
-    "chesnaughtite": "Mega Chesnaught",
-    "chimechite": "Mega Chimecho",
-    "clefablite": "Mega Clefable",
-    "crabominite": "Mega Crabominable",
-    "delphoxite": "Mega Delphox",
-    "dragalgite": "Mega Dragalge",
-    "dragoninite": "Mega Dragonite",
-    "drampanite": "Mega Drampa",
-    "eelektrossite": "Mega Eelektross",
-    "emboarite": "Mega Emboar",
-    "excadrite": "Mega Excadrill",
-    "falinksite": "Mega Falinks",
-    "feraligite": "Mega Feraligatr",
-    "floettite": "Mega Floette",
-    "froslassite": "Mega Froslass",
-    "glimmoranite": "Mega Glimmora",
-    "golurkite": "Mega Golurk",
-    "greninjite": "Mega Greninja",
-    "hawluchanite": "Mega Hawlucha",
-    "malamarite": "Mega Malamar",
-    "meganiumite": "Mega Meganium",
-    "meowsticite": "Mega Meowstic",
-    "pyroarite": "Mega Pyroar",
-    "raichunite-x": "Mega Raichu X",
-    "raichunite-y": "Mega Raichu Y",
-    "scolipite": "Mega Scolipede",
-    "scovillainite": "Mega Scovillain",
-    "scraftinite": "Mega Scrafty",
-    "skarmorite": "Mega Skarmory",
-    "staraptite": "Mega Staraptor",
-    "starminite": "Mega Starmie",
-    "victreebelite": "Mega Victreebel",
-}
-
-
-def build_mega_forms(db: Db) -> int:
-    """Derive one row per Mega form (types/ability/stats + stat changes vs. the
-    base form + the Mega Stone that unlocks it), so search-at-serve-time never
-    has to walk ``pokemon.forms_json`` or cross-reference usage stats.
-
-    A Mega form's ``forms_json`` blob is duplicated verbatim across every
-    battle entry that shares its species family (e.g. both ``raichu`` and
-    ``alolan-raichu`` carry "Mega Raichu X"/"Y"), so this groups by the exact
-    Mega ``form_name`` first to dedupe.
-
-    The Mega Stone is resolved by name, not by held-item usage stats — usage
-    rows are noisy (a Pokémon's top-10 held items sometimes include another
-    species' stone entirely, e.g. Charizard's usage rows list Raichunite Y),
-    and can't disambiguate an X/Y pair anyway. Canonical stones carry a
-    PokeAPI effect string ("Held: Allows Charizard to Mega Evolve into Mega
-    Charizard X.") that names the exact target form; Champions-exclusive
-    stones without a PokeAPI entry fall back to ``CUSTOM_MEGA_STONES``.
-    Requires pokemon/items to already be populated (needs
-    ``items.is_mega_stone`` + ``items.effect``, set during PokeAPI enrichment).
-
-    Args:
-        db: Open database handle, with `pokemon` and `items` already populated.
-
-    Returns:
-        The number of mega_forms rows written.
-    """
-    forms_by_name: dict[str, dict[str, Any]] = {}
-    for row in db.query("SELECT slug, form_kind, forms_json FROM pokemon"):
-        forms = json.loads(row["forms_json"])
-        base = next((f for f in forms if f.get("form_kind") == "Base"), None)
-        if not base:
-            continue
-        for f in forms:
-            if not (f.get("form_kind") or "").startswith("Mega"):
-                continue
-            name = f.get("form_name")
-            if name not in forms_by_name:
-                forms_by_name[name] = {"form": f, "base": base, "species_slug": row["slug"]}
-            elif row["form_kind"] == "Base":
-                forms_by_name[name]["species_slug"] = row["slug"]
-
-    stone_for_form: dict[str, str] = {}
-    for r in db.query("SELECT slug, name, effect FROM items WHERE is_mega_stone = 1"):
-        m = _MEGA_STONE_EFFECT_RE.search(r["effect"] or "")
-        target = m.group(1) if m else CUSTOM_MEGA_STONES.get(r["slug"])
-        if target:
-            stone_for_form[target] = r["name"]
-
-    rows_out: list[tuple] = []
-    for name, entry in forms_by_name.items():
-        f, base = entry["form"], entry["base"]
-        base_stats = _stat_dict(base)
-        mega_stats = _stat_dict(f)
-        stat_changes = {
-            k: mega_stats[k] - base_stats[k]
-            for k in mega_stats
-            if mega_stats.get(k) is not None and base_stats.get(k) is not None
-        }
-        bst = f.get("base_stat_total")
-        base_bst = base.get("base_stat_total")
-        bst_change = bst - base_bst if bst is not None and base_bst is not None else None
-        rows_out.append((
-            name, entry["species_slug"], base.get("form_name"), f.get("form_kind"),
-            stone_for_form.get(name),
-            json.dumps(f.get("types", [])),
-            "|".join(a for a in (f.get("abilities", "") or "").split("|") if a),
-            json.dumps(mega_stats), bst,
-            json.dumps(stat_changes), bst_change,
-        ))
-    db.executemany(
-        "INSERT OR REPLACE INTO mega_forms VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows_out
-    )
-    return len(rows_out)
-
-
-async def build(
-    db: Db, settings: Settings, index: dict[str, Any], *, with_builds: bool = True,
-) -> dict[str, int]:
-    """Run the full build: reset tables, parse the index, enrich, derive Megas,
-    then ingest the observed-team corpus.
+async def build(db: Db, settings: Settings, *, with_builds: bool = True) -> dict[str, int]:
+    """Run the full build: parse pokechamp.gg, derive Megas, enrich via
+    PokeAPI, then ingest the observed-team corpus.
 
     Args:
         db: Open database handle.
-        settings: Runtime settings, forwarded to `enrich`.
-        index: The parsed pokemon-index.json document.
+        settings: Runtime settings.
         with_builds: Fetch observed teams from Limitless/pokedb. Everything is
             cached, so a rebuild is cheap; pass False to skip the stage entirely.
 
@@ -429,22 +544,49 @@ async def build(
         Row counts per table, also written to the `meta` table.
     """
     db.reset_build_tables()
-    keys = parse_index(db, index)
-    await enrich(db, settings, keys)
-    build_mega_forms(db)
+    cache = Cache(settings.cache_db)
+    client = PokechampClient(settings, cache, concurrency=settings.pokechamp_concurrency)
+    try:
+        parsed = await parse_pokechamp(db, client)
+    finally:
+        await client.aclose()
+        cache.close()
+
+    mega_entries = parsed.pop("_mega_entries")
+    by_no = parsed.pop("_by_no")
+    items_listing = parsed.pop("_items_listing")
+    ability_by_id = parsed.pop("_ability_by_id")
+    regulations = parsed.pop("_regulations")
+    for e in mega_entries:
+        non_mega_siblings = [
+            s for s in by_no[e["no"]] if not (s["formName"] or "").startswith("Mega")
+        ]
+        base = min(non_mega_siblings, key=lambda s: s["formNo"], default=None)
+        e["_species_name"] = base["displayName"] if base else e["displayName"]
+    build_mega_forms(db, mega_entries, items_listing, ability_by_id)
+
+    species = sorted({
+        slugify(_PAREN_SUFFIX_RE.sub("", r["base_name"]))
+        for r in db.query("SELECT base_name FROM pokemon")
+    })
+    await enrich(db, settings, {"species": species})
+
+    smogon_stats = await ingest_smogon_sets(db, settings)
+    db.set_meta("smogon", smogon_stats)
+
     if with_builds:
-        # Depends on pokemon (Japanese names), items and mega_forms already
-        # being populated — it resolves both upstreams against them.
         stats = await builds_mod.ingest_builds(db, settings)
         db.set_meta("builds", stats)
-    db.set_meta("season", index.get("defaultSeason", "Current"))
-    db.set_meta("data_version", index.get("dataVersion", ""))
-    db.set_meta("generated_at", index.get("generatedAt", ""))
-    db.set_meta("seasons", index.get("seasons", []))
+
+    current_reg = next((r for r in regulations if r.get("endDate") is None), None)
+    db.set_meta("season", current_reg["title"] if current_reg else "Current")
+    db.set_meta("data_version", (current_reg or {}).get("startDate", ""))
+    db.set_meta("generated_at", datetime.now(timezone.utc).isoformat())
+    db.set_meta("source", "pokechamp.gg")
     counts = {t: db.count(t) for t in (
         "pokemon", "learnable_moves", "usage", "moves", "abilities",
         "items", "mega_forms", "type_chart", "teammates",
-        "build_teams", "build_members",
+        "build_teams", "build_members", "smogon_sets",
     )}
     db.set_meta("counts", counts)
     return counts

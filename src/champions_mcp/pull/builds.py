@@ -586,12 +586,12 @@ class BuildIngest:
 # the site does not publish the mapping, so it is pinned here: seasons M-4 and
 # M-5 are both confirmed Reg M-B (M-5 published 2026-09-11 still predates
 # pokedb's own M-C ladder), the earlier seasons predate M-B's 2026-06-20
-# rollout, and season M-6 is Reg M-C's ladder once pokedb publishes it (not
-# live yet as of 2026-09-11 — s6_*_ranked_teams.json still 404s). Override
+# rollout, and seasons M-6 and M-7 are Reg M-C's ladders (a season that
+# pokedb has not published yet simply 404s and is skipped). Override
 # with CHAMPIONS_MCP_POKEDB_SEASON_REGS="1:M-A,4:M-B,6:M-C" if a season
 # straddles.
 POKEDB_SEASON_REGULATION: dict[int, str] = {
-    1: "M-A", 2: "M-A", 3: "M-A", 4: "M-B", 5: "M-B", 6: "M-C",
+    1: "M-A", 2: "M-A", 3: "M-A", 4: "M-B", 5: "M-B", 6: "M-C", 7: "M-C",
 }
 
 

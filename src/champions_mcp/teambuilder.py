@@ -17,9 +17,9 @@ from .usage import mega_usage_index
 
 
 # Protect is close to mandatory in doubles and a trap in singles, and the
-# Champions usage data says so plainly: in doubles 224 of 235 species run it
-# (60% average among top-60 users, many above 90%); in singles only 42 species
-# run it at all, 13 of the top 60, averaging 16%. The singles outliers are the
+# Champions usage data says so plainly: in doubles 250 of 268 species run it
+# (66% average among top-60 users, many above 90%); in singles only 48 species
+# run it at all, 15 of the top 60, averaging 29%. The singles outliers are the
 # real exceptions — a Speed Boost attacker banking a turn, or a recovery staller
 # scaling passive damage — not a default fourth move.
 _PROTECT_MOVES = {"protect", "detect", "spiky-shield", "baneful-bunker", "burning-bulwark"}
@@ -28,8 +28,8 @@ _PROTECT_BSS_WARNING = (
     "In BSS (singles) Protect is usually a wasted turn: with one Pokémon per "
     "side it buys no partner action, and spending a turn of a 3-Pokémon game to "
     "do nothing hands the opponent free setup or free damage. Champions usage "
-    "agrees — only 42 of 235 species run it in singles (13 of the top 60), "
-    "versus 224 of 235 in doubles. Keep it ONLY for a concrete reason: banking "
+    "agrees — only 48 of 268 species run it in singles (15 of the top 60), "
+    "versus 250 of 268 in doubles. Keep it ONLY for a concrete reason: banking "
     "a Speed Boost/accumulating-ability turn, scaling passive damage behind "
     "reliable recovery, safely scouting a Choice lock, or triggering a "
     "turn-based item. Otherwise spend the slot on coverage, utility or recovery."

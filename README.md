@@ -9,25 +9,29 @@ MCP server for AI-assisted Pokémon **Champions** team building (VGC doubles and
 ## What it does
 
 Game data is pulled once into a local SQLite database (`champions.sqlite`):
-[championsbattledata.com](https://championsbattledata.com/api_guide) for the roster,
-Champions stats/types/abilities, forms, movepools, and usage data, and
-[PokeAPI](https://pokeapi.co) for a one-time enrichment pass (move/ability/item
-descriptions, the type chart, localized names), cached permanently. Two further sources
-supply a corpus of **complete teams people actually brought** — Limitless tournament
-teamlists for VGC and the champs.pokedb.tokyo ranked-ladder export for BSS. Every tool
-call is then answered from that local file, no live lookups, no scraping, no runtime
-juggling of any upstream.
+[pokechamp.gg](https://pokechamp.gg) for the current legal roster, Champions
+stats/types/abilities, movepools, moves/abilities/items reference text, and per-format
+usage stats, and [PokeAPI](https://pokeapi.co) for the (game-invariant) type chart and
+localized species names, cached permanently. Two further sources supply a corpus of
+**complete teams people actually brought** — Limitless tournament teamlists for VGC and
+the champs.pokedb.tokyo ranked-ladder export for BSS. A fifth source, Pokémon
+Showdown's published sets (every generation/tier Smogon curates), is ingested as a
+**historical-builds fallback** — cross-game evidence, legality-checked against
+Champions at read time, surfaced automatically when the real observed-team corpus is
+thin (e.g. right after a regulation rollover). Every tool call is then answered from
+that local file, no live lookups, no scraping, no runtime juggling of any upstream.
 
 The only outbound calls happen at two points, both opt-in:
 
-- `champions-mcp-pull` fetches the source index, runs the PokeAPI enrichment pass, and
-  ingests the observed-team corpus (`--skip-builds` to omit the last).
+- `champions-mcp-pull` fetches the roster/reference/usage data, runs the PokeAPI
+  enrichment pass, ingests the Smogon/Showdown historical-sets pool, and ingests the
+  observed-team corpus (`--skip-builds` to omit the last).
 - `create_pokepaste` uploads a finished team to pokepast.es.
 
-40 MCP tools cover the Pokedex, legal rosters and movepools, usage stats/sets/teammates,
-observed builds and team context, Stat Point and speed math, team validation, damage
-calculation, and Pokepaste export. A bundled skill walks an LLM through the whole
-team-building workflow end to end.
+42 MCP tools cover the Pokedex, legal rosters and movepools, usage stats/sets/teammates,
+observed builds and team context, historical (cross-game) sets, Stat Point and speed
+math, team validation, damage calculation, and Pokepaste export. A bundled skill walks
+an LLM through the whole team-building workflow end to end.
 
 ## Quick start
 
@@ -97,8 +101,8 @@ Call `get_game_rules(format)` first (`format='vgc'` for doubles, `'bss'` for sin
 **Pokedex** - `get_pokemon`, `search_pokemon`, `get_random_pokemon`, `list_megas`,
 `get_move`, `search_moves`, `list_items`, `get_item`, `search_items`, `get_ability`,
 `get_type_matchups`, `get_pokemon_weaknesses`. `list_items` returns the whole item
-pool grouped by category (Mega Stones hidden by default - they are 75 of the 148
-items); if an item is not in it, it does not exist in Champions.
+pool grouped by category (Mega Stones hidden by default - they are around half of
+the ~166 items); if an item is not in it, it does not exist in Champions.
 
 **Roster and movepool** - `list_pokemon`, `search_pokemon_by_type`, `search_pokemon_by_ability`,
 `search_pokemon_by_move`, `get_pokemon_moves`, `is_legal_move`, `is_legal_pokemon`
@@ -119,6 +123,15 @@ your call, from your own matchups) and `fringe` (rare but attested), and
 "four most popular moves" set. `get_team_context` conditions partners on your whole
 core and scores each by `affinity` — how much a partner prefers *your* core over
 being merely popular — surfacing under-explored options alongside the obvious ones.
+
+**Historical sets** - `get_historical_sets` — curated Smogon/Pokémon Showdown sets
+(every generation/tier, filtered only to doubles vs. singles), used as a fallback for
+when the real observed-team corpus above is thin or empty (e.g. right after a
+regulation rollover). Not Champions tournament data: every set is checked against the
+current Champions roster and carries `legal_in_champions` (overall, plus per-move/
+item/ability) so a build that doesn't translate is visible rather than presented as
+fact. `get_observed_sets` surfaces this automatically as `historical_sets` when its own
+corpus is thin.
 
 **Type & stat profiles** - `list_type_profiles`, `list_profile_tags`,
 `search_pokemon_by_profile`. Every typing (18 singles + 153 pairs) is graded
@@ -149,14 +162,20 @@ resource exposes the full roster as JSON.
 
 `champions-mcp-pull` (`python -m champions_mcp.pull`):
 
-1. **Download** `pokemon-index.json` from championsbattledata.com.
-2. **Parse** it into the SQLite schema: roster, Champions stats/types/abilities, forms
-   (including Megas), full movepools, and all usage rows (moves, items, abilities,
-   natures, SP spreads, teammates) for both Doubles and Singles, plus the usage ranking.
-3. **Enrich** the bounded reference universe from PokeAPI once, cached permanently:
-   around 539 move descriptions, 200 ability descriptions, 143 item descriptions, the
-   18-type chart, and localized species names.
-4. **Ingest observed teams** into `build_teams`/`build_members`:
+1. **Fetch the roster** from [pokechamp.gg](https://pokechamp.gg): the current legal
+   roster (species/forms + Mega/Z-Mega forms), full movepools, and the whole move/
+   ability/item reference pool — a handful of whole-game requests, plus one page fetch
+   per legal (non-Mega) roster entry for its per-format usage stats (moves, items,
+   abilities, natures, SP spreads, teammates, usage rank).
+2. **Derive Mega forms** (`mega_forms`) from the Mega/Z-Mega entries collected above:
+   stats, ability, typing, and the Mega Stone that unlocks each.
+3. **Enrich** from PokeAPI, cached permanently: the 18-type chart (game-invariant) and
+   localized species names (used to match pokedb's Japanese-language BSS export).
+4. **Ingest Smogon/Showdown historical sets** into `smogon_sets`: every generation and
+   tier [Pokémon Showdown](https://play.pokemonshowdown.com) publishes, matched to the
+   Champions roster by species name and split only into doubles/singles — a fallback
+   pool for when the observed-team corpus below is thin.
+5. **Ingest observed teams** into `build_teams`/`build_members`:
    - **VGC** from the [Limitless](https://play.limitlesstcg.com) public API
      (`/tournaments/{id}/standings`). These events enforce open team sheets, so each
      response carries every player's full list — species, item, ability, nature and all
@@ -166,16 +185,14 @@ resource exposes the full roster as JSON.
      ranked-ladder export. Japan is where singles is actually played, and this is the
      top of the official ladder per season. It carries species and held item but **no
      moves**, so those rows are marked `team_and_item` and the tools never present a
-     singles moveset as observed. Western singles tournaments are not a substitute:
-     across 916 Champions events on Limitless only 9 were singles.
-5. Write build markers and report row counts.
+     singles moveset as observed.
+6. Write build markers and report row counts.
 
 Re-running is idempotent and nearly free: every upstream response is cached in
-`pull-cache.sqlite`, and a finished tournament is immutable, so a rebuild costs no
-network and only genuinely new events are fetched. Use `--offline` to rebuild from the
-saved index copy instead of downloading again, and `--skip-builds` to omit the
-observed-team stage. A pull is only swapped in after passing sanity checks, so a bad or
-empty upstream response never clobbers a good existing database.
+`pull-cache.sqlite`, so a rebuild costs no network beyond what's genuinely new or
+changed. `--skip-builds` omits the observed-team stage (step 5). A pull is only
+swapped in after passing sanity checks, so a bad or empty upstream response never
+clobbers a good existing database.
 
 ## Configuration
 
@@ -184,8 +201,9 @@ empty upstream response never clobbers a good existing database.
 | `CHAMPIONS_MCP_DATA_DIR` | `<repo>/data` | Data directory |
 | `CHAMPIONS_MCP_DB` | `<data>/champions.sqlite` | Served database |
 | `CHAMPIONS_MCP_PULL` | `0` | Force a refresh on container start (`1`) |
-| `CHAMPIONS_MCP_SOURCE_BASE` | `https://championsbattledata.com` | Data source (pull) |
-| `CHAMPIONS_MCP_POKEAPI_BASE` | `https://pokeapi.co/api/v2` | Enrichment source (pull) |
+| `CHAMPIONS_MCP_POKECHAMP_BASE` | `https://pokechamp.gg` | Roster/movepool/reference/usage source (pull) |
+| `CHAMPIONS_MCP_POKECHAMP_CONCURRENCY` | `6` | Max in-flight per-Pokémon page requests (pull) |
+| `CHAMPIONS_MCP_POKEAPI_BASE` | `https://pokeapi.co/api/v2` | Type chart + localized names (pull) |
 | `CHAMPIONS_MCP_CACHE_DB` | `<data>/pull-cache.sqlite` | Pull cache (PokeAPI + observed teams) |
 | `CHAMPIONS_MCP_LIMITLESS_BASE` | `https://play.limitlesstcg.com/api` | VGC observed builds (pull) |
 | `CHAMPIONS_MCP_LIMITLESS_KEY` | unset | Optional Limitless API key — only raises the rate limit |
@@ -206,8 +224,8 @@ timeouts.
 
 ## Refreshing the data
 
-championsbattledata updates each season, and new tournaments finish daily. To pick
-up both:
+pokechamp.gg updates as each regulation rolls over, and new tournaments finish daily. To
+pick up both:
 
 ```bash
 CHAMPIONS_MCP_PULL=1 docker compose up -d   # docker
@@ -225,10 +243,11 @@ evidence level) are reported by `get_game_rules` under `data`.
 
 | Source | Used for |
 |---|---|
-| [championsbattledata.com](https://championsbattledata.com) | Primary source: roster, Champions stats/types/abilities, forms, movepools, usage data |
-| [PokeAPI](https://pokeapi.co) | One-time enrichment: move/ability/item descriptions, type chart, localized names |
+| [pokechamp.gg](https://pokechamp.gg) | Primary source: roster, Champions stats/types/abilities, movepools, move/ability/item reference text, usage data |
+| [PokeAPI](https://pokeapi.co) | Type chart + localized species names |
 | [Limitless](https://play.limitlesstcg.com) | VGC observed builds: tournament open team sheets via their public API |
 | [バトルデータベース チャンピオンズ](https://champs.pokedb.tokyo) | BSS observed builds: ranked-ladder team export, published as open data ([@pokedb_tokyo](https://x.com/pokedb_tokyo)) |
+| [Pokémon Showdown](https://play.pokemonshowdown.com) | Historical-builds fallback: every generation/tier of Smogon-curated sets |
 | [smogon/damage-calc](https://github.com/smogon/damage-calc) | `@smogon/calc` with native Champions (gen 0) support |
 | [pokepast.es](https://pokepast.es) | Team paste hosting for `create_pokepaste` |
 

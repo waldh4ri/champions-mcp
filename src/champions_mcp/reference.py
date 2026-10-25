@@ -1,8 +1,8 @@
-"""Reference read-model: move / item / ability descriptions (PokeAPI-enriched).
+"""Reference read-model: move / item / ability descriptions.
 
-championsbattledata provides only names for these; the pull step mirrors the
-descriptions from PokeAPI into the DB once. Move/item/ability *legality* and
-*usage* come from the single source — this layer is purely descriptive text.
+The pull step mirrors these from pokechamp.gg into the DB once. Move/item/
+ability *legality* and *usage* come from the same source — this layer is
+purely descriptive text.
 """
 
 from __future__ import annotations
@@ -104,16 +104,16 @@ def list_items(
 ) -> dict[str, Any]:
     """The Champions item pool, grouped by category, with effect text.
 
-    Mega Stones are excluded by default: they are 75 of the 148 items, they are
-    not a choice you browse (the stone is decided by which Mega you want, via
-    list_megas or get_pokemon), and including them buries the ~73 items that are
-    an actual item decision.
+    Mega Stones are excluded by default: they are around half of the item pool,
+    they are not a choice you browse (the stone is decided by which Mega you
+    want, via list_megas or get_pokemon), and including them buries the items
+    that are an actual item decision.
 
     Args:
         db: Open Champions database handle.
         category: Optional category filter (see ``_ITEM_CATEGORY_LABELS``).
         query: Optional substring filter over item name.
-        include_mega_stones: Whether to include the 75 Mega Stones.
+        include_mega_stones: Whether to include the Mega Stones.
         limit: Maximum number of items to return.
 
     Returns:
@@ -135,8 +135,8 @@ def list_items(
     grouped: dict[str, list[dict[str, Any]]] = {}
     for r in shown:
         entry: dict[str, Any] = {"name": r["name"]}
-        # Stone effect text is uniformly "Mega Evolves X" — no signal, and 75 of
-        # them would dominate the payload.
+        # Stone effect text is uniformly "Mega Evolves X" — no signal, and
+        # dozens of them would dominate the payload.
         if not r["is_mega_stone"] and r["effect"]:
             entry["effect"] = r["effect"]
         grouped.setdefault(_item_category(r), []).append(entry)
@@ -154,9 +154,9 @@ def list_items(
             f"{len(stones)} Mega Stones hidden — pass include_mega_stones=True, "
             "or use list_megas to see which stone unlocks which Mega. Champions' "
             "item pool is much smaller than other games': Choice Scarf is the "
-            "only Choice item, and there is no Assault Vest, Rocky Helmet, "
-            "Heavy-Duty Boots, Covert Cloak or Safety Goggles. If an item is not "
-            "in this list it does not exist here."
+            "only Choice item, and there is no Assault Vest, Heavy-Duty Boots, "
+            "Covert Cloak or Safety Goggles. If an item is not in this list it "
+            "does not exist here."
         )
     if len(shown) < len(pool):
         out["truncated"] = (f"Showing {len(shown)} of {len(pool)} — raise `limit` "

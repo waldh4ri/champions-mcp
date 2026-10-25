@@ -1,16 +1,16 @@
-"""One-time PokeAPI text enrichment for the pull step.
+"""PokeAPI enrichment for the pull step: type chart + localized names.
 
-championsbattledata has names but no move metadata, ability/item descriptions,
-or a type chart. This client fetches that bounded universe (≈539 moves,
-≈200 abilities, ≈148 items, 18 types + ≈210 species for localized names) once,
-backed by a permanent SQLite cache so re-runs are nearly free. Nothing here
+pokechamp.gg already gives move/ability/item reference text natively, so
+PokeAPI is only needed for two things it doesn't offer: the 18×18 type chart
+(game-invariant) and localized species names (``pull.builds``' pokedb
+ingestion resolves Japanese held-item and species names against them).
+Backed by a permanent SQLite cache so re-runs are nearly free. Nothing here
 runs at MCP serve time.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import httpx
 
@@ -24,24 +24,6 @@ TYPES = (
     "poison", "ground", "flying", "psychic", "bug", "rock", "ghost",
     "dragon", "dark", "steel", "fairy",
 )
-
-
-def _en(entries: list[dict[str, Any]], *keys: str) -> str | None:
-    """First English-language value found in `entries` under any of `keys`."""
-    for e in entries:
-        if e.get("language", {}).get("name") == "en":
-            for k in keys:
-                if e.get(k):
-                    return e[k]
-    return None
-
-
-def _en_name(resource: dict[str, Any], fallback: str) -> str:
-    """The English display name from a PokeAPI ``names`` list, or `fallback`."""
-    for n in resource.get("names", []):
-        if n.get("language", {}).get("name") == "en":
-            return n["name"]
-    return fallback
 
 
 class PokeApiEnricher:
@@ -69,7 +51,7 @@ class PokeApiEnricher:
         """Close the underlying HTTP client."""
         await self._http.aclose()
 
-    async def _get(self, path: str) -> dict[str, Any] | None:
+    async def _get(self, path: str) -> dict | None:
         """Cached GET against PokeAPI; a cached 404 is remembered as `None`.
 
         Args:
@@ -96,65 +78,6 @@ class PokeApiEnricher:
         return data
 
     # ---- typed extractors --------------------------------------------- #
-    async def move(self, name: str) -> dict[str, Any]:
-        """Fetch one move's reference row.
-
-        Args:
-            name: The championsbattledata move name.
-
-        Returns:
-            A DB-ready dict (slug, name, type, damage_class, power, accuracy,
-            pp, priority, target, effect). Falls back to just slug/name if
-            PokeAPI has no entry for it.
-        """
-        slug = slugify(name)  # storage key (joins learnable_moves / usage)
-        m = await self._get(f"/move/{normalize_key(name)}")  # PokeAPI slug strips apostrophes
-        if not m:
-            return {"slug": slug, "name": name}
-        return {
-            "slug": slug,
-            "name": _en_name(m, name),
-            "type": (m.get("type") or {}).get("name"),
-            "damage_class": (m.get("damage_class") or {}).get("name"),
-            "power": m.get("power"),
-            "accuracy": m.get("accuracy"),
-            "pp": m.get("pp"),
-            "priority": m.get("priority", 0),
-            "target": (m.get("target") or {}).get("name"),
-            "effect": _en(m.get("effect_entries", []), "short_effect", "effect"),
-        }
-
-    async def item(self, name: str) -> dict[str, Any]:
-        """Fetch one item's reference row.
-
-        Args:
-            name: The championsbattledata item name.
-
-        Returns:
-            A DB-ready dict (slug, name, category, effect, is_mega_stone).
-            Champions-exclusive items with no PokeAPI entry get a heuristic
-            Mega Stone flag (name ends in "ite", optionally " X"/" Y").
-        """
-        slug = slugify(name)
-        it = await self._get(f"/item/{normalize_key(name)}")
-        if not it:
-            # championsbattledata item with no PokeAPI entry: still keep the name,
-            # flag Mega Stones heuristically (Champions stones end in "ite",
-            # optionally suffixed " X"/" Y" for dual-mega species like Raichu).
-            base_name = name[:-2] if name[-2:] in (" X", " Y") else name
-            return {
-                "slug": slug, "name": name, "category": None, "effect": None,
-                "is_mega_stone": 1 if base_name.lower().endswith("ite") else 0,
-            }
-        category = (it.get("category") or {}).get("name")
-        return {
-            "slug": slug,
-            "name": _en_name(it, name),
-            "category": category,
-            "effect": _en(it.get("effect_entries", []), "short_effect", "effect"),
-            "is_mega_stone": 1 if category == "mega-stones" else 0,
-        }
-
     async def item_ja_name(self, name: str) -> tuple[str, str | None]:
         """Fetch one item's Japanese display name.
 
@@ -164,7 +87,7 @@ class PokeApiEnricher:
         the ``<species>ナイト`` naming rule instead.
 
         Args:
-            name: The championsbattledata item name.
+            name: The item's display name (as stored in the ``items`` table).
 
         Returns:
             A tuple of (item slug, Japanese name or None).
@@ -176,27 +99,6 @@ class PokeApiEnricher:
             if n.get("language", {}).get("name") in ("ja-Hrkt", "ja"):
                 return slugify(name), n["name"]
         return slugify(name), None
-
-    async def ability(self, name: str) -> dict[str, Any]:
-        """Fetch one ability's reference row.
-
-        Args:
-            name: The championsbattledata ability name.
-
-        Returns:
-            A DB-ready dict (slug, name, effect, short_effect). Falls back to
-            just slug/name if PokeAPI has no entry for it.
-        """
-        slug = slugify(name)
-        a = await self._get(f"/ability/{normalize_key(name)}")
-        if not a:
-            return {"slug": slug, "name": name, "effect": None, "short_effect": None}
-        return {
-            "slug": slug,
-            "name": _en_name(a, name),
-            "effect": _en(a.get("effect_entries", []), "effect"),
-            "short_effect": _en(a.get("effect_entries", []), "short_effect"),
-        }
 
     async def type_relations(self, name: str) -> dict[str, list[str]]:
         """Fetch one type's offensive damage relations.

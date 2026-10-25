@@ -1,8 +1,9 @@
 # champions-mcp Tool Reference
 
-`champions-mcp` exposes 40 MCP tools over the local `champions.sqlite` mirror
-(built by `champions-mcp-pull` from championsbattledata.com + PokeAPI text,
-plus a corpus of complete teams from Limitless and champs.pokedb.tokyo).
+`champions-mcp` exposes 42 MCP tools over the local `champions.sqlite` mirror
+(built by `champions-mcp-pull` from pokechamp.gg + PokeAPI (type chart,
+localized names), plus a corpus of complete teams from Limitless and
+champs.pokedb.tokyo).
 Two tools (`calc_damage`, `create_pokepaste`) make outbound calls; everything
 else is a local read against the SQLite mirror.
 
@@ -65,6 +66,7 @@ the two.
 | [`get_observed_sets`](#get_observed_sets) | Builds | Complete builds real players brought, conditionable by item/teammate |
 | [`get_team_context`](#get_team_context) | Builds | Partners for your whole core, scored by affinity |
 | [`get_sample_teams`](#get_sample_teams) | Builds | Whole teams with event, record and source |
+| [`get_historical_sets`](#get_historical_sets) | Builds | Cross-game Smogon/Showdown sets, legality-flagged — fallback when the above is thin |
 | [`calc_stats`](#calc_stats) | Stats | Final Lv-50 stats from an SP spread + nature |
 | [`compute_speed`](#compute_speed) | Stats | Effective in-battle Speed with modifiers |
 | [`compute_speed_threshold`](#compute_speed_threshold) | Stats | Minimum Speed SP to outspeed a target |
@@ -121,14 +123,15 @@ tie between candidates.
 ### `list_megas`
 
 Species with a Mega Evolution in Champions: the Mega Stone that unlocks it,
-typing/ability change, and stat deltas vs. the base form. Champions has 75
-Megas, so omitting `query` returns a compact index (stone, typing, ability,
-BST change); pass a substring for full base stats and per-stat changes.
+typing/ability change, and stat deltas vs. the base form. Champions has 80+
+Megas (growing every regulation), so omitting `query` returns a compact index
+(stone, typing, ability, BST change); pass a substring for full base stats
+and per-stat changes.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `query` | `str \| None` | `None` | Species/Mega name substring; omit for the compact index of all 75 |
-| `limit` | `int` | `80` | Maximum results |
+| `query` | `str \| None` | `None` | Species/Mega name substring; omit for the compact index of all Megas |
+| `limit` | `int` | `100` | Maximum results |
 
 ### `get_move`
 
@@ -164,15 +167,15 @@ Item category, effect text and Mega-Stone flag.
 The full Champions item pool, grouped by category with effect text; call
 this before assigning items rather than reaching for an item remembered from
 another game. Champions' pool is much smaller: Choice Scarf is the only
-Choice item, and there is no Assault Vest, Rocky Helmet, Heavy-Duty Boots,
-Covert Cloak or Safety Goggles. **If an item is not in this list, it does not
-exist here.** Mega Stones (75 of 148 items) are hidden by default.
+Choice item, and there is no Assault Vest, Heavy-Duty Boots, Covert Cloak or
+Safety Goggles. **If an item is not in this list, it does not exist here.**
+Mega Stones (around half of the ~166-item pool) are hidden by default.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `category` | `str \| None` | `None` | `held-items`, `type-enhancement`, `type-protection`, `medicine`, `choice`, `bad-held-items`, or `species-specific` |
+| `category` | `str \| None` | `None` | e.g. `berry`, `power-boost`, `stat-boost`, `effect-extend`, `recovery`, `defense`, `other` (pokechamp's own category labels) |
 | `query` | `str \| None` | `None` | Name substring |
-| `include_mega_stones` | `bool` | `False` | Include the 75 Mega Stones |
+| `include_mega_stones` | `bool` | `False` | Include the Mega Stones |
 | `limit` | `int` | `200` | Maximum results |
 
 ### `search_items`
@@ -265,7 +268,7 @@ Champions Pokémon that can learn a given move (Champions movepools).
 ### `get_pokemon_moves`
 
 **Call before assigning moves.** Full Champions-legal movepool for a Pokémon
-(championsbattledata learnsets; SV/PokeAPI learnsets are wrong). Also returns
+(pokechamp.gg learnsets; SV/PokeAPI learnsets are wrong). Also returns
 `coverage_for_weaknesses`: legal moves that hit back super-effectively
 against each type this Pokémon is weak to: a consideration, not a rule.
 
@@ -523,6 +526,27 @@ structure, not as templates — copying a list also copies whatever it loses to.
 | `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
 | `pokemon` | `str \| None` | `None` | Restrict to teams containing this Pokémon |
 | `limit` | `int` | `3` | Maximum teams |
+
+### `get_historical_sets`
+
+Curated sets from Smogon/Pokémon Showdown — every generation and tier Smogon
+has ever published, filtered only to this format's battle type (doubles for
+`vgc`, singles for `bss`; the specific tier/generation inside that doesn't
+matter). **Not Champions tournament data** — Champions predates all of it, has
+a much smaller item pool, and a different movepool per species, so every set
+carries `legal_in_champions` (overall) plus per-move/item/ability legality
+flags. `invested_stats` names which stats the original EV spread favoured;
+turn that into a real Stat Point spread with `calc_stats`/
+`compute_speed_threshold` rather than converting the EV numbers directly —
+Champions' 66-SP budget doesn't map 1:1 onto 510 EVs. `get_observed_sets`
+surfaces this same data automatically as `historical_sets` when its own
+(Champions-specific) corpus is thin or empty.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | `str` | *(required)* | Pokémon name |
+| `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
+| `limit` | `int` | `8` | Maximum distinct sets to return |
 
 ---
 

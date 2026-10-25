@@ -28,6 +28,7 @@ import math
 from collections import defaultdict
 from typing import Any
 
+from . import historical_sets
 from .db import Db
 from .formats import game_type
 from .names import try_resolve
@@ -227,6 +228,37 @@ def _provenance(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+_THIN_CORPUS_SETS = 3  # fewer distinct real sets than this counts as "low"
+
+
+def _with_historical_fallback(
+    db: Db, out: dict[str, Any], slug: str, fmt: str,
+) -> dict[str, Any]:
+    """Attach Smogon-derived historical sets to a get_observed_sets payload
+    that has little or no real evidence — the "defaulting pull" this exists
+    for. Never overwrites a genuinely well-observed result.
+
+    Args:
+        db: Open Champions database handle.
+        out: The response being built (mutated in place and returned).
+        slug: Resolved Pokémon slug.
+        fmt: Internal format key (``doubles``/``singles``).
+
+    Returns:
+        ``out``, with ``historical_sets`` (+ its usage note) attached if any
+        exist.
+    """
+    sets = historical_sets._historical_sets_for(db, slug, fmt, 5)
+    if sets:
+        out["historical_sets"] = sets
+        out["historical_sets_note"] = (
+            "The real observed-team corpus is thin or empty here, so these "
+            "cross-game Smogon/Showdown sets are included as a fallback — "
+            "not Champions tournament data. " + historical_sets._NOTE
+        )
+    return out
+
+
 def _no_corpus(db: Db, fmt: str, format_name: str) -> dict[str, Any]:
     return {
         "format": format_name,
@@ -263,12 +295,12 @@ def get_observed_sets(
     if not slug:
         return {"error": f"Could not resolve Pokémon {name!r}."}
     if not db.builds_available(fmt):
-        return _no_corpus(db, fmt, format)
+        return _with_historical_fallback(db, _no_corpus(db, fmt, format), slug, fmt)
 
     rows = db.observed_members(slug, fmt)
     if not rows:
         row = db.get_pokemon_row(slug)
-        return {
+        return _with_historical_fallback(db, {
             "pokemon": row["battle_name"], "format": format, "observations": 0,
             "note": (
                 "This Pokémon does not appear in the observed-team corpus for "
@@ -276,7 +308,7 @@ def get_observed_sets(
                 "sampling, not about viability — check get_pokemon_sets for "
                 "ladder usage and judge the pick on its merits."
             ),
-        }
+        }, slug, fmt)
 
     item_display = _item_display(db)
 
@@ -406,6 +438,8 @@ def get_observed_sets(
         "are yours to decide from your team's needs. `fringe` entries are rare "
         "but attested: precedent for a sharp idea, not a mistake."
     )
+    if len(grouped) < _THIN_CORPUS_SETS:
+        out = _with_historical_fallback(db, out, slug, fmt)
     return out
 
 

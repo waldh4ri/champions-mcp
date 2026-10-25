@@ -22,17 +22,18 @@ class Settings:
     """Runtime + pull settings.
 
     The server only needs ``db_path`` and the calc settings — it never touches
-    the network. The remaining fields (``source_base``, ``pokeapi_base``,
+    the network. The remaining fields (``pokechamp_base``, ``pokeapi_base``,
     ``cache_db``, ``http_timeout``, ``user_agent``) are used solely by
     ``champions-mcp-pull`` when (re)building the local database.
     """
 
     data_dir: Path
     db_path: Path          # the served SQLite mirror (champions.sqlite)
-    cache_db: Path         # pull-time HTTP cache (PokeAPI mirror)
+    cache_db: Path         # pull-time HTTP cache (pokechamp + PokeAPI mirror)
     # --- pull-only ---
-    source_base: str       # championsbattledata.com
-    pokeapi_base: str      # PokeAPI, used once to enrich move/ability/item text
+    pokechamp_base: str      # pokechamp.gg — roster/movepool/reference/usage
+    pokechamp_concurrency: int  # max in-flight per-Pokémon page requests
+    pokeapi_base: str      # PokeAPI, used only for the type chart + localized species names
     http_timeout: float
     user_agent: str
     # --- pull-only: observed builds (see pull/builds.py) ---
@@ -71,9 +72,12 @@ class Settings:
             data_dir=data_dir,
             db_path=db_path,
             cache_db=cache_db,
-            source_base=os.environ.get(
-                "CHAMPIONS_MCP_SOURCE_BASE", "https://championsbattledata.com"
+            pokechamp_base=os.environ.get(
+                "CHAMPIONS_MCP_POKECHAMP_BASE", "https://pokechamp.gg"
             ).rstrip("/"),
+            pokechamp_concurrency=int(
+                os.environ.get("CHAMPIONS_MCP_POKECHAMP_CONCURRENCY", "6")
+            ),
             pokeapi_base=os.environ.get(
                 "CHAMPIONS_MCP_POKEAPI_BASE", "https://pokeapi.co/api/v2"
             ).rstrip("/"),
