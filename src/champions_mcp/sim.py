@@ -168,11 +168,13 @@ class BattleSimulator:
         for t in rows:
             if len(out) >= limit:
                 break
+            members = json.loads(t["members_json"])
+            if any(self.member_problem(m) for m in members):
+                continue
             try:
-                paste, _ = self.team_paste(json.loads(t["members_json"]), "bss" if fmt_key == "singles" else "vgc")
+                paste, _ = self.team_paste(members, "bss" if fmt_key == "singles" else "vgc")
             except SimError:
                 continue
-            members = json.loads(t["members_json"])
             names = [self._db.get_pokemon_row(m["species"]) or {} for m in members]
             source = " ".join(str(x) for x in (
                 f"M-{t['season']}" if t["season"] else "", f"#{t['rank']}" if t["rank"] else "",
@@ -181,6 +183,35 @@ class BattleSimulator:
             out.append({"id": t["team_id"], "label": " / ".join(n.get("showdown_name", "?") for n in names),
                         "source": source, "paste": paste, "sets_from_usage": False, "title": t["title"]})
         return out
+
+    def member_problem(self, m: dict[str, Any]) -> str | None:
+        """Why a corpus member can't be played as recorded, or None.
+
+        Scraped teamlists carry the odd typo or impossible entry (Archaludon
+        with Levitate, "lastrespect", "lightingrod"); the simulator's validator
+        would drop the whole team at request time. Checking against the
+        Champions data here keeps such teams out of the opponent pool.
+        """
+        slug = try_resolve(self._db, m.get("species") or "")
+        row = self._db.get_pokemon_row(slug) if slug else None
+        if not row:
+            return f"unknown species {m.get('species')!r}"
+        if m.get("ability"):
+            legal = {a.lower() for a in row.get("abilities") or []}  # get_pokemon_row decodes the JSON
+            # a Mega's ability is legal on its holder (Megas are stored per base species)
+            legal |= {r["ability"].lower() for r in self._db.query(
+                "SELECT ability FROM mega_forms WHERE species_slug=? OR species_name=?",
+                (slug, row.get("base_name") or "")) if r["ability"]}
+            if legal and m["ability"].lower() not in legal:
+                return f"{row['showdown_name']} can't have {m['ability']}"
+        if m.get("item") and not self._db.get_item(m["item"]):
+            return f"unknown item {m['item']!r}"
+        for mv in m.get("moves") or []:
+            move = self._db.get_move(mv)
+            if not move or not self._db.query_one(
+                    "SELECT 1 FROM learnable_moves WHERE slug=? AND move_slug=?", (slug, move["slug"])):
+                return f"{row['showdown_name']} can't learn {mv}"
+        return None
 
     def usage_moves(self, slug: str, fmt_key: str, item: str | None) -> list[str]:
         """The species' four most-used moves in this format (other format as
@@ -237,7 +268,7 @@ class BattleSimulator:
                     filled = True
                 team.append({"species": m["slug"], "item": m["item"] or None, "ability": m["ability"] or None,
                              "nature": m["nature"] or None, "moves": moves})
-            if not all(x["moves"] for x in team):
+            if not all(x["moves"] for x in team) or any(self.member_problem(x) for x in team):
                 continue
             try:
                 paste, _ = self.team_paste(team, "vgc" if fmt_key == "doubles" else "bss")

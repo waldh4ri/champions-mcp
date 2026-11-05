@@ -5,9 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"   # daily: catches an upstream changing shape between commits
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
@@ -16,7 +18,7 @@ permissions:
 jobs:
   simulator:
     # The battle-simulator sidecar: building the image runs its quick
-    # self-test (a failure fails the build); then the full self-test runs:
+    # self-test (a failure fails the build); then the full self-test:
     # legality, every policy x format, determinism across pool sizes, bad
     # input, the policy ladder, tactical scenarios, information modes.
     name: Simulator (build + self-test)
@@ -38,12 +40,15 @@ jobs:
         run: docker run --rm champions-sim:latest /app/selftest.js
 
   tests:
-    # Python suite against a freshly pulled database (the data tests are the
-    # point: they check the real upstream data, not fixtures), with the
-    # simulator image present so the end-to-end simulation tests run too.
+    # The Python suite on a real database (roster, movepools, usage: the data
+    # tests check real upstream data) whose observed-team corpus is seeded
+    # from a recorded slice (tests/fixtures/corpus.json.xz) through the real
+    # ingest + scraper code, so no long scrape runs here. The simulator image
+    # is present, so the end-to-end simulation tests run too. Strict: a
+    # skipped test fails.
     name: Python tests (data pull + simulation)
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,30 +57,22 @@ jobs:
           cache: pip
       - name: Install
         run: pip install -e ".[dev]"
-
-      # Pull caches (HTTP cache + team-report pages): restored from the last
-      # run so a pull only fetches what is new, saved again at the end.
-      - name: Restore pull caches
+      - name: Restore pull cache
         uses: actions/cache/restore@v4
         with:
-          path: |
-            data/pull-cache.sqlite
-            data/reports-cache
+          path: data/pull-cache.sqlite
           key: pull-cache-${{ github.run_id }}
           restore-keys: pull-cache-
-      - name: Data pull
-        env:
-          CHAMPIONS_MCP_LIMITLESS_KEY: ${{ secrets.LIMITLESS_KEY }}
-        run: champions-mcp-pull
-      - name: Save pull caches
+      - name: Data pull (roster + usage; no corpus scrape)
+        run: champions-mcp-pull --skip-builds
+      - name: Save pull cache
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: |
-            data/pull-cache.sqlite
-            data/reports-cache
+          path: data/pull-cache.sqlite
           key: pull-cache-${{ github.run_id }}
-
+      - name: Seed the observed-team corpus from the recorded slice
+        run: python tests/fixtures/corpus.py data/champions.sqlite
       - uses: docker/setup-buildx-action@v3
       - name: Build champions-sim
         uses: docker/build-push-action@v6
@@ -89,3 +86,22 @@ jobs:
         env:
           CHAMPIONS_MCP_STRICT_TESTS: "1"
         run: pytest -v -rs
+
+  upstreams:
+    # One or two real requests per upstream (pokechamp, PokeAPI, Limitless,
+    # pokedb export + article index, yakkun, damekei, pokemon-teams, pokesol,
+    # note), each through the real client/parser: the replayed corpus can't
+    # notice an upstream moving or changing shape, this can.
+    name: Upstream endpoints (live)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Live endpoint checks
+        run: pytest -m live -v

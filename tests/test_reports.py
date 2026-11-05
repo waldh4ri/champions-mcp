@@ -60,6 +60,42 @@ def _report(members, **kw):
     return t
 
 
+def test_recorded_corpus_replays_through_the_real_scrapers(db, tmp_path):
+    """The whole pipeline (listing parser, pokesol + blog + note parsers,
+    Japanese resolution, Limitless + pokedb ingest) on recorded pages."""
+    import sys
+    from pathlib import Path
+    from shutil import copy2
+
+    from champions_mcp.db import Db
+    sys.path.insert(0, str(Path(__file__).parent / "fixtures"))
+    import corpus
+
+    path = tmp_path / "seeded.sqlite"
+    copy2(db.path, path)
+    sdb = Db(path)
+    out = corpus.seed(sdb)
+    full = out["full_teams"]
+    assert full["listed_pokedb"] >= 30 and full["reports_in_regulation"] >= 30
+    assert full["sets_structured"] >= 10 and full["sets_parsed"] >= 1  # pokesol + free-form blogs both work
+    assert full["full_teams"] >= 10
+    rows = sdb.query("SELECT * FROM full_teams")
+    assert {r["regulation"] for r in rows} == {"M-C"}
+    assert any("pokesol" in r["url"] for r in rows)
+    for r in rows:
+        members = json.loads(r["members_json"])
+        assert len(members) == 6 and len({m["species"] for m in members}) == 6
+        for m in members:
+            assert len(m["moves"]) == 4 and m["ability"] and m["nature"]
+            assert sum(m["stat_points"].values()) <= 66
+    builds = out["builds"]
+    assert builds.get("limitless_doubles", 0) >= 100 and builds.get("pokedb_single", 0) >= 50
+    # Z-Mega stones from the Japanese ladder export resolve (they aren't in PokeAPI)
+    assert sdb.query_one("SELECT count(*) n FROM build_members WHERE item_slug LIKE '%-z'")["n"] > 0
+    assert sdb.query_one("SELECT count(*) n FROM build_members bm JOIN build_teams bt USING(team_id) "
+                         "WHERE bt.source='pokedb' AND bm.item IS NOT NULL AND bm.item_slug IS NULL")["n"] == 0
+
+
 def test_complete_report_team_is_ingested_with_its_spreads(db, tmp_path):
     lex = _Lex({
         "move": {"じしん": "Earthquake", "げきりん": "Outrage", "がんせきふうじ": "Rock Tomb", "まもる": "Protect"},

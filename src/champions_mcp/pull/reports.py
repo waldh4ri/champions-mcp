@@ -123,6 +123,23 @@ class Fetcher:
             return data.decode("utf-8", "replace")
 
 
+class ReplayFetcher(Fetcher):
+    """Serves recorded pages ({url: text}) and never touches the network.
+
+    Used by the tests and CI (tests/fixtures/corpus), so the scrapers and
+    article parsers run for real on recorded pages without a long scrape.
+    """
+
+    def __init__(self, pages: dict[str, str], cache_dir: Path) -> None:
+        super().__init__(cache_dir)
+        self.pages = pages
+        self.requested: list[str] = []
+
+    def get(self, url: str, *, max_age: float | None = None, encoding: str | None = "utf-8") -> str | None:
+        self.requested.append(url)
+        return self.pages.get(url) or None
+
+
 def clean(s: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
 
@@ -511,8 +528,14 @@ def _read_articles(f: Fetcher, teams: list[dict], dex: Dex, lex: "extract.Lexico
 
 # ───────────────────────── scrape + ingest ─────────────────────────
 
-def scrape(cache_dir: Path, regulations: tuple[str, ...]) -> tuple[list[dict], dict[str, Any]]:
+def scrape(cache_dir: Path, regulations: tuple[str, ...],
+           fetcher: Fetcher | None = None) -> tuple[list[dict], dict[str, Any]]:
     """Collect this regulation's team reports with their sets (Japanese names).
+
+    Args:
+        cache_dir: Page cache directory.
+        regulations: Regulations to collect (their ladder seasons).
+        fetcher: Override the HTTP fetcher (tests replay recorded pages).
 
     Returns:
         (teams, stats). Each team: url, title, trainer, season, rank, rate,
@@ -521,7 +544,7 @@ def scrape(cache_dir: Path, regulations: tuple[str, ...]) -> tuple[list[dict], d
     seasons = _seasons_for(regulations)
     if not seasons:
         return [], {"skipped": "no ladder seasons mapped to " + ",".join(regulations)}
-    f = Fetcher(cache_dir)
+    f = fetcher or Fetcher(cache_dir)
     csv_text = lambda table: f.get(POKEAPI_CSV.format(table), max_age=NAME_TABLE_TTL) or ""  # noqa: E731
     dex = Dex(csv_text)
     raw, stats = [], {}
@@ -648,9 +671,10 @@ def ingest_reports(db: Db, teams: list[dict], lex: "extract.Lexicon", regulation
     return dict(stats)
 
 
-def pull_reports(db: Db, cache_dir: Path, regulations: tuple[str, ...]) -> dict[str, Any]:
+def pull_reports(db: Db, cache_dir: Path, regulations: tuple[str, ...],
+                 fetcher: Fetcher | None = None) -> dict[str, Any]:
     """Scrape this regulation's team reports and store the complete ones."""
-    teams, stats = scrape(cache_dir, regulations)
+    teams, stats = scrape(cache_dir, regulations, fetcher)
     lex = stats.pop("lexicon", None)
     if lex is None:
         return stats

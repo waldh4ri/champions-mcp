@@ -216,8 +216,7 @@ resource exposes the full roster as JSON.
      top of the official ladder per season. It carries species and held item but **no
      moves**, so those rows are marked `team_and_item` and the tools never present a
      singles moveset as observed.
-6. **Scrape BSS team reports** into `full_teams` (`pull/reports.py`, ported from the
-   Kōchiku Scout project). The current regulation's 構築記事 are listed from
+6. **Scrape BSS team reports** into `full_teams` (`pull/reports.py`). The current regulation's 構築記事 are listed from
    [pokedb.tokyo's article index](https://champs.pokedb.tokyo/article/search) (final
    rank and rating), yakkun.com, damekei.com and pokemon-teams.pages.dev. Then each
    article's sets are read: pokesol.app and yakkun pages are structured, and blog text
