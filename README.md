@@ -113,15 +113,22 @@ echo "OPENROUTER_API_KEY=sk-or-..." >> .env
 docker compose --profile openrouter up -d --build
 ```
 
-The default is OpenRouter's [Auto Router](https://openrouter.ai/docs/guides/routing/routers/auto-router)
-(`openrouter/auto`). It classifies each request and picks a model from a pool of cheap
-tool-calling models, both under $1 per million tokens for input and output:
-`deepseek/deepseek-v4.1-flash` and `openai/gpt-6-luna`. For a tool-calling agent, the
-chat makes three adjustments:
+The default is OpenRouter's [Auto Router](https://openrouter.ai/docs/guides/routing/routers/auto-router),
+offered at three cost tiers in the model selector:
+
+- **`openrouter/auto (low)`** (default): picks from a pool of cheap tool-calling models,
+  both under $1 per million tokens for input and output: `deepseek/deepseek-v4.1-flash`
+  and `openai/gpt-6-luna`.
+- **`openrouter/auto (medium)`** and **`(high)`**: route over OpenRouter's ranking for
+  those cost bands, for stronger and pricier models. They're uncapped unless you set
+  `OPENROUTER_MAX_PRICE_MEDIUM` / `_HIGH`, and you can restrict them to a pool with
+  `OPENROUTER_AUTO_MODELS_MEDIUM` / `_HIGH`.
+
+For a tool-calling agent, the chat makes three adjustments:
 - It routes once per turn and keeps the chosen model for all of that turn's tool rounds,
   so the reasoning chain and the prompt cache aren't broken mid-turn.
 - It sends a per-conversation `session_id`, so later turns stay on the same model.
-- It caps provider prices at `OPENROUTER_MAX_PRICE`.
+- It caps provider prices, at `OPENROUTER_MAX_PRICE` for the fixed models and the low tier.
 
 The model actually used appears in the UI's metrics. Both pool models are also in the
 model selector, if you want one fixed. Set your own list with `OPENROUTER_MODEL`
@@ -131,10 +138,11 @@ tools works.
 | Variable | Default | Purpose |
 |---|---|---|
 | `OPENROUTER_API_KEY` | unset | Your OpenRouter key |
-| `OPENROUTER_MODEL` | `openrouter/auto,deepseek/deepseek-v4.1-flash,openai/gpt-6-luna` | Models offered in the UI |
-| `OPENROUTER_AUTO_MODELS` | `deepseek/deepseek-v4.1-flash,openai/gpt-6-luna` | Auto Router candidates (exact ids or wildcards such as `deepseek/*`) |
-| `OPENROUTER_AUTO_COST_TIER` | `low` | Auto Router cost band: `low`, `medium`, `high`, `xhigh` or `max` |
-| `OPENROUTER_MAX_PRICE` | `1` | Max USD per 1M tokens, for input and output, on every request; empty = no cap |
+| `OPENROUTER_MODEL` | `openrouter/auto (low)`, `(medium)`, `(high)`, `deepseek/deepseek-v4.1-flash`, `openai/gpt-6-luna` | Models offered in the UI (comma-separated) |
+| `OPENROUTER_AUTO_MODELS` | `deepseek/deepseek-v4.1-flash,openai/gpt-6-luna` | Low-tier candidates (exact ids or wildcards such as `deepseek/*`) |
+| `OPENROUTER_AUTO_MODELS_MEDIUM` / `_HIGH` | empty (whole ranking) | Medium/high-tier candidates |
+| `OPENROUTER_MAX_PRICE` | `1` | Max USD per 1M tokens (input and output) for the fixed models and the low tier; empty = no cap |
+| `OPENROUTER_MAX_PRICE_MEDIUM` / `_HIGH` | empty (no cap) | Price caps for the medium and high tiers |
 | `OPENROUTER_REASONING_EFFORT` | unset (model default) | `low`, `medium` or `high` |
 | `OPENROUTER_TEMPERATURE` | unset (model default) | Sampling temperature |
 | `CHAT_PROVIDER` | `auto` | `auto` uses the local `llama-server` if it's running, else OpenRouter if a key is set; or force `llama` / `openrouter` |

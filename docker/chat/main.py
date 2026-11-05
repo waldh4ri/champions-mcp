@@ -41,21 +41,52 @@ LLAMA_URL = os.getenv("LLAMA_BASE_URL", "http://llama-server:8080")
 OPENROUTER_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 # OpenRouter models offered in the UI's model picker (comma-separated; the first
 # is the default). Any tool-calling model on openrouter.ai/models works.
-# "openrouter/auto" is OpenRouter's Auto Router: it classifies the prompt and
-# picks a model from OPENROUTER_AUTO_MODELS (see _openrouter_chat).
+# "openrouter/auto (<tier>)" is OpenRouter's Auto Router at a cost tier: it
+# classifies the prompt and picks a model in that cost band (see
+# _openrouter_chat). Three entries, so the UI can trade cost for quality.
 AUTO_ROUTER = "openrouter/auto"
+AUTO_TIERS = ("low", "medium", "high")
 OPENROUTER_MODELS = [m.strip() for m in os.getenv(
     "OPENROUTER_MODEL",
-    f"{AUTO_ROUTER},deepseek/deepseek-v4.1-flash,openai/gpt-6-luna").split(",") if m.strip()]
-# Auto Router candidate pool (exact ids or wildcards like "deepseek/*") and
-# cost band (low | medium | high | xhigh | max). Kept to cheap tool-calling
-# models: the router alone ranks by popularity per task type, not by price.
-OPENROUTER_AUTO_MODELS = [m.strip() for m in os.getenv(
-    "OPENROUTER_AUTO_MODELS", "deepseek/deepseek-v4.1-flash,openai/gpt-6-luna").split(",") if m.strip()]
-OPENROUTER_AUTO_COST_TIER = os.getenv("OPENROUTER_AUTO_COST_TIER", "low").strip().lower()
-# Price guardrail on every request, in USD per million tokens (input and
-# output): providers above it are skipped. Empty disables it.
+    ",".join(f"{AUTO_ROUTER} ({t})" for t in AUTO_TIERS)
+    + ",deepseek/deepseek-v4.1-flash,openai/gpt-6-luna").split(",") if m.strip()]
+
+
+def _env_list(name: str, default: str = "") -> list[str]:
+    return [m.strip() for m in os.getenv(name, default).split(",") if m.strip()]
+
+
+# Auto Router candidate pool per tier (exact ids or wildcards like "deepseek/*").
+# The tier is a cost *band*, not a ceiling: low is kept to cheap tool-calling
+# models (the router alone ranks by popularity, not price); medium and high
+# route over OpenRouter's whole ranking for their band unless a pool is set.
+OPENROUTER_AUTO_POOLS = {
+    "low": _env_list("OPENROUTER_AUTO_MODELS", "deepseek/deepseek-v4.1-flash,openai/gpt-6-luna"),
+    "medium": _env_list("OPENROUTER_AUTO_MODELS_MEDIUM"),
+    "high": _env_list("OPENROUTER_AUTO_MODELS_HIGH"),
+}
+OPENROUTER_AUTO_MODELS = OPENROUTER_AUTO_POOLS["low"]
+# Price guardrail, in USD per million tokens (input and output): providers
+# above it are skipped. OPENROUTER_MAX_PRICE covers the fixed models and the
+# low tier; medium and high are uncapped unless their own variable is set,
+# since pricier models are their point. Empty disables a cap.
 OPENROUTER_MAX_PRICE = os.getenv("OPENROUTER_MAX_PRICE", "1").strip()
+OPENROUTER_MAX_PRICES = {
+    "low": OPENROUTER_MAX_PRICE,
+    "medium": os.getenv("OPENROUTER_MAX_PRICE_MEDIUM", "").strip(),
+    "high": os.getenv("OPENROUTER_MAX_PRICE_HIGH", "").strip(),
+}
+
+
+def _auto_tier(model: str) -> str | None:
+    """'openrouter/auto (medium)' -> 'medium'; plain 'openrouter/auto' -> 'low'."""
+    model = (model or "").strip()
+    if model == AUTO_ROUTER:
+        return "low"
+    for tier in AUTO_TIERS:
+        if model == f"{AUTO_ROUTER} ({tier})":
+            return tier
+    return None
 # OpenRouter's unified reasoning control: low | medium | high, or unset to
 # leave it to the model's default. Ignored by models without reasoning.
 OPENROUTER_REASONING_EFFORT = os.getenv("OPENROUTER_REASONING_EFFORT", "").strip().lower()
@@ -442,7 +473,8 @@ async def _init_openrouter() -> None:
     except Exception as exc:  # the chat still works; only the context meter degrades
         print(f"[chat] WARNING: could not read OpenRouter's model list: {exc}", flush=True)
         return
-    for model in dict.fromkeys(OPENROUTER_MODELS + [m for m in OPENROUTER_AUTO_MODELS if "*" not in m]):
+    pools = [m for pool in OPENROUTER_AUTO_POOLS.values() for m in pool if "*" not in m]
+    for model in dict.fromkeys([m for m in OPENROUTER_MODELS if not _auto_tier(m)] + pools):
         info = known.get(model)
         if not info:
             print(f"[chat] WARNING: {model!r} is not in OpenRouter's model list", flush=True)
@@ -453,10 +485,16 @@ async def _init_openrouter() -> None:
         if info.get("context_length"):
             model_context[model] = int(info["context_length"])
     # The Auto Router lists a nominal context; the real limit is the routed
-    # model's, so meter against the smallest of its allowed candidates.
-    pool = [model_context[m] for m in OPENROUTER_AUTO_MODELS if m in model_context]
-    if pool:
-        model_context[AUTO_ROUTER] = min(pool)
+    # model's, so meter against the smallest of a tier's allowed candidates
+    # (a tier with no pool keeps the router's listed context).
+    nominal = int((known.get(AUTO_ROUTER) or {}).get("context_length") or 0)
+    for model in OPENROUTER_MODELS:
+        tier = _auto_tier(model)
+        if not tier:
+            continue
+        pool = [model_context[m] for m in OPENROUTER_AUTO_POOLS[tier] if m in model_context]
+        if pool or nominal:
+            model_context[model] = min(pool) if pool else nominal
 
 
 def _context_size(model: str) -> int:
@@ -587,12 +625,12 @@ class TurnMetrics:
 
 
 async def _llama_chat(model: str, messages: list[dict], use_tools: bool, metrics: TurnMetrics | None = None,
-                      session_id: str | None = None) -> dict:
+                      session_id: str | None = None, route_tier: str | None = None) -> dict:
     """One round-trip to llama-server's OpenAI chat endpoint; returns the raw
     assistant message (content, optional tool_calls, optional reasoning_content).
     Feeds the response's `timings`/`usage` blocks into `metrics` when given."""
     if PROVIDER == "openrouter":
-        return await _openrouter_chat(model, messages, use_tools, metrics, session_id)
+        return await _openrouter_chat(model, messages, use_tools, metrics, session_id, route_tier)
     payload: dict = {
         "model": model,
         "messages": messages,
@@ -614,7 +652,8 @@ async def _llama_chat(model: str, messages: list[dict], use_tools: bool, metrics
 
 
 async def _openrouter_chat(model: str, messages: list[dict], use_tools: bool,
-                           metrics: TurnMetrics | None, session_id: str | None = None) -> dict:
+                           metrics: TurnMetrics | None, session_id: str | None = None,
+                           route_tier: str | None = None) -> dict:
     """The same round-trip against OpenRouter's OpenAI-compatible API.
 
     Differences from llama-server: bearer auth; no llama.cpp-only fields
@@ -631,21 +670,25 @@ async def _openrouter_chat(model: str, messages: list[dict], use_tools: bool,
         m = dict(m)
         m.pop("reasoning_content", None)  # llama-server's field; OpenRouter replays reasoning_details
         outgoing.append(m)
-    payload: dict = {"model": model, "messages": outgoing, "stream": False}
+    tier = _auto_tier(model)
+    payload: dict = {"model": AUTO_ROUTER if tier else model, "messages": outgoing, "stream": False}
     if use_tools and mcp_tools:
         payload["tools"] = mcp_tools
         payload["tool_choice"] = "auto"
-    if model == AUTO_ROUTER:
-        # Auto Router: pick from our cheap tool-calling pool only, lowest band.
-        router: dict = {"id": "auto-router", "cost_tier": OPENROUTER_AUTO_COST_TIER or "low"}
-        if OPENROUTER_AUTO_MODELS:
-            router["allowed_models"] = OPENROUTER_AUTO_MODELS
+    if tier:
+        # Auto Router: route within this tier's cost band (and pool, if set).
+        router: dict = {"id": "auto-router", "cost_tier": tier}
+        if OPENROUTER_AUTO_POOLS[tier]:
+            router["allowed_models"] = OPENROUTER_AUTO_POOLS[tier]
         payload["plugins"] = [router]
     if session_id:
         # Sticky routing (and caching) across this conversation's turns.
         payload["session_id"] = session_id
-    if OPENROUTER_MAX_PRICE:
-        cap = float(OPENROUTER_MAX_PRICE)
+    # a model pinned after routing keeps its tier's price rule (route_tier)
+    price_tier = tier or route_tier
+    max_price = OPENROUTER_MAX_PRICES[price_tier] if price_tier else OPENROUTER_MAX_PRICE
+    if max_price:
+        cap = float(max_price)
         payload["provider"] = {"max_price": {"prompt": cap, "completion": cap}}
     if OPENROUTER_REASONING_EFFORT in ("low", "medium", "high"):
         payload["reasoning"] = {"effort": OPENROUTER_REASONING_EFFORT}
@@ -802,15 +845,16 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
         if PROVIDER == "openrouter" and model not in OPENROUTER_MODELS:
             model = _default_model()  # e.g. a stale llama alias left in the UI
         metrics = TurnMetrics(_context_size(model))
+        route_tier = _auto_tier(model)  # survives pinning the routed model below
 
         for _round in range(MAX_TOOL_ROUNDS):
             try:
                 msg = await _llama_chat(model, messages, use_tools=True, metrics=metrics,
-                                        session_id=session_id)
+                                        session_id=session_id, route_tier=route_tier)
             except Exception as exc:
                 yield _ndjson({"type": "error", "detail": str(exc)})
                 return
-            if model == AUTO_ROUTER and metrics.model and metrics.model != AUTO_ROUTER:
+            if _auto_tier(model) and metrics.model and not metrics.model.startswith(AUTO_ROUTER):
                 # The Auto Router classifies each request on its own: left alone it
                 # could switch model between this turn's tool rounds, breaking the
                 # reasoning chain and the prompt cache. Route once, then pin.
@@ -923,7 +967,7 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
         })
         try:
             msg = await _llama_chat(model, messages, use_tools=False, metrics=metrics,
-                                    session_id=session_id)
+                                    session_id=session_id, route_tier=route_tier)
         except Exception as exc:
             yield _ndjson({"type": "error", "detail": str(exc)})
             return

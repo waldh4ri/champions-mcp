@@ -101,6 +101,16 @@
       max-width: 200px;
     }
     #modelSelect:focus { border-color: #6366f1; }
+    #sessionSelect {
+      background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px;
+      padding: 5px 10px; font-size: 0.82rem; cursor: pointer; outline: none; max-width: 240px;
+    }
+    #sessionSelect:focus { border-color: #6366f1; }
+    .hdrBtn {
+      background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px;
+      padding: 5px 12px; font-size: 0.8rem; font-family: inherit; cursor: pointer;
+    }
+    .hdrBtn:hover { border-color: #6366f1; color: #e2e8f0; }
 
     /* Shared style for the header's checkbox toggles: Autoscroll, Thinking, Tools. */
     .viewToggle {
@@ -746,7 +756,9 @@
       <input type="checkbox" id="panelChk" checked>
       Team
     </label>
-    <button id="resetBtn" onclick="resetChat()" title="Wipe the conversation and start fresh">Reset</button>
+    <select id="sessionSelect" title="Saved chats (stored in this browser)"><option value="">New chat</option></select>
+    <button id="newBtn" class="hdrBtn" onclick="resetChat()" title="Start a new chat (the current one stays saved)">New</button>
+    <button id="resetBtn" onclick="deleteSession()" title="Delete this chat from the browser">Delete</button>
     <select id="modelSelect"><option value="">Loading models…</option></select>
   </div>
 </header>
@@ -827,15 +839,11 @@
 
   // ── reset ─────────────────────────────────────────────────────────────────────
   // The chat backend is stateless (history is sent per request), so wiping the
-  // client-side history + view is a complete reset of the app state.
-  function resetChat() {
-    if (history.length && !confirm('Wipe the conversation and start fresh?')) return;
-    history = [];
+  // client-side history + view is a complete reset of the app state. Chats are
+  // saved in the browser as they go, so "New" just starts another one.
+  function clearView() {
     messagesEl.innerHTML = '';
     addBubble('info', INTRO_HTML);
-    inputEl.value = '';
-    inputEl.style.height = 'auto';
-    inputEl.focus();
     mPrefill.textContent = '--';
     mDecode.textContent = '--';
     mCache.textContent = '--';
@@ -843,6 +851,137 @@
     mCtx.style.color = '';
     TeamPanel.reset();
   }
+  function resetChat() {
+    if (sendBtn.disabled) return;  // a reply is still streaming into the current chat
+    current = newSession();
+    history = current.history;
+    clearView();
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+    inputEl.focus();
+    refreshSessionList();
+  }
+
+  // ── saved sessions (IndexedDB: a long tool-calling chat is megabytes, past
+  // what localStorage holds) ──────────────────────────────────────────────────
+  // A session stores the UI event stream (user messages, reasoning, tool calls
+  // with their results, answers) plus the history the backend needs, so
+  // reopening it rebuilds the transcript and the team panel exactly.
+  const SessionStore = (() => {
+    const NAME = 'champions-chat', STORE = 'sessions';
+    let opened = null;
+    function db() {
+      if (!opened) {
+        opened = new Promise((resolve, reject) => {
+          const req = indexedDB.open(NAME, 1);
+          req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: 'id' });
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        }).catch(err => { console.warn('chat sessions not saved:', err); return null; });
+      }
+      return opened;
+    }
+    async function run(mode, fn) {
+      const d = await db();
+      if (!d) return null;
+      return new Promise((resolve, reject) => {
+        const tx = d.transaction(STORE, mode);
+        const req = fn(tx.objectStore(STORE));
+        tx.oncomplete = () => resolve(req ? req.result : null);
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+    return {
+      all: async () => (await run('readonly', st => st.getAll())) || [],
+      get: id => run('readonly', st => st.get(id)),
+      put: session => run('readwrite', st => st.put(session)),
+      del: id => run('readwrite', st => st.delete(id)),
+    };
+  })();
+
+  const sessionSel = document.getElementById('sessionSelect');
+  function newSession() {
+    const id = (crypto.randomUUID && crypto.randomUUID()) || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return { id, title: '', created: Date.now(), updated: Date.now(), model: '', history: [], events: [] };
+  }
+  let current = newSession();
+
+  function record(event) {
+    current.events.push(event);
+    saveSoon();
+  }
+  let saveTimer = null;
+  function saveSoon() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveNow, 300);
+  }
+  async function saveNow() {
+    clearTimeout(saveTimer);
+    if (!current.events.length) return;
+    current.updated = Date.now();
+    current.history = history;
+    current.model = modelSel.value || current.model;
+    if (!current.title) {
+      const first = current.events.find(e => e.t === 'user');
+      current.title = first ? first.text.replace(/\s+/g, ' ').slice(0, 60) : 'Chat';
+    }
+    try {
+      await SessionStore.put(JSON.parse(JSON.stringify(current)));
+    } catch (err) {
+      console.warn('could not save the chat:', err);
+    }
+    refreshSessionList();
+  }
+
+  async function refreshSessionList() {
+    const list = (await SessionStore.all()).sort((a, b) => b.updated - a.updated);
+    const fmt = t => new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const saved = list.some(x => x.id === current.id);
+    sessionSel.innerHTML = (saved ? '' : '<option value="">New chat</option>') +
+      list.map(x => `<option value="${esc(x.id)}">${esc(x.title || 'Chat')} · ${fmt(x.updated)}</option>`).join('');
+    sessionSel.value = saved ? current.id : '';
+  }
+
+  function replay(event) {
+    if (event.t === 'user') addBubble('user', esc(event.text));
+    else if (event.t === 'thinking') addThinkingMessage(event.text);
+    else if (event.t === 'tool') {
+      addToolMessage(event.ev);
+      try { TeamPanel.onTool(event.ev); } catch (e) { console.warn('team panel', e); }
+    } else if (event.t === 'assistant') {
+      const bub = addBubble('assistant', '');
+      renderMarkdown(bub, event.content);
+      try { TeamPanel.onFinal(event.content); } catch (e) { console.warn('team panel', e); }
+    } else if (event.t === 'error') addBubble('info', `<strong>Error:</strong> ${esc(event.text)}`);
+  }
+
+  async function openSession(id) {
+    if (sendBtn.disabled) { sessionSel.value = current.id; return; }
+    const saved = id && await SessionStore.get(id);
+    if (!saved) { resetChat(); return; }
+    current = saved;
+    history = current.history || [];
+    clearView();
+    const wasAuto = autoscroll;
+    autoscroll = false;
+    for (const event of current.events) replay(event);
+    autoscroll = wasAuto;
+    messagesScrollEl.scrollTop = messagesScrollEl.scrollHeight;
+    if (current.model && [...modelSel.options].some(o => o.value === current.model)) modelSel.value = current.model;
+    refreshSessionList();
+  }
+
+  async function deleteSession() {
+    if (sendBtn.disabled) return;
+    if (current.events.length && !confirm('Delete this chat from the browser?')) return;
+    await SessionStore.del(current.id);
+    const rest = (await SessionStore.all()).sort((a, b) => b.updated - a.updated);
+    if (rest.length) openSession(rest[0].id);
+    else resetChat();
+  }
+
+  sessionSel.addEventListener('change', () => openSession(sessionSel.value));
+  modelSel.addEventListener('change', () => { if (current.events.length) saveSoon(); });
 
   // ── model loader ─────────────────────────────────────────────────────────────
   fetch('/api/models')
@@ -854,6 +993,7 @@
         : '<option value="">No models found</option>';
       ctxMax = data.context_size || 0;
       if (ctxMax) mCtx.textContent = `0/${fmtK(ctxMax)}`;
+      if (current.model && models.includes(current.model)) modelSel.value = current.model;
     })
     .catch(() => { modelSel.innerHTML = '<option value="">backend unavailable</option>'; });
 
@@ -1107,6 +1247,7 @@
 
     history.push({ role: 'user', content: text });
     addBubble('user', esc(text));
+    record({ t: 'user', text });
 
     const typing = addTyping();
     let typingRemoved = false;
@@ -1130,11 +1271,13 @@
         lastThinking = evt.text;
         removeTypingOnce();
         addThinkingMessage(evt.text);
+        record({ t: 'thinking', text: evt.text });
       } else if (evt.type === 'tool_call') {
         toolEvents.push(evt.event);
         removeTypingOnce();
         addToolMessage(evt.event);
         try { TeamPanel.onTool(evt.event); } catch (e) { console.warn('team panel', e); }
+        record({ t: 'tool', ev: evt.event });
       } else if (evt.type === 'error') {
         throw new Error(evt.detail || 'Stream error');
       }
@@ -1199,10 +1342,13 @@
       const bub = addBubble('assistant', '');
       renderMarkdown(bub, content);
       try { TeamPanel.onFinal(content); } catch (e) { console.warn('team panel', e); }
+      record({ t: 'assistant', content });
     } catch (err) {
       removeTypingOnce();
       addBubble('info', `<strong>Error:</strong> ${esc(err.message)}`);
+      record({ t: 'error', text: err.message });
     } finally {
+      saveNow();
       setBusy(false);
       inputEl.focus();
     }
@@ -1631,6 +1777,11 @@
 
   // ── initial render ──────────────────────────────────────────────────────────────
   addBubble('info', INTRO_HTML);
+  SessionStore.all().then(list => {
+    const last = list.sort((a, b) => b.updated - a.updated)[0];
+    if (last) openSession(last.id);
+    else refreshSessionList();
+  });
 </script>
 </body>
 </html>
