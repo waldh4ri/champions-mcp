@@ -25,12 +25,11 @@
     /* Full-bleed bars (header/footer) hold a centered, width-capped inner row
        so the UI reads as one focused column instead of stretching edge to
        edge on wide screens. */
-    :root { --content-width: 900px; }
-    /* A fixed 900px column looks lost in the middle of a 4K/ultra-wide
-       display — widen the reading column a bit on very large viewports while
-       keeping line length comfortable (still well short of full-bleed). */
+    /* Wide column: answers carry tables, sets and calc breakdowns that read
+       badly squeezed (900px was far too narrow next to the team panel). */
+    :root { --content-width: 1500px; }
     @media (min-width: 2200px) {
-      :root { --content-width: 1180px; }
+      :root { --content-width: 2000px; }
     }
 
     header {
@@ -167,7 +166,7 @@
     .message.user { align-self: flex-end; align-items: flex-end; }
     .message.assistant,
     .message.thinking-msg,
-    .message.tool-msg { align-self: flex-start; align-items: flex-start; max-width: 90%; }
+    .message.tool-msg { align-self: flex-start; align-items: flex-start; max-width: 96%; }
     .message.info { align-self: center; align-items: center; max-width: 100%; }
 
     .bubble {
