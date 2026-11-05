@@ -9,6 +9,9 @@ tests/__pycache__/
 data/champions.sqlite
 data/pull-cache.sqlite
 data/pokemon-index.json
+data/reports-cache/
+data/*.sqlite.tmp
+data/*.buildsrefresh.tmp
 
 .env
 .claude/

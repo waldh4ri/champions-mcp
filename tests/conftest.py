@@ -7,6 +7,7 @@ when that database has not been pulled yet.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,20 @@ import pytest
 from champions_mcp.db import Db
 
 _DB_PATH = Path(__file__).resolve().parents[1] / "data" / "champions.sqlite"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """CHAMPIONS_MCP_STRICT_TESTS=1 (set in CI): a skip is a failure.
+
+    Locally, tests skip when the database, the simulator image or the MCP SDK
+    isn't there. In CI all of them are provided, so a skip means something
+    that should exist didn't, and must not pass silently."""
+    outcome = yield
+    report = outcome.get_result()
+    if os.environ.get("CHAMPIONS_MCP_STRICT_TESTS") == "1" and report.skipped:
+        report.outcome = "failed"
+        report.longrepr = f"skipped in strict mode: {report.longrepr}"
 
 
 @pytest.fixture(scope="session")

@@ -3,9 +3,10 @@
 # Services
 # --------
 #   champions-calc - @smogon/calc HTTP sidecar (Node 20, gen-0 Champions mode)
+#   champions-sim  - Pokémon Showdown battle simulator sidecar (Node 22, champions mod)
 #   champions-mcp  - MCP server (Python 3.12, streamable-HTTP transport)
 #
-# These two form the core stack and are always started. An optional
+# These three form the core stack and are always started. An optional
 # --profile ai stack adds a local-LLM chat UI on top of it:
 #   llama-server   - llama.cpp inference backend (GPU), OpenAI-compatible API
 #   champions-chat - web chat UI + MCP tool-calling bridge to champions-mcp
@@ -50,6 +51,29 @@ services:
     networks:
       - mcp-internal
 
+  # Battle-simulation engine backing the simulate_* / compare_team_variants
+  # tools: Pokémon Showdown's simulator (champions mod, pinned commit) behind
+  # a small HTTP API with a worker-thread pool. CPU-bound; SIM_WORKERS caps
+  # the threads (default: all cores but one).
+  champions-sim:
+    build:
+      context: .
+      dockerfile: docker/sim/Dockerfile
+    image: ${SIM_IMAGE:-champions-sim:latest}
+    restart: unless-stopped
+    environment:
+      PORT: "3000"  # container-side listen port; only reachable over mcp-internal, never published to the host
+      SIM_WORKERS: "${SIM_WORKERS:-0}"  # 0 = cores - 1
+      SIM_MAX_BATTLES: "${SIM_MAX_BATTLES:-50000}"  # hard per-request cap (the MCP side enforces its own, lower cap)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - mcp-internal
+
   # Core MCP server: exposes the team-building/calc tools over streamable-HTTP,
   # reading the local SQLite mirror and delegating damage math to champions-calc.
   champions-mcp:
@@ -66,6 +90,9 @@ services:
       PUBLISHED_PORT: "${MCP_PORT:-8000}"  # host-side port, echoed into the startup banner (entrypoint.sh) so the printed MCP URL is correct even when MCP_PORT is overridden
       # Calc sidecar endpoint (HTTP instead of docker-in-docker)
       CHAMPIONS_MCP_CALC_HTTP: "http://champions-calc:3000/"
+      # Battle-simulator sidecar endpoint + per-call battle cap
+      CHAMPIONS_MCP_SIM_HTTP: "http://champions-sim:3000/"
+      CHAMPIONS_MCP_SIM_MAX_BATTLES: "${CHAMPIONS_MCP_SIM_MAX_BATTLES:-20000}"
       # Data location (persisted volume)
       CHAMPIONS_MCP_DATA_DIR: "/data"
       CHAMPIONS_MCP_DB: "/data/champions.sqlite"
@@ -83,6 +110,9 @@ services:
       CHAMPIONS_MCP_BUILDS_MAX_EVENTS: "${CHAMPIONS_MCP_BUILDS_MAX_EVENTS:-150}"
       CHAMPIONS_MCP_BUILDS_MIN_PLAYERS: "${CHAMPIONS_MCP_BUILDS_MIN_PLAYERS:-16}"
       CHAMPIONS_MCP_BUILDS_HALF_LIFE_DAYS: "${CHAMPIONS_MCP_BUILDS_HALF_LIFE_DAYS:-21}"
+      # Complete BSS teams scraped from published team reports (pull/reports.py),
+      # run with the observed-team stage; 1 = skip just this step.
+      CHAMPIONS_MCP_REPORTS_SKIP: "${CHAMPIONS_MCP_REPORTS_SKIP:-0}"
     volumes:
       - champions-data:/data  # persists champions.sqlite + pull-cache.sqlite (see CHAMPIONS_MCP_DATA_DIR above) across container restarts/rebuilds
     depends_on:
@@ -91,6 +121,10 @@ services:
         # server calls out to it synchronously for damage calcs, so starting
         # earlier would just surface connection errors on the first request.
         condition: service_healthy
+      champions-sim:
+        # Only the simulate_* tools need it, so don't hold the server back on
+        # it: those tools report the sidecar as unreachable until it's up.
+        condition: service_started
     networks:
       - mcp-internal
 

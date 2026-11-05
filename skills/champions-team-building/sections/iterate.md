@@ -6,8 +6,12 @@ When the user reports results, diagnose before changing anything:
   fix defensive synergy or bulk), or *bad positioning* (a lead or bring
   problem: fix the bring plans or the leads before touching the six).
 - Ask for the opposing teams they lost to if not given, and calc the losing turns.
+- Reproduce the losing matchup: put the opposing team into `simulate_matchup`,
+  and read one `simulate_battle_log` to see how the loss happens.
 - **Change one slot or one variable at a time**, and say what result would
   confirm it. Changing several at once makes it impossible to tell what helped.
+  `compare_team_variants` is that confirmation: same opponents, same seeds, so
+  `delta_vs_base` isolates the change (trust only `significant` deltas).
 - Keep the win condition intact. A patch that fixes one matchup by removing the
   plan's core piece is a new team, so say so.
 - Know when a concept is done: if the same core matchup loses for structural

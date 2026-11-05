@@ -40,12 +40,20 @@ _PASTE_NAME = {
 }
 
 
-def _species_name(db: Db, species: str) -> str:
+# The battle simulator needs the real Showdown species: battle-only forms
+# still collapse to the species brought, but Floette-Eternal must stay
+# Floette-Eternal (plain "Floette" doesn't exist in Gen 9 and can't hold
+# Floettite), unlike the sprite-driven paste mapping above.
+_SIM_NAME = {k: v for k, v in _PASTE_NAME.items() if k != "Floette-Eternal"}
+
+
+def _species_name(db: Db, species: str, for_sim: bool = False) -> str:
     slug = try_resolve(db, species)
     if slug:
         row = db.get_pokemon_row(slug)
         if row:
-            return _PASTE_NAME.get(row["showdown_name"], row["showdown_name"])
+            mapping = _SIM_NAME if for_sim else _PASTE_NAME
+            return mapping.get(row["showdown_name"], row["showdown_name"])
     return _title(species)
 
 
@@ -64,18 +72,20 @@ def _ability_name(db: Db, ability: str) -> str:
     return a["name"] if a else _title(ability)
 
 
-def member_to_showdown(db: Db, m: dict[str, Any]) -> str:
+def member_to_showdown(db: Db, m: dict[str, Any], for_sim: bool = False) -> str:
     """Render one team member as a Showdown-format text block.
 
     Args:
         db: Open Champions database handle.
         m: A team member dict (species, item, ability, moves, etc.).
+        for_sim: Use simulator-safe species names (see `_SIM_NAME`) instead
+            of the pokepast.es display names.
 
     Returns:
         The member's Showdown-format lines joined with ``\\r\\n``.
     """
     lines: list[str] = []
-    species = _species_name(db, m.get("species") or "Unknown")
+    species = _species_name(db, m.get("species") or "Unknown", for_sim)
     nickname = m.get("nickname")
     first = f"{nickname} ({species})" if nickname else species
     if m.get("item"):
@@ -103,17 +113,18 @@ def member_to_showdown(db: Db, m: dict[str, Any]) -> str:
     return "\r\n".join(lines)
 
 
-def team_to_showdown(db: Db, team: list[dict[str, Any]]) -> str:
+def team_to_showdown(db: Db, team: list[dict[str, Any]], for_sim: bool = False) -> str:
     """Render a full team as Showdown-format text, one block per member.
 
     Args:
         db: Open Champions database handle.
         team: The full list of team members.
+        for_sim: Render for the battle simulator (see `member_to_showdown`).
 
     Returns:
         The complete Showdown-format paste text.
     """
-    return "\r\n\r\n".join(member_to_showdown(db, m) for m in team)
+    return "\r\n\r\n".join(member_to_showdown(db, m, for_sim) for m in team)
 
 
 # An exported paste is the deliverable — someone imports it and plays it. A

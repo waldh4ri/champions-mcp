@@ -1,11 +1,12 @@
 # champions-mcp Tool Reference
 
-`champions-mcp` exposes 42 MCP tools over the local `champions.sqlite` mirror
+`champions-mcp` exposes 46 MCP tools over the local `champions.sqlite` mirror
 (built by `champions-mcp-pull` from pokechamp.gg + PokeAPI (type chart,
 localized names), plus a corpus of complete teams from Limitless and
 champs.pokedb.tokyo).
-Two tools (`calc_damage`, `create_pokepaste`) make outbound calls; everything
-else is a local read against the SQLite mirror.
+Two tools (`calc_damage`, `create_pokepaste`) make outbound calls, and the four
+battle-simulation tools call the `champions-sim` sidecar; everything else is a
+local read against the SQLite mirror.
 
 Every tool also accepts localized Pokémon/move/item names where noted, and
 most take an optional `format` argument, always `"vgc"` (doubles) or `"bss"`
@@ -26,6 +27,7 @@ the two.
 - [Stat Points & Speed](#stat-points--speed)
 - [Team Analysis](#team-analysis)
 - [Damage Calc](#damage-calc)
+- [Battle Simulation](#battle-simulation)
 - [Export](#export)
 - [Non-tool endpoints](#non-tool-endpoints)
 
@@ -76,6 +78,10 @@ the two.
 | [`validate_team`](#validate_team) | Team | Full legality report; call last |
 | [`analyze_team`](#analyze_team) | Team | Legality + meta context + dependency gaps |
 | [`calc_damage`](#calc_damage) | Damage | Damage rolls / %HP / KO chance via @smogon/calc |
+| [`simulate_vs_meta`](#simulate_vs_meta) | Simulation | Win rate vs the top observed teams + worst matchups, member stats, threats |
+| [`compare_team_variants`](#compare_team_variants) | Simulation | A/B test team changes on identical opponents and seeds |
+| [`simulate_matchup`](#simulate_matchup) | Simulation | Head-to-head win rate of two teams |
+| [`simulate_battle_log`](#simulate_battle_log) | Simulation | One simulated battle, turn by turn |
 | [`create_pokepaste`](#create_pokepaste) | Export | Upload a finished team to pokepast.es |
 
 ---
@@ -743,6 +749,128 @@ when a number surprises you instead of re-deriving the formula.
 | `attacker_tailwind` | `bool` | `False` | Attacker's side has Tailwind |
 | `crit` | `bool` | `False` | Force a critical hit |
 | `move_hits` | `int \| None` | `None` | Number of hits, for multi-hit moves |
+
+---
+
+## Battle Simulation
+
+Real battles on Pokémon Showdown's simulator (its `champions` mod, pinned
+commit): Stat Points, Megas and Z-Megas, the 20 PP cap, no Tera, the Champions
+abilities, and the Reg M-C VGC / BSS rules and validator. An AI plays both
+sides; hundreds of games take a few seconds on the `champions-sim` sidecar
+(`CHAMPIONS_MCP_SIM_HTTP`, or a one-shot `docker run` of the
+`champions-sim` image), which uses every CPU core it is allowed.
+
+**Teams** are a list of six member dicts (`{species, item, ability, nature,
+moves, stat_points}`, as for `validate_team`) or Showdown paste text. A
+missing spread, nature or ability is filled with the species' most common one
+and listed under `assumptions`. Every team is checked with the simulator's
+own Reg M-C validator first; an illegal one returns `problems`. (Choice Specs,
+Choice Band and Assault Vest are "Past" items in Champions and are rejected.)
+
+**Opponents** for `simulate_vs_meta` / `compare_team_variants` are real
+teams:
+- **BSS:** complete teams from players' published team reports (moves,
+  ability, nature and spread exactly as played), best final ranks first,
+  topped up with pokedb's top ladder teams (species and item as played, the
+  rest from BSS usage).
+- **VGC:** Limitless tournament teamlists, using each species' modal spread.
+
+**AI policy** (`policy`): `"heuristic"` (default) uses the simulator's own
+damage numbers, and it:
+- takes KOs, and doesn't overkill one target with both attackers;
+- Protects when threatened and uses Fake Out, speed control, redirection,
+  setup and status where they pay;
+- switches when the active Pokémon is outsped and KO'd, walled or about to
+  take a big hit, preferring a switch-in that resists or is immune to the
+  predicted move;
+- values pivot moves;
+- picks brings and leads by matchup, judging Mega Stone holders as their Mega.
+
+`"greedy"` and `"random"` are baselines. Win rates are relative to this AI,
+not ladder predictions.
+
+**Information** (`information`) sets what each side's AI knows about the other:
+- `"open_sheets"` (default, Open Team Sheets): real moves, items and abilities;
+  spreads and natures are assumed to be the species' usual ones, and HP is seen
+  as a percentage.
+- `"closed"`: species only. Moves, item and ability are the format's most-used
+  ones until revealed in battle.
+- `"omniscient"`: exact sets, an upper bound.
+
+Results are reproducible: the same `seed` gives the same games. Each call is
+capped at `CHAMPIONS_MCP_SIM_MAX_BATTLES` battles (default 20,000).
+
+### `simulate_vs_meta`
+
+Win rate against the top observed teams, with a Wilson 95% CI. The result
+includes:
+- `worst_matchups` / `best_matchups`: real teams, each with a `label` and a
+  `source` (season, final rank, rating, article URL);
+- `members`: `brought_pct`, `lead_pct`, `win_rate_when_brought`,
+  `kos_per_game_brought`, `faint_rate_when_brought` and `mega_pct_when_brought`;
+- `opponent_threats`: the species scoring the most KOs on the team.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `team` | `list[dict] \| str` | *(required)* | The team (member dicts or Showdown paste) |
+| `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
+| `opponents` | `int` | `30` | How many top observed teams to play |
+| `games_per_opponent` | `int` | `20` | Games against each (sides alternate) |
+| `policy` | `str` | `"heuristic"` | `"heuristic"`, `"greedy"` or `"random"` |
+| `seed` | `int` | `1` | Battle seed (same seed, same games) |
+| `information` | `str` | `"open_sheets"` | `"open_sheets"`, `"closed"` or `"omniscient"` |
+
+### `compare_team_variants`
+
+A/B test changes: every variant plays the same opponents with the same seeds
+as `base_team`. `delta_vs_base` gives the win-rate difference, its paired 95%
+CI and `significant`. An insignificant delta means "no measurable
+difference".
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `base_team` | `list[dict] \| str` | *(required)* | The current team |
+| `variants` | `list[list[dict] \| str]` | *(required)* | Full alternative teams |
+| `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
+| `opponents` | `int` | `20` | How many top observed teams to play |
+| `games_per_opponent` | `int` | `20` | Games against each |
+| `policy` | `str` | `"heuristic"` | AI policy |
+| `seed` | `int` | `1` | Battle seed |
+| `information` | `str` | `"open_sheets"` | What each side knows about the other |
+
+### `simulate_matchup`
+
+Head-to-head: `team_a`'s win rate over `games` battles against `team_b`
+(sides alternate), with team_a's member stats and team_b's most dangerous
+members.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `team_a` | `list[dict] \| str` | *(required)* | First team |
+| `team_b` | `list[dict] \| str` | *(required)* | Second team |
+| `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
+| `games` | `int` | `500` | Battles to play (500 give about ±4 points) |
+| `policy` | `str` | `"heuristic"` | AI policy for team_a |
+| `opponent_policy` | `str \| None` | `None` | AI policy for team_b (default: same) |
+| `seed` | `int` | `1` | Battle seed |
+| `information` | `str` | `"open_sheets"` | What each side knows about the other |
+
+### `simulate_battle_log`
+
+One battle, condensed turn by turn (switches, moves, damage as %HP, KOs, Mega
+Evolution, weather and field), plus who was brought and led. Use it to
+explain why a matchup goes the way `simulate_matchup` says; change `seed` for
+another game.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `team_a` | `list[dict] \| str` | *(required)* | First team |
+| `team_b` | `list[dict] \| str` | *(required)* | Second team |
+| `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
+| `seed` | `int` | `1` | Battle seed |
+| `policy` | `str` | `"heuristic"` | AI policy for both sides |
+| `information` | `str` | `"open_sheets"` | What each side knows about the other |
 
 ---
 

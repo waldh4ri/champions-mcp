@@ -607,6 +607,15 @@ async def build(db: Db, settings: Settings, *, with_builds: bool = True) -> dict
         stats = await builds_mod.ingest_builds(db, settings)
         db.set_meta("builds", stats)
 
+        # Complete BSS teams (moves/ability/nature/spread) from players'
+        # published team reports; synchronous scraper, so off the event loop.
+        if not settings.reports_skip:
+            import asyncio
+
+            from .reports import pull_reports
+            db.set_meta("full_teams", await asyncio.to_thread(
+                pull_reports, db, settings.data_dir / "reports-cache", settings.builds_regulations))
+
     current_reg = next((r for r in regulations if r.get("endDate") is None), None)
     db.set_meta("season", current_reg["title"] if current_reg else "Current")
     db.set_meta("data_version", (current_reg or {}).get("startDate", ""))
@@ -615,7 +624,7 @@ async def build(db: Db, settings: Settings, *, with_builds: bool = True) -> dict
     counts = {t: db.count(t) for t in (
         "pokemon", "learnable_moves", "usage", "moves", "abilities",
         "items", "mega_forms", "type_chart", "teammates",
-        "build_teams", "build_members", "smogon_sets",
+        "build_teams", "build_members", "smogon_sets", "full_teams",
     )}
     db.set_meta("counts", counts)
     return counts

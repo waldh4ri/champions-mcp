@@ -212,6 +212,26 @@ CREATE INDEX IF NOT EXISTS idx_bm_slug ON build_members(slug);
 CREATE INDEX IF NOT EXISTS idx_bm_team ON build_members(team_id);
 CREATE INDEX IF NOT EXISTS idx_bm_set ON build_members(set_hash);
 
+-- Complete teams (every member's moves, ability, nature AND Stat Point
+-- spread) from players' published team reports (構築記事), scraped by
+-- pull/reports.py. The battle simulator plays these as
+-- its BSS opponents: unlike the ladder export (species + item only), nothing
+-- has to be guessed.
+CREATE TABLE IF NOT EXISTS full_teams (
+    team_id      TEXT PRIMARY KEY,
+    format       TEXT NOT NULL,      -- 'singles' | 'doubles'
+    regulation   TEXT,
+    season       INTEGER,
+    rank         INTEGER,            -- final ladder rank, when reported
+    rating       REAL,
+    title        TEXT,
+    trainer      TEXT,
+    url          TEXT,
+    source       TEXT NOT NULL,      -- where the sets came from (pokesol, yakkun, article text...)
+    members_json TEXT NOT NULL       -- [{species, item, ability, nature, moves, stat_points}] x6
+);
+CREATE INDEX IF NOT EXISTS idx_ft_fmt ON full_teams(format, regulation);
+
 -- Curated competitive sets from Smogon/Pokémon Showdown (every generation and
 -- tier they publish), kept as a historical-builds fallback for when the real
 -- observed-team corpus (build_teams/build_members, above) is thin or empty —

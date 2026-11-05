@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    # The battle-simulator sidecar: building the image runs its quick
+    # self-test (a failure fails the build); then the full self-test runs:
+    # legality, every policy x format, determinism across pool sizes, bad
+    # input, the policy ladder, tactical scenarios, information modes.
+    name: Simulator (build + self-test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build champions-sim (gated by its quick self-test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/sim/Dockerfile
+          tags: champions-sim:latest
+          load: true
+          cache-from: type=gha,scope=champions-sim
+          cache-to: type=gha,scope=champions-sim,mode=max
+      - name: Full self-test
+        run: docker run --rm champions-sim:latest /app/selftest.js
+
+  tests:
+    # Python suite against a freshly pulled database (the data tests are the
+    # point: they check the real upstream data, not fixtures), with the
+    # simulator image present so the end-to-end simulation tests run too.
+    name: Python tests (data pull + simulation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # Pull caches (HTTP cache + team-report pages): restored from the last
+      # run so a pull only fetches what is new, saved again at the end.
+      - name: Restore pull caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/pull-cache.sqlite
+            data/reports-cache
+          key: pull-cache-${{ github.run_id }}
+          restore-keys: pull-cache-
+      - name: Data pull
+        env:
+          CHAMPIONS_MCP_LIMITLESS_KEY: ${{ secrets.LIMITLESS_KEY }}
+        run: champions-mcp-pull
+      - name: Save pull caches
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/pull-cache.sqlite
+            data/reports-cache
+          key: pull-cache-${{ github.run_id }}
+
+      - uses: docker/setup-buildx-action@v3
+      - name: Build champions-sim
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/sim/Dockerfile
+          tags: champions-sim:latest
+          load: true
+          cache-from: type=gha,scope=champions-sim
+      - name: Tests (strict: any skip fails)
+        env:
+          CHAMPIONS_MCP_STRICT_TESTS: "1"
+        run: pytest -v -rs
