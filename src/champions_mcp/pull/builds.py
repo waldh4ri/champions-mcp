@@ -417,7 +417,15 @@ class BuildIngest:
         if raw in JA_NO_ITEM or raw.lower() in EN_NO_ITEM:
             return None, None
         if japanese:
-            return raw, self._ja_items.get(raw)
+            slug = self._ja_items.get(raw)
+            # Champions' Z-Mega stones (ルカリオナイトＺ, ガブリアスナイトＺ...)
+            # have no Japanese name in PokeAPI: they are the base stone's name
+            # plus a (full-width) Z, and their slug is the base slug + "-z".
+            if not slug and raw[-1:] in ("Ｚ", "Z"):
+                base = self._ja_items.get(raw[:-1].strip())
+                if base and f"{base}-z" in self._items:
+                    slug = f"{base}-z"
+            return raw, slug
         slug = slugify(raw)
         return raw, (slug if slug in self._items else None)
 

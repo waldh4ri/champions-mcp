@@ -11,7 +11,10 @@ docker compose up -d --build
 ```
 
 On first start the server builds its local database from pokechamp.gg
-(takes ~30s), then prints the ready URL:
+(takes ~30s), then prints the ready URL. The stack includes the
+`champions-calc` (damage) and `champions-sim` (battle simulation) sidecars;
+the `simulate_*` tools report the simulator as unreachable until
+`champions-sim` is up.
 
 ```
 MCP URL : http://localhost:8000/mcp

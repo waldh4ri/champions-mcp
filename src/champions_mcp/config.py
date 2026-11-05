@@ -44,11 +44,17 @@ class Settings:
     builds_max_events: int   # cap on tournaments fetched per regulation
     builds_min_players: int  # skip tiny events — they are noise, not evidence
     builds_half_life_days: float  # recency decay applied to observation weights
+    reports_skip: bool     # skip scraping full BSS teams from published team reports (pull/reports.py)
     # --- damage calc (kept feature) ---
     calc_docker: str
     calc_image: str
     calc_timeout: float
     calc_http: str | None  # if set, use HTTP sidecar instead of docker
+    # --- battle simulator (champions-sim sidecar, see sim.py) ---
+    sim_image: str
+    sim_http: str | None   # if set, use the HTTP sidecar instead of `docker run`
+    sim_timeout: float
+    sim_max_battles: int   # per tool call, across all variants/opponents
 
     @staticmethod
     def load() -> "Settings":
@@ -107,10 +113,15 @@ class Settings:
             builds_half_life_days=float(
                 os.environ.get("CHAMPIONS_MCP_BUILDS_HALF_LIFE_DAYS", "21")
             ),
+            reports_skip=os.environ.get("CHAMPIONS_MCP_REPORTS_SKIP", "0") == "1",
             calc_docker=os.environ.get("CHAMPIONS_MCP_DOCKER", "docker"),
             calc_image=os.environ.get(
                 "CHAMPIONS_MCP_CALC_IMAGE", "champions-calc:latest"
             ),
             calc_timeout=float(os.environ.get("CHAMPIONS_MCP_CALC_TIMEOUT", "30")),
             calc_http=os.environ.get("CHAMPIONS_MCP_CALC_HTTP") or None,
+            sim_image=os.environ.get("CHAMPIONS_MCP_SIM_IMAGE", "champions-sim:latest"),
+            sim_http=os.environ.get("CHAMPIONS_MCP_SIM_HTTP") or None,
+            sim_timeout=float(os.environ.get("CHAMPIONS_MCP_SIM_TIMEOUT", "300")),
+            sim_max_battles=int(os.environ.get("CHAMPIONS_MCP_SIM_MAX_BATTLES", "20000")),
         )

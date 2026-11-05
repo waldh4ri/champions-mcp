@@ -109,7 +109,16 @@ Defensively the answer wants to be 3HKO'd or worse. Report % ranges.
 `dependency_gaps` entry and every `flagged` type in `shared_weaknesses`.
 Re-run after each change.
 
-**8. Pre-flight, then present.** Run the checklist below, then
+**8. Simulate — COMMIT POINT.** `simulate_vs_meta(team, format)` once on the
+validated team (seconds; real Showdown battles vs the top observed teams).
+Act on what it shows: a recurring threat in `worst_matchups` or
+`opponent_threats` → calc it and fix it; a member with `brought_pct` near 0 →
+justify its job or replace it. Confirm any fix with
+`compare_team_variants` and keep it only if `delta_vs_base` is `significant`
+(or the calcs alone justify it). At most two fix rounds, then move on.
+→ `get_team_building_guide('simulate')` for how to read the results and their limits.
+
+**9. Pre-flight, then present.** Run the checklist below, then
 `create_pokepaste` and answer in the output format.
 
 ## Pre-flight: before presenting any team
@@ -124,6 +133,7 @@ Every item answered from tool results. Any "no" is a fix, not a caveat.
 - [ ] Each slot names its phase (lead / switch / endgame) and the matchup it is for.
 - [ ] Every item and every bulk investment points at a calc or Speed tier.
 - [ ] VGC: 3–4 bring-4 plans, each with its own speed control. BSS: 2–3 cores, each with lead + win condition + answer to its own weakness, and at most one Mega per core.
+- [ ] `simulate_vs_meta` ran on the final six: its win rate (with CI) is quoted, its worst matchups are covered in Weak points, and no member sits near 0% brought without a stated niche.
 - [ ] The write-up's spreads, natures and moves match the Poképaste exactly.
 - [ ] `validate_team` is clean and `create_pokepaste` accepted the team.
 
@@ -149,6 +159,7 @@ Every item answered from tool results. Any "no" is a fix, not a caveat.
 | Stats & Speed | `calc_stats`, `compute_speed`, `compute_speed_threshold` |
 | Damage | `calc_damage(game_type='doubles'|'singles')` |
 | Validation & analysis | `validate_team`, `analyze_team(format)` |
+| Battle simulation (vs meta / A-B / head-to-head / one game's log) | `simulate_vs_meta`, `compare_team_variants`, `simulate_matchup`, `simulate_battle_log` |
 | Export | `create_pokepaste` |
 | Deeper guidance | `get_team_building_guide(section)` |
 
@@ -162,6 +173,7 @@ Every item answered from tool results. Any "no" is a fix, not a caveat.
 | `principles` | The longer explanation of the hard rules |
 | `creative` | The user wants an off-meta / creative team: where creativity belongs and the four gates every unusual pick must pass |
 | `pitfalls` | Champions-specific traps (missing moves/items, Protect in BSS, Speed scale, regional forms) |
+| `simulate` | Step 8: which simulation tool to use, how to read win rates / matchups / member stats, and the AI's limits |
 | `iterate` | The user reports results with a team and wants it improved |
 | `setup` | The tools are missing and the server needs starting |
 
@@ -188,6 +200,7 @@ team deliberately skips + why>
 
 ## Meta coverage
 <which top threats this beats and how; remaining risks + how to play them>
+Simulated vs meta: <win rate> (95% CI <lo>–<hi>, <n> games, <information> sheets) — worst into <labels>.
 
 ## How to bring it
 VGC — 3–4 bring plans:

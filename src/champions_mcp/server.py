@@ -54,6 +54,7 @@ from .db import Db
 from .formats import game_type, resolve_format, rules
 from .names import NameError, resolve
 from .names import try_resolve as names_try_resolve
+from .sim import BattleSimulator, SimError
 
 
 class App:
@@ -71,6 +72,7 @@ class App:
         self.settings = Settings.load()
         self.db = Db(self.settings.db_path)
         self.damage = DamageCalculator(self.settings, self.db)
+        self.sim = BattleSimulator(self.settings, self.db)
 
     @classmethod
     def get(cls) -> App:
@@ -1032,6 +1034,104 @@ def _explain_damage(move: str, defender: str, defender_item: str | None,
                    "screens named in `description` (e.g. Aura Guard halves contact "
                    "damage) — read them there; don't re-derive the formula.")
     return out
+
+
+# --------------------------- Battle simulation ------------------------
+
+_SIM_TEAM_DOC = (
+    "Teams: a list of 6 member dicts ({species, item, ability, nature, moves, "
+    "stat_points}, as for validate_team) or Showdown paste text. A missing "
+    "spread/nature/ability is filled with that species' most common one and "
+    "reported under `assumptions`. Teams are checked with the simulator's own "
+    "Reg M-C validator first; an illegal team returns `problems`.\n\n"
+    "`information` sets what each side's AI knows about the other: "
+    "\"open_sheets\" (default; Open Team Sheets: real moves/items/abilities, "
+    "spreads and natures assumed to be the species' usual ones), \"closed\" "
+    "(species only; the format's most-used moves/item/ability until revealed) "
+    "or \"omniscient\" (exact sets; an upper bound)."
+)
+
+
+def _team_doc(fn):
+    """Append the shared team-input notes to a simulation tool's description
+    (applied before @mcp.tool registers it)."""
+    fn.__doc__ = (fn.__doc__ or "").rstrip() + "\n\n" + _SIM_TEAM_DOC
+    return fn
+
+
+async def _sim(coro) -> dict[str, Any]:
+    try:
+        return await coro
+    except SimError as exc:
+        return {"error": str(exc), **exc.extra}
+
+
+@mcp.tool()
+@_team_doc
+async def simulate_vs_meta(
+    team: list[dict[str, Any]] | str, format: str = "vgc", opponents: int = 30,
+    games_per_opponent: int = 20, policy: str = "heuristic", seed: int = 1,
+    information: str = "open_sheets",
+) -> dict[str, Any]:
+    """Simulate a team against the top observed Reg M-C teams (tournament/ladder
+    corpus) with the Pokémon Showdown engine and Champions mechanics. Returns
+    win rate with a 95% CI, `worst_matchups`/`best_matchups` (which real teams
+    beat it), per-member stats (`brought_pct`, `lead_pct`, KOs, faint rate,
+    win rate when brought) and `opponent_threats` (species scoring the most KOs
+    on it). Default 30 opponents x 20 games = 600 battles (a few seconds).
+
+    Both sides are played by an AI `policy` ("heuristic" default, or "greedy"
+    / "random"): win rates measure the team under that AI, not ladder results.
+    Use it to find bad matchups and dead-weight members, then confirm fixes with
+    compare_team_variants. """
+    return await _sim(App.get().sim.vs_meta(
+        team, format, max(1, opponents), max(1, games_per_opponent), policy, None, seed, information))
+
+
+@mcp.tool()
+@_team_doc
+async def compare_team_variants(
+    base_team: list[dict[str, Any]] | str, variants: list[list[dict[str, Any]] | str],
+    format: str = "vgc", opponents: int = 20, games_per_opponent: int = 20,
+    policy: str = "heuristic", seed: int = 1, information: str = "open_sheets",
+) -> dict[str, Any]:
+    """A/B test team changes (a set, item, move, spread or member swap): every
+    variant plays the exact same meta opponents with the same battle seeds as
+    `base_team`, so `delta_vs_base` (win-rate difference with a paired 95% CI and
+    `significant`) isolates the change. Each variant is a full team. Use this to
+    confirm a fix before recommending it; an insignificant delta means "no
+    measurable difference", not "better". """
+    return await _sim(App.get().sim.compare(
+        base_team, variants, format, max(1, opponents), max(1, games_per_opponent), policy, None, seed, information))
+
+
+@mcp.tool()
+@_team_doc
+async def simulate_matchup(
+    team_a: list[dict[str, Any]] | str, team_b: list[dict[str, Any]] | str,
+    format: str = "vgc", games: int = 500, policy: str = "heuristic",
+    opponent_policy: str | None = None, seed: int = 1, information: str = "open_sheets",
+) -> dict[str, Any]:
+    """Head-to-head: simulate `games` battles of team_a vs team_b (sides
+    alternate) with the Showdown engine and Champions mechanics. Returns
+    team_a's win rate with a 95% CI, per-member stats for team_a, and team_b's
+    most dangerous members. 500 games give about +/-4 points. """
+    return await _sim(App.get().sim.matchup(
+        team_a, team_b, format, max(1, games), policy, opponent_policy, seed, information))
+
+
+@mcp.tool()
+@_team_doc
+async def simulate_battle_log(
+    team_a: list[dict[str, Any]] | str, team_b: list[dict[str, Any]] | str,
+    format: str = "vgc", seed: int = 1, policy: str = "heuristic",
+    information: str = "open_sheets",
+) -> dict[str, Any]:
+    """Play ONE simulated battle and return its condensed turn-by-turn log
+    (switches, moves, damage as %HP, KOs, Mega Evolution, weather/field) plus
+    who was brought and led. Use it to explain *why* a matchup goes the way
+    simulate_matchup says. Change `seed` for a different game. """
+    return await _sim(App.get().sim.replay(team_a, team_b, format, policy, seed, information))
 
 
 # ----------------------------- Export --------------------------------

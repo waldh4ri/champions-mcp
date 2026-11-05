@@ -30,3 +30,7 @@ packages = ["src/champions_mcp"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "live: hits the real upstreams (one or two requests each); run with -m live",
+]
+addopts = '-m "not live"'

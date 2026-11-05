@@ -18,8 +18,15 @@ the champs.pokedb.tokyo ranked-ladder export for BSS. A fifth source, Pokémon
 Showdown's published sets (every generation/tier Smogon curates), is ingested as a
 **historical-builds fallback** — cross-game evidence, legality-checked against
 Champions at read time, surfaced automatically when the real observed-team corpus is
-thin (e.g. right after a regulation rollover). Every tool call is then answered from
-that local file, no live lookups, no scraping, no runtime juggling of any upstream.
+thin (e.g. right after a regulation rollover). For BSS the pull also reads players'
+published **team reports** (構築記事, indexed by pokedb.tokyo, yakkun, damekei and
+pokemon-teams) for the one thing the ladder export lacks: complete sets, spreads
+included. Every tool call is then answered from that local file, no live lookups, no
+scraping at runtime.
+
+Teams can also be **tested in battle**: a battle-simulator sidecar runs Pokémon
+Showdown's engine with its Champions mod (real Champions mechanics and Reg M-C rules)
+across every CPU core, an AI playing both sides, against those real top teams.
 
 The only outbound calls happen at two points, both opt-in:
 
@@ -28,17 +35,18 @@ The only outbound calls happen at two points, both opt-in:
   observed-team corpus (`--skip-builds` to omit the last).
 - `create_pokepaste` uploads a finished team to pokepast.es.
 
-42 MCP tools cover the Pokedex, legal rosters and movepools, usage stats/sets/teammates,
+46 MCP tools cover the Pokedex, legal rosters and movepools, usage stats/sets/teammates,
 observed builds and team context, historical (cross-game) sets, Stat Point and speed
-math, team validation, damage calculation, and Pokepaste export. A bundled skill walks
+math, team validation, damage calculation, battle simulation, and Pokepaste export. A bundled skill walks
 an LLM through the whole team-building workflow end to end.
 
 ## Quick start
 
 ### Docker
 
-Builds and starts both `champions-calc` (the damage sidecar) and `champions-mcp` (the
-server), and runs the data pull automatically on first start, persisted in the
+Builds and starts `champions-calc` (the damage sidecar), `champions-sim` (the battle
+simulator) and `champions-mcp` (the server), and runs the data pull automatically on
+first start, persisted in the
 `champions-data` volume. Expect several minutes on the first build: the observed-team
 stage paces itself against Limitless's unauthenticated rate limit (50 requests per
 5 minutes). Later starts reuse the pull cache and fetch only genuinely new events.
@@ -158,6 +166,21 @@ returned.
 **Damage and export** - `calc_damage` (via the `champions-calc` sidecar),
 `create_pokepaste` (uploads to pokepast.es, the only runtime outbound call besides the pull)
 
+**Battle simulation** - `simulate_vs_meta`, `compare_team_variants`, `simulate_matchup`,
+`simulate_battle_log` (via the `champions-sim` sidecar). Real battles on Pokémon
+Showdown's simulator (`champions` mod, pinned commit; every team is checked by its Reg
+M-C validator first). An AI plays both sides. It takes KOs, avoids overkill in doubles,
+Protects and controls speed, switches into resistances and immunities when outsped or
+walled, values pivots, and picks brings and leads by matchup. Opponents are the top
+observed teams: BSS team reports with full sets (best final ranks first) topped up with
+the pokedb ladder, and Limitless teamlists for VGC. `information` sets what each AI
+knows about the other: open team sheets by default, closed sheets (usage-based guesses
+until moves are revealed), or omniscient. Results come with confidence intervals and
+are reproducible by `seed`. `compare_team_variants` A/B tests a change on identical
+opponents and seeds, so its delta isolates the change. Several hundred battles take
+seconds; the sidecar sizes its worker pool to the CPUs and memory it may use. See
+[docs/tools.md](docs/tools.md#battle-simulation).
+
 A team-building [`SKILL.md`](skills/champions-team-building/SKILL.md) ships with the repo
 and is exposed as the `champions_team_building` MCP prompt. It is a short core (hard
 rules, order of work with commit points, pre-flight, output format); the deeper
@@ -193,7 +216,15 @@ resource exposes the full roster as JSON.
      top of the official ladder per season. It carries species and held item but **no
      moves**, so those rows are marked `team_and_item` and the tools never present a
      singles moveset as observed.
-6. Write build markers and report row counts.
+6. **Scrape BSS team reports** into `full_teams` (`pull/reports.py`). The current regulation's 構築記事 are listed from
+   [pokedb.tokyo's article index](https://champs.pokedb.tokyo/article/search) (final
+   rank and rating), yakkun.com, damekei.com and pokemon-teams.pages.dev. Then each
+   article's sets are read: pokesol.app and yakkun pages are structured, and blog text
+   is parsed against PokeAPI's Japanese name tables. Only teams that resolve completely
+   are kept (species, item, ability, nature, four moves and a legal spread). Listings
+   refresh twice a day; articles are cached under `<data>/reports-cache`. This runs
+   with the observed-team stage; `CHAMPIONS_MCP_REPORTS_SKIP=1` skips just this step.
+7. Write build markers and report row counts.
 
 Re-running is idempotent and nearly free: every upstream response is cached in
 `pull-cache.sqlite`, so a rebuild costs no network beyond what's genuinely new or
@@ -223,6 +254,12 @@ clobbers a good existing database.
 | `CHAMPIONS_MCP_POKEDB_SEASON_REGS` | built-in | Override the pokedb season → regulation map |
 | `CHAMPIONS_MCP_CALC_HTTP` | unset | Calc sidecar URL (else one-shot `docker run`) |
 | `CHAMPIONS_MCP_CALC_IMAGE` | `champions-calc:latest` | Damage-calc image tag |
+| `CHAMPIONS_MCP_REPORTS_SKIP` | `0` | Skip scraping BSS team reports in the pull (`1`) |
+| `CHAMPIONS_MCP_SIM_HTTP` | unset | Simulator sidecar URL (else one-shot `docker run`) |
+| `CHAMPIONS_MCP_SIM_IMAGE` | `champions-sim:latest` | Simulator image tag |
+| `CHAMPIONS_MCP_SIM_TIMEOUT` | `300` | Seconds before a simulation call gives up |
+| `CHAMPIONS_MCP_SIM_MAX_BATTLES` | `20000` | Battle cap per simulation tool call |
+| `SIM_WORKERS` (sidecar) | `0` = auto | Worker threads; auto = all CPUs allowed, capped by memory |
 | `MCP_TRANSPORT` | `stdio` | `stdio`, `streamable-http`, or `sse` |
 | `FASTMCP_HOST` / `FASTMCP_PORT` | `127.0.0.1` / `8000` | Bind address (HTTP transports only) |
 
@@ -256,6 +293,8 @@ evidence level) are reported by `get_game_rules` under `data`.
 | [バトルデータベース チャンピオンズ](https://champs.pokedb.tokyo) | BSS observed builds: ranked-ladder team export, published as open data ([@pokedb_tokyo](https://x.com/pokedb_tokyo)) |
 | [Pokémon Showdown](https://play.pokemonshowdown.com) | Historical-builds fallback: every generation/tier of Smogon-curated sets |
 | [smogon/damage-calc](https://github.com/smogon/damage-calc) | `@smogon/calc` with native Champions (gen 0) support |
+| [smogon/pokemon-showdown](https://github.com/smogon/pokemon-showdown) | Battle simulator (`champions` mod) behind the simulate tools |
+| pokedb.tokyo [構築記事検索](https://champs.pokedb.tokyo/article/search), [yakkun.com](https://yakkun.com/bbs/party/), [damekei.com](https://damekei.com/build-articles), [pokemon-teams.pages.dev](https://pokemon-teams.pages.dev), [pokesol.app](https://pokesol.app) and the players' own articles | Complete BSS teams from published team reports (each team keeps its article URL) |
 | [pokepast.es](https://pokepast.es) | Team paste hosting for `create_pokepaste` |
 
 Pokémon is © Nintendo / Creatures Inc. / GAME FREAK inc. This project is an unofficial
