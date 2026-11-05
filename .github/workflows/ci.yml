@@ -85,7 +85,7 @@ jobs:
           tags: champions-sim:latest
           load: true
           cache-from: type=gha,scope=champions-sim
-      - name: Tests (strict: any skip fails)
+      - name: "Tests (strict: any skip fails)"
         env:
           CHAMPIONS_MCP_STRICT_TESTS: "1"
         run: pytest -v -rs
