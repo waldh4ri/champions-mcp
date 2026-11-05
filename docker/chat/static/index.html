@@ -656,6 +656,7 @@
   <button class="qp" data-k="medium" title="Send the medium test prompt"><span class="qp-tier">Medium</span> · speed calc</button>
   <button class="qp" data-k="hard"   title="Send the hard test prompt"><span class="qp-tier">Hard</span> · full team build</button>
   <button class="qp" data-k="underdogs" title="Send the underdogs test prompt"><span class="qp-tier">Underdogs</span> · BSS off-meta team</button>
+  <button class="qp" data-k="hyperOffense" title="Send the hyper-offense test prompt: a BSS team from outside the top-50 usage, optimised with calcs and battle simulations"><span class="qp-tier">Hyper offense</span> · BSS non-top-50, sim-tested</button>
 </div>
 
 <footer>
@@ -1125,6 +1126,30 @@
       "%HP ranges or KO chances, not 'it survives'. " +
       "Finish with which three you'd bring against the current #1 threat, and " +
       "the matchup you're least happy about.",
+    hyperOffense: "Build me a hyper-offense team for Pokémon Champions BSS (singles, " +
+      "bring 6 pick 3) where every member sits outside the top 50 of BSS usage. " +
+      "Check each pick's usage rank with the tools before you commit to it. " +
+      "Hyper offense means every bring wins by out-speeding or out-damaging: " +
+      "Speed control through raw Speed, Choice Scarf, priority or setup, a lead " +
+      "that forces progress turn 1, and no passive slots. " +
+      "Use the full toolset, in order. " +
+      "(1) Map the current threats and their Speed tiers, and read the observed " +
+      "BSS sets before choosing anything. " +
+      "(2) Pick candidates from the role and profile searches, not from memory. " +
+      "(3) Give every member an exact item, ability, nature, four moves and a full " +
+      "66-point Stat Point spread. Set the Speed points with the speed-threshold " +
+      "tool against the threats it must out-speed, and back each attacker's job " +
+      "with damage calcs (%HP ranges and KO chances) on the top threats. " +
+      "(4) Validate the team. " +
+      "(5) Then battle-test it. Run simulate_vs_meta against the real top BSS teams " +
+      "and report the win rate with its confidence interval, the worst matchups " +
+      "and the opponent threats. Read one simulate_battle_log of the worst matchup " +
+      "to see how it loses. Propose one or two fixes (a set, item, spread or " +
+      "member change) and prove them with compare_team_variants: keep only " +
+      "changes whose delta is significant. " +
+      "Finish with the final team as a Poképaste, the three-Pokémon brings for " +
+      "your three most common preview situations, the simulated win rate before " +
+      "and after your fixes, and the matchup it still loses.",
   };
   const qpButtons = Array.from(document.querySelectorAll('.qp'));
   qpButtons.forEach(btn => btn.addEventListener('click', () => {
