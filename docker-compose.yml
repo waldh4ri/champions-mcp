@@ -243,14 +243,13 @@ services:
       # reasoning block pays for itself. Bounded by LLAMA_REASONING_BUDGET on
       # the llama-server side so it plans briefly instead of musing each round.
       LLAMA_THINK: "${LLAMA_THINK:-true}"    # false | true (Qwen reasoning block)
-      # A one-call-per-round model needs ~25 rounds to reach the first damage
-      # calc on a 6-Pokémon build (skill guide, rules, usage, roles, then
-      # get_pokemon/_moves/_sets x6) before validate/analyze/export.
-      MAX_TOOL_ROUNDS: "${MAX_TOOL_ROUNDS:-40}"
-      # ~4 chars/token, so ~4k tokens: 3% of the 131k window for one call.
-      # 8000 silently halved catalogue-style results (list_roles is ~8.5k for
-      # one format, full movepools and wide usage rankings can exceed it).
-      MAX_TOOL_RESULT_CHARS: "${MAX_TOOL_RESULT_CHARS:-16000}"
+      # Tool rounds per turn and max characters per tool result. Leave unset:
+      # the chat sizes both to the model's context (40 rounds / 16k chars for
+      # the local 131k model, 80 / 60k for 1M-context OpenRouter models). A
+      # value here overrides that for every model, so a fixed default would
+      # silently hold big models to the local model's limits.
+      MAX_TOOL_ROUNDS: "${MAX_TOOL_ROUNDS:-}"
+      MAX_TOOL_RESULT_CHARS: "${MAX_TOOL_RESULT_CHARS:-}"
       # Sampling. Unset previously, so requests fell back to llama.cpp's generic
       # defaults rather than Qwen3's published values; the bridge now sends the
       # per-mode profile (thinking: 0.6/0.95/20 — instruct: 0.7/0.8/20). Raising
