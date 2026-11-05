@@ -84,6 +84,30 @@ def test_battle_cap_is_enforced(sim):
         sim._cap(sim._s.sim_max_battles + 1)
 
 
+def test_opponent_id_resolves_to_the_exact_team_the_pool_plays(sim):
+    """A worst_matchups `id` replays that very team, not a reconstruction."""
+    for fmt in ("bss", "vgc"):
+        pool, _ = sim.meta_opponents(fmt, 3)
+        for o in pool:
+            paste, notes = sim.team_paste(o["id"], fmt)
+            assert paste == o["paste"]
+            assert notes and o["label"] in notes[0]
+
+
+def test_a_string_that_is_not_a_team_is_refused(sim):
+    """A model once passed 'opponents per tool not relevant to schema' as a
+    variant; it was parsed as a one-Pokémon paste."""
+    with pytest.raises(SimError, match="not a team"):
+        sim.team_paste("opponents per tool not relevant to schema", "bss")
+    with pytest.raises(SimError, match="not a team"):
+        sim.team_paste("report:does-not-exist", "bss")
+
+
+def test_errors_name_the_format_that_was_used(sim):
+    out = sim._finish({"ok": False, "error": "team is not legal in gen9championsvgc2026regmc"}, [], format="vgc")
+    assert out["format"] == "vgc" and "format='bss'" in out["error"]
+
+
 # -------------------------------------------------------------- meta pool
 
 def test_meta_opponents_are_complete_distinct_teams(sim):
@@ -104,6 +128,10 @@ def test_bss_pool_is_real_bss_teams(sim, db):
     pool, notes = sim.meta_opponents("bss", 40)
     assert len(pool) == 40
     assert not any("VGC tournament teams" in n for n in notes)
+    # the "most common spread" caveat only covers teams that actually lack spreads
+    n_modal = sum(1 for o in pool if not o["id"].startswith("report:"))
+    spread_notes = [n for n in notes if "most common Stat Point spread" in n]
+    assert (spread_notes and str(n_modal) in spread_notes[0]) if n_modal else not spread_notes
     n_full = db.query_one("SELECT count(*) n FROM full_teams WHERE format='singles'")["n"]
     full = [o for o in pool if o["id"].startswith("report:")]
     assert len(full) == min(40, n_full)
@@ -220,6 +248,26 @@ def test_floette_eternal_team_simulates(sim):
     r = asyncio.run(sim.matchup(team, _team(sim, 1), "vgc", 4, "heuristic", None, 1))
     assert "error" not in r, r
     assert r["errors"] == 0 and any(m["species"] == "Floette-Eternal" for m in r["members"])
+
+
+@needs_image
+def test_worst_matchup_can_be_replayed_by_id(sim):
+    team = _team(sim, 0, "bss")
+    r = asyncio.run(sim.vs_meta(team, "bss", 4, 2, "heuristic", None, 1))
+    assert "error" not in r, r
+    worst = r["worst_matchups"][0]
+    log = asyncio.run(sim.replay(team, worst["id"], "bss", "heuristic", 1))
+    assert "error" not in log, log
+    assert any(worst["label"] in a for a in log["assumptions"])
+    assert log["team_b"]["brought"] and log["log"]
+
+
+@needs_image
+def test_reported_leads_are_who_led(sim):
+    """Leads used to be read from the end-of-battle party order."""
+    r = asyncio.run(sim.replay(_team(sim, 0, "bss"), _team(sim, 1, "bss"), "bss", "heuristic", 3))
+    first_in = next(line for line in r["log"] if line.startswith("A:") and " enters" in line)
+    assert r["team_a"]["leads"] == [first_in[2:first_in.index(" enters")]]
 
 
 @needs_image

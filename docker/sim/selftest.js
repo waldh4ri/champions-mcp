@@ -86,6 +86,19 @@ async function main() {
     assert(illegalOpp.ok && illegalOpp.opponents_dropped.some(d => d.id === 'bad'), 'an illegal opponent is dropped and reported');
     ok('bad input');
 
+    // 3c. leads are who entered before turn 1 (not whoever is active at the end)
+    for (const fmt of ['bss', 'vgc']) {
+      for (const seed of [1, 2, 3, 4, 5]) {
+        const r = await api.handle(pool, 'replay', { format: fmt, team_a: TEAMS[0], team_b: TEAMS[1], seed });
+        assert(r.ok, JSON.stringify(r));
+        const opening = r.log.slice(0, r.log.indexOf('== Turn 1 ==')).filter(l => / enters /.test(l));
+        const enteredA = opening.filter(l => l.startsWith('A:')).map(l => l.slice(2, l.indexOf(' enters')));
+        assert.deepStrictEqual(r.team_a.leads, enteredA, `${fmt} seed ${seed}: leads ${r.team_a.leads} vs log ${enteredA}`);
+        assert.strictEqual(r.team_a.leads.length, fmt === 'vgc' ? 2 : 1);
+      }
+    }
+    ok('leads');
+
     // 4. policy ladder (mirror-free: every team plays every other)
     const ladderN = quick ? 30 : 80;
     for (const [fmt, weak, minWr] of [['vgc', 'random', 0.75], ['bss', 'random', 0.75], ['vgc', 'greedy', 0.55], ['bss', 'greedy', 0.55]]) {

@@ -102,6 +102,58 @@ tool-calling loop for you. Requires an NVIDIA GPU. Everything (model file, conte
 size, GPU/CPU offload, sampling, and more) is configured through environment
 variables, see [`.env.example`](.env.example) for the full list.
 
+### Optional: web chat on OpenRouter (no GPU)
+
+The same chat UI can use [OpenRouter](https://openrouter.ai) instead of a local model.
+Put your key in `.env` and start the `openrouter` profile, which runs the chat without
+`llama-server`:
+
+```bash
+echo "OPENROUTER_API_KEY=sk-or-..." >> .env
+docker compose --profile openrouter up -d --build
+```
+
+The default is OpenRouter's [Auto Router](https://openrouter.ai/docs/guides/routing/routers/auto-router),
+offered at three cost tiers in the model selector:
+
+- **`openrouter/auto (low)`** (default): picks from a pool of cheap tool-calling models,
+  both under $1 per million tokens for input and output: `deepseek/deepseek-v4.1-flash`
+  and `openai/gpt-6-luna`.
+- **`openrouter/auto (medium)`** and **`(high)`**: route over OpenRouter's ranking for
+  those cost bands, for stronger and pricier models. They're uncapped unless you set
+  `OPENROUTER_MAX_PRICE_MEDIUM` / `_HIGH`, and you can restrict them to a pool with
+  `OPENROUTER_AUTO_MODELS_MEDIUM` / `_HIGH`.
+
+For a tool-calling agent, the chat makes three adjustments:
+- It routes once per turn and keeps the chosen model for all of that turn's tool rounds,
+  so the reasoning chain and the prompt cache aren't broken mid-turn.
+- It sends a per-conversation `session_id`, so later turns stay on the same model.
+- It caps provider prices, at `OPENROUTER_MAX_PRICE` for the fixed models and the low tier.
+
+The model actually used appears in the UI's metrics. Both pool models are also in the
+model selector, if you want one fixed, as is **`google/gemini-4-argon`**. It's pinned to
+Google AI Studio's *flex* endpoint ($1 per million input tokens, $5 output) with no
+fallback to its pricier endpoints ($2–3.60 / $10–18). Pin other models the same way with
+`OPENROUTER_MODEL_ROUTES`. Set your own list with `OPENROUTER_MODEL`
+(comma-separated; the first is the default); any model on openrouter.ai that supports
+tools works.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OPENROUTER_API_KEY` | unset | Your OpenRouter key |
+| `OPENROUTER_MODEL` | `openrouter/auto (low)`, `(medium)`, `(high)`, `deepseek/deepseek-v4.1-flash`, `openai/gpt-6-luna`, `google/gemini-4-argon` | Models offered in the UI (comma-separated) |
+| `OPENROUTER_AUTO_MODELS` | `deepseek/deepseek-v4.1-flash,openai/gpt-6-luna` | Low-tier candidates (exact ids or wildcards such as `deepseek/*`) |
+| `OPENROUTER_AUTO_MODELS_MEDIUM` / `_HIGH` | empty (whole ranking) | Medium/high-tier candidates |
+| `OPENROUTER_MAX_PRICE` | `1` | Max USD per 1M tokens (input and output) for the fixed models and the low tier; empty = no cap |
+| `OPENROUTER_MAX_PRICE_MEDIUM` / `_HIGH` | empty (no cap) | Price caps for the medium and high tiers |
+| `OPENROUTER_MODEL_ROUTES` | Gemini 4 Argon → `google-ai-studio/flex` | Per-model provider routing (JSON: OpenRouter's `provider` object per model id); replaces the price cap for that model |
+| `OPENROUTER_REASONING_EFFORT` | unset (model default) | `low`, `medium` or `high` |
+| `OPENROUTER_TEMPERATURE` | unset (model default) | Sampling temperature |
+| `CHAT_PROVIDER` | `auto` | `auto` uses the local `llama-server` if it's running, else OpenRouter if a key is set; or force `llama` / `openrouter` |
+
+With `auto`, a key in `.env` never overrides a local model: under `--profile ai` the
+chat waits for `llama-server` and uses it.
+
 ## Tools
 
 Call `get_game_rules(format)` first (`format='vgc'` for doubles, `'bss'` for singles).

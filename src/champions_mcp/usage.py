@@ -152,10 +152,13 @@ def get_usage_stats(
         entry: dict[str, Any] = {
             "rank": r["rank"], "name": r["battle_name"],
             "slug": r["slug"], "base_stat_total": r["bst"],
-            "played_as": played["form"],
             "types": played["types"], "abilities": played["abilities"],
             "base_speed": played["base_speed"],
         }
+        # only when it differs from `name` (a Mega): repeating it on every row
+        # pushes a top-60 ranking past what chat clients pass to the model whole
+        if played["form"] != r["battle_name"]:
+            entry["played_as"] = played["form"]
         m = megas.get(r["slug"])
         if m:
             # Threat assessment on the base form is wrong for these: they are

@@ -614,12 +614,15 @@ async def build(db: Db, settings: Settings, *, with_builds: bool = True) -> dict
 
             from .reports import pull_reports
             db.set_meta("full_teams", await asyncio.to_thread(
-                pull_reports, db, settings.data_dir / "reports-cache", settings.builds_regulations))
+                pull_reports, db, settings.data_dir / "reports-cache", settings.builds_regulations,
+                None, settings.builds_half_life_days))
 
     current_reg = next((r for r in regulations if r.get("endDate") is None), None)
     db.set_meta("season", current_reg["title"] if current_reg else "Current")
     db.set_meta("data_version", (current_reg or {}).get("startDate", ""))
     db.set_meta("generated_at", datetime.now(timezone.utc).isoformat())
+    from ..db import DATA_FORMAT
+    db.set_meta("data_format", DATA_FORMAT)
     db.set_meta("source", "pokechamp.gg")
     counts = {t: db.count(t) for t in (
         "pokemon", "learnable_moves", "usage", "moves", "abilities",

@@ -15,9 +15,22 @@ if [ -d /app/data ] && [ "${DATA_DIR}" != "/app/data" ]; then
   cp -rn /app/data/. "${DATA_DIR}/"
 fi
 
-# Build the local mirror on first start (or when CHAMPIONS_MCP_PULL=1 forces a
-# refresh). Once champions.sqlite exists the server is fully offline.
+# Leftovers of a pull that was interrupted (container stopped mid-build) are
+# never valid; a new pull starts from scratch anyway.
+rm -f "${DB_PATH%.sqlite}.sqlite.tmp" "${DB_PATH%.sqlite}.sqlite.buildsrefresh.tmp"
+
+# Build the local mirror on first start, when CHAMPIONS_MCP_PULL=1 forces a
+# refresh, or when the existing data is stale: built by older code (it lacks
+# what this version reads) or older than CHAMPIONS_MCP_MAX_DATA_AGE_DAYS
+# (default 7; 0 disables). Between pulls the server is fully offline.
+NEEDS_PULL=0
 if [ ! -f "${DB_PATH}" ] || [ "${CHAMPIONS_MCP_PULL:-0}" = "1" ]; then
+  NEEDS_PULL=1
+elif ! REASON=$(python -m champions_mcp.pull.freshness "${DB_PATH}"); then
+  echo "[champions-mcp] Existing data is stale (${REASON}); refreshing."
+  NEEDS_PULL=1
+fi
+if [ "${NEEDS_PULL}" = "1" ]; then
   echo "[champions-mcp] Building local data with champions-mcp-pull ..."
   # The observed-team stage fetches tournament teamlists from an API that rate
   # limits unauthenticated callers to 50 requests / 5 min, so a first build

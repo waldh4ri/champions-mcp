@@ -149,13 +149,28 @@ function summarize(battle) {
       }
     }
   }
+  // Leads = who switched in before turn 1. Not side.pokemon's order: Showdown
+  // swaps party slots on every switch, so by the end of a battle its first
+  // slots hold whoever was active last, not who led.
+  const leads = [[], []];
+  for (const line of battle.log) {
+    if (line.startsWith('|turn|')) break;
+    if (line.startsWith('|switch|') || line.startsWith('|drag|')) {
+      const id = line.split('|')[2];
+      const s = id[1] === '1' ? 0 : 1;
+      const name = id.slice(id.indexOf(': ') + 2);
+      const species = speciesOf[s].get(name) || name;
+      if (!leads[s].includes(species)) leads[s].push(species);
+    }
+  }
   const picked = battle.ruleTable.pickedTeamSize || 6;
   return battle.sides.map((side, i) => {
+    // the brought Pokémon stay in the first `picked` slots (switches only swap among them)
     const brought = side.pokemon.slice(0, picked);
     const sp = p => p.set.species;
     return {
       brought: brought.map(sp),
-      leads: brought.slice(0, side.active.length).map(sp),
+      leads: leads[i],
       fainted: brought.filter(p => p.fainted).map(sp),
       mega: (brought.find(p => p.species.isMega) || { set: {} }).set.species || null,
       kos: kos[i],

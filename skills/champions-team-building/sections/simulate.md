@@ -14,6 +14,11 @@ team the calcs already support, not to replace the calcs.
 | How does it do into one specific team? | `simulate_matchup(team_a, team_b, format)` |
 | *Why* does a matchup go that way? | `simulate_battle_log(team_a, team_b, format, seed)` |
 
+To replay or head-to-head a matchup from `worst_matchups`, pass that entry's
+`id` as `team_b` (e.g. `"report:pokesol.app/..."`). It is the exact team the
+simulation played. Never rebuild an opponent from its `label`: the label has
+species only, and guessed sets are a different matchup.
+
 Pass complete teams (all six, with moves). A missing spread, nature or
 ability is filled with the species' most common one and listed under
 `assumptions`, so say so if you rely on it. An illegal team comes back with

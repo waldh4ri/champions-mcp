@@ -99,6 +99,9 @@ services:
       CHAMPIONS_MCP_CACHE_DB: "/data/pull-cache.sqlite"
       # Set to 1 to re-pull fresh data on next restart
       CHAMPIONS_MCP_PULL: "${CHAMPIONS_MCP_PULL:-0}"
+      # A restart also re-pulls when the data is older than this many days, or
+      # was built by an older version than the code needs (0 = age check off).
+      CHAMPIONS_MCP_MAX_DATA_AGE_DAYS: "${CHAMPIONS_MCP_MAX_DATA_AGE_DAYS:-7}"
       # Roster/movepool/reference/usage source (see .env.example)
       CHAMPIONS_MCP_POKECHAMP_BASE: "${CHAMPIONS_MCP_POKECHAMP_BASE:-https://pokechamp.gg}"
       # Observed-team corpus (Limitless teamlists + pokedb ranked ladder).
@@ -223,7 +226,9 @@ services:
       context: .
       dockerfile: docker/chat/Dockerfile
     container_name: champions-chat
-    profiles: ["ai"]  # only built/started with `docker compose --profile ai ...`
+    # --profile ai: with the local llama-server; --profile openrouter: alone,
+    # backed by OpenRouter (set OPENROUTER_API_KEY in .env; no GPU needed).
+    profiles: ["ai", "openrouter"]
     ports:
       - "${WEBUI_PORT:-3000}:3000"  # host:container — override WEBUI_PORT to change the host side; container always listens on 3000 (fixed by the Dockerfile's uvicorn CMD)
     environment:
@@ -238,14 +243,13 @@ services:
       # reasoning block pays for itself. Bounded by LLAMA_REASONING_BUDGET on
       # the llama-server side so it plans briefly instead of musing each round.
       LLAMA_THINK: "${LLAMA_THINK:-true}"    # false | true (Qwen reasoning block)
-      # A one-call-per-round model needs ~25 rounds to reach the first damage
-      # calc on a 6-Pokémon build (skill guide, rules, usage, roles, then
-      # get_pokemon/_moves/_sets x6) before validate/analyze/export.
-      MAX_TOOL_ROUNDS: "${MAX_TOOL_ROUNDS:-40}"
-      # ~4 chars/token, so ~4k tokens: 3% of the 131k window for one call.
-      # 8000 silently halved catalogue-style results (list_roles is ~8.5k for
-      # one format, full movepools and wide usage rankings can exceed it).
-      MAX_TOOL_RESULT_CHARS: "${MAX_TOOL_RESULT_CHARS:-16000}"
+      # Tool rounds per turn and max characters per tool result. Leave unset:
+      # the chat sizes both to the model's context (40 rounds / 16k chars for
+      # the local 131k model, 80 / 60k for 1M-context OpenRouter models). A
+      # value here overrides that for every model, so a fixed default would
+      # silently hold big models to the local model's limits.
+      MAX_TOOL_ROUNDS: "${MAX_TOOL_ROUNDS:-}"
+      MAX_TOOL_RESULT_CHARS: "${MAX_TOOL_RESULT_CHARS:-}"
       # Sampling. Unset previously, so requests fell back to llama.cpp's generic
       # defaults rather than Qwen3's published values; the bridge now sends the
       # per-mode profile (thinking: 0.6/0.95/20 — instruct: 0.7/0.8/20). Raising
@@ -263,12 +267,34 @@ services:
       # so --reasoning-preserve doesn't grow context unboundedly.
       MAX_REASONING_HISTORY_TURNS: "${MAX_REASONING_HISTORY_TURNS:-3}"
       MAX_REASONING_CHARS: "${MAX_REASONING_CHARS:-4000}"
+      # Backend: auto (default) = OpenRouter when OPENROUTER_API_KEY is set,
+      # else the local llama-server; or force llama / openrouter.
+      CHAT_PROVIDER: "${CHAT_PROVIDER:-auto}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # Comma-separated; the first is the default in the UI's model picker.
+      # "openrouter/auto (low|medium|high)" = OpenRouter's Auto Router at that cost tier.
+      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-openrouter/auto (low),openrouter/auto (medium),openrouter/auto (high),deepseek/deepseek-v4.1-flash,openai/gpt-6-luna,google/gemini-4-argon}"
+      # Candidate pools per tier (empty = OpenRouter's whole ranking for that band).
+      OPENROUTER_AUTO_MODELS: "${OPENROUTER_AUTO_MODELS:-deepseek/deepseek-v4.1-flash,openai/gpt-6-luna}"  # low
+      OPENROUTER_AUTO_MODELS_MEDIUM: "${OPENROUTER_AUTO_MODELS_MEDIUM:-}"
+      OPENROUTER_AUTO_MODELS_HIGH: "${OPENROUTER_AUTO_MODELS_HIGH:-}"
+      # Price caps, USD per 1M tokens (input and output); empty = no cap.
+      OPENROUTER_MAX_PRICE: "${OPENROUTER_MAX_PRICE:-1}"  # fixed models + low tier
+      OPENROUTER_MAX_PRICE_MEDIUM: "${OPENROUTER_MAX_PRICE_MEDIUM:-}"
+      OPENROUTER_MAX_PRICE_HIGH: "${OPENROUTER_MAX_PRICE_HIGH:-}"
+      # Per-model provider routing, JSON keyed by model id (empty = built-in:
+      # google/gemini-4-argon pinned to the google-ai-studio/flex endpoint, $1/$5 per 1M).
+      OPENROUTER_MODEL_ROUTES: "${OPENROUTER_MODEL_ROUTES:-}"
+      OPENROUTER_REASONING_EFFORT: "${OPENROUTER_REASONING_EFFORT:-}"  # low | medium | high
+      OPENROUTER_TEMPERATURE: "${OPENROUTER_TEMPERATURE:-}"
     depends_on:
       llama-server:
         # Wait for the model to finish loading (healthcheck passes) before
         # accepting chat requests — otherwise the first request(s) would hit
         # a backend that's still loading ~22 GB of weights from disk.
         condition: service_healthy
+        # Not started under --profile openrouter: then the chat runs without it.
+        required: false
       champions-mcp:
         # Only needs to have started, not finished: champions-mcp's own
         # first-run data pull can outlast this container's startup, so

@@ -1,14 +1,19 @@
-"""Light chat bridge: local LLM (llama.cpp server) ↔ champions-mcp tools ↔ web UI.
+"""Light chat bridge: LLM (local llama.cpp server or OpenRouter) ↔ champions-mcp tools ↔ web UI.
 
 Initialises an MCP session to champions-mcp, auto-loads every tool definition,
-and drives the tool-calling loop server-side (over llama-server's OpenAI-compatible
-/v1/chat/completions API) so the single-page UI in static/ stays dumb. The backend
-is llama.cpp serving Qwen3.6-35B-A3B (MoE, 8-of-256 experts active) with the MoE
-expert layers offloaded to CPU — ~86 t/s on a 16 GB GPU with strong tool calling.
-See README for the tuning + benchmark table.
+and drives the tool-calling loop server-side (over an OpenAI-compatible
+/chat/completions API) so the single-page UI in static/ stays dumb. Two
+backends (CHAT_PROVIDER):
+
+  llama       llama.cpp serving Qwen3.6-35B-A3B (MoE, 8-of-256 experts active)
+              with the MoE expert layers offloaded to CPU — ~86 t/s on a 16 GB
+              GPU with strong tool calling. See README for the tuning table.
+  openrouter  any tool-calling model on OpenRouter (OPENROUTER_API_KEY,
+              OPENROUTER_MODEL), no GPU needed.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import uuid
@@ -20,12 +25,98 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# Chat backend. "llama" = the local llama-server (docker compose --profile ai);
+# "openrouter" = any model on OpenRouter's OpenAI-compatible API (--profile
+# openrouter, no GPU needed). "auto" (default) is decided at startup: the
+# local llama-server if it answers, else OpenRouter if OPENROUTER_API_KEY is
+# set — so a key in .env doesn't override a local model you started.
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+_provider = os.getenv("CHAT_PROVIDER", "auto").strip().lower() or "auto"
+if _provider not in ("auto", "llama", "openrouter"):
+    raise SystemExit(f"[chat] CHAT_PROVIDER must be auto, llama or openrouter (got {_provider!r})")
+PROVIDER = _provider  # "auto" is resolved in startup()
+
 # llama-server OpenAI-compatible endpoint (one model, served under an alias).
 LLAMA_URL = os.getenv("LLAMA_BASE_URL", "http://llama-server:8080")
+OPENROUTER_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+# OpenRouter models offered in the UI's model picker (comma-separated; the first
+# is the default). Any tool-calling model on openrouter.ai/models works.
+# "openrouter/auto (<tier>)" is OpenRouter's Auto Router at a cost tier: it
+# classifies the prompt and picks a model in that cost band (see
+# _openrouter_chat). Three entries, so the UI can trade cost for quality.
+AUTO_ROUTER = "openrouter/auto"
+AUTO_TIERS = ("low", "medium", "high")
+OPENROUTER_MODELS = [m.strip() for m in os.getenv(
+    "OPENROUTER_MODEL",
+    ",".join(f"{AUTO_ROUTER} ({t})" for t in AUTO_TIERS)
+    + ",deepseek/deepseek-v4.1-flash,openai/gpt-6-luna,google/gemini-4-argon").split(",") if m.strip()]
+
+
+def _env_list(name: str, default: str = "") -> list[str]:
+    return [m.strip() for m in os.getenv(name, default).split(",") if m.strip()]
+
+
+# Auto Router candidate pool per tier (exact ids or wildcards like "deepseek/*").
+# The tier is a cost *band*, not a ceiling: low is kept to cheap tool-calling
+# models (the router alone ranks by popularity, not price); medium and high
+# route over OpenRouter's whole ranking for their band unless a pool is set.
+OPENROUTER_AUTO_POOLS = {
+    "low": _env_list("OPENROUTER_AUTO_MODELS", "deepseek/deepseek-v4.1-flash,openai/gpt-6-luna"),
+    "medium": _env_list("OPENROUTER_AUTO_MODELS_MEDIUM"),
+    "high": _env_list("OPENROUTER_AUTO_MODELS_HIGH"),
+}
+OPENROUTER_AUTO_MODELS = OPENROUTER_AUTO_POOLS["low"]
+# Price guardrail, in USD per million tokens (input and output): providers
+# above it are skipped. OPENROUTER_MAX_PRICE covers the fixed models and the
+# low tier; medium and high are uncapped unless their own variable is set,
+# since pricier models are their point. Empty disables a cap.
+OPENROUTER_MAX_PRICE = os.getenv("OPENROUTER_MAX_PRICE", "1").strip()
+OPENROUTER_MAX_PRICES = {
+    "low": OPENROUTER_MAX_PRICE,
+    "medium": os.getenv("OPENROUTER_MAX_PRICE_MEDIUM", "").strip(),
+    "high": os.getenv("OPENROUTER_MAX_PRICE_HIGH", "").strip(),
+}
+
+# Per-model provider routing (OpenRouter's `provider` object), as JSON keyed
+# by model id. Pins a model to specific endpoints and replaces the generic
+# price cap for it. Default: Gemini 4 Argon only on Google AI Studio's flex
+# tier ($1/M in, $5/M out; its other endpoints run $2-3.60 / $10-18), with
+# no fallback to a pricier endpoint.
+_DEFAULT_ROUTES = {
+    "google/gemini-4-argon": {
+        "only": ["google-ai-studio/flex"],
+        "allow_fallbacks": False,
+        "max_price": {"prompt": 1, "completion": 5},
+    },
+}
+try:
+    OPENROUTER_MODEL_ROUTES = json.loads(os.getenv("OPENROUTER_MODEL_ROUTES", "") or "null") or _DEFAULT_ROUTES
+except ValueError:
+    print("[chat] WARNING: OPENROUTER_MODEL_ROUTES is not valid JSON; using the defaults", flush=True)
+    OPENROUTER_MODEL_ROUTES = _DEFAULT_ROUTES
+
+
+def _auto_tier(model: str) -> str | None:
+    """'openrouter/auto (medium)' -> 'medium'; plain 'openrouter/auto' -> 'low'."""
+    model = (model or "").strip()
+    if model == AUTO_ROUTER:
+        return "low"
+    for tier in AUTO_TIERS:
+        if model == f"{AUTO_ROUTER} ({tier})":
+            return tier
+    return None
+# OpenRouter's unified reasoning control: low | medium | high, or unset to
+# leave it to the model's default. Ignored by models without reasoning.
+OPENROUTER_REASONING_EFFORT = os.getenv("OPENROUTER_REASONING_EFFORT", "").strip().lower()
+OPENROUTER_TEMPERATURE = os.getenv("OPENROUTER_TEMPERATURE", "").strip()
 MCP_URL = os.getenv("MCP_URL", "http://champions-mcp:8000/mcp")
 # Sent as the OpenAI `model` field. llama-server serves whatever GGUF it loaded
 # regardless, but matching its --alias keeps /v1/models tidy.
-DEFAULT_MODEL = os.getenv("LLAMA_MODEL_NAME", "qwen3.6-35b-a3b")
+LLAMA_MODEL = os.getenv("LLAMA_MODEL_NAME", "qwen3.6-35b-a3b")
+
+
+def _default_model() -> str:
+    return OPENROUTER_MODELS[0] if PROVIDER == "openrouter" and OPENROUTER_MODELS else LLAMA_MODEL
 
 # Reasoning toggle for the hybrid-thinking Qwen model. Passed to the chat
 # template via chat_template_kwargs.enable_thinking. On by default (matching
@@ -78,13 +169,32 @@ def _sampling() -> dict:
 # get_pokemon_sets) = ~25 rounds BEFORE the first calc_stats/calc_damage,
 # validate_team, analyze_team and create_pokepaste. At 24 a full 6-Pokémon build
 # could not finish; it ran out mid-workflow and answered from partial data.
-MAX_TOOL_ROUNDS = int(os.getenv("MAX_TOOL_ROUNDS", "40"))
+_MAX_TOOL_ROUNDS_ENV = os.getenv("MAX_TOOL_ROUNDS", "").strip()
+MAX_TOOL_ROUNDS = int(_MAX_TOOL_ROUNDS_ENV or "40")
+# Rounds left at which the model is told to wrap up (validate, export, answer):
+# a full sim-tested build ran out at 40 rounds mid-workflow, before exporting
+# its team, because nothing told it the budget was nearly spent.
+TOOL_ROUNDS_WARNING = int(os.getenv("TOOL_ROUNDS_WARNING", "4"))
+
+
+def _round_budget(model: str) -> int:
+    """Tool-call rounds per turn for `model`: 40 for the local 131k model,
+    80 for 1M-context models, where a calc- and simulation-heavy build needs
+    the room and the context can hold it. MAX_TOOL_ROUNDS overrides both."""
+    if _MAX_TOOL_ROUNDS_ENV:
+        return MAX_TOOL_ROUNDS
+    return 80 if _context_size(model) >= 500_000 else 40
 # Cap a single tool result fed back into context. ~4 chars/token, so this is
 # roughly 4k tokens — 3% of the 131k window for one call. The previous 8000 cut
 # catalogue-style results in half (list_roles returns ~8.2k for one format, a
 # full movepool or a wide usage ranking can be larger), and a silently halved
 # result is worse than a large one: the model can't tell what it didn't see.
-MAX_TOOL_RESULT_CHARS = int(os.getenv("MAX_TOOL_RESULT_CHARS", "16000"))
+# Scaled to the model's context when not set explicitly: 16k suits the local
+# 131k-context model, but a 1M-context model (the OpenRouter defaults) gets
+# 60k, so catalogue-sized results (usage top-60, threat profile, item pool)
+# arrive whole instead of truncated mid-list.
+_MAX_TOOL_RESULT_CHARS_ENV = os.getenv("MAX_TOOL_RESULT_CHARS", "").strip()
+MAX_TOOL_RESULT_CHARS = int(_MAX_TOOL_RESULT_CHARS_ENV or "16000")
 # A long tool-calling session naturally re-touches earlier lookups (e.g.
 # re-checking a Pokémon it looked at 100 calls ago) — that's not a real loop.
 # Only cut the round loop short once the *same* tool+args signature repeats
@@ -378,11 +488,65 @@ async def _init_mcp() -> None:
 app = FastAPI()
 
 
+# Per-model context window, filled from OpenRouter's model list at startup
+# (llama-server's comes from LLAMA_CTX_SIZE) — drives the UI's context meter.
+model_context: dict[str, int] = {}
+
+
+async def _init_openrouter() -> None:
+    """Check the OpenRouter config and learn each configured model's context size."""
+    if not OPENROUTER_API_KEY:
+        print("[chat] ERROR: CHAT_PROVIDER=openrouter but OPENROUTER_API_KEY is not set.", flush=True)
+        return
+    try:
+        resp = await http_client.get(f"{OPENROUTER_URL}/models", timeout=20.0)
+        resp.raise_for_status()
+        known = {m["id"]: m for m in resp.json().get("data", [])}
+    except Exception as exc:  # the chat still works; only the context meter degrades
+        print(f"[chat] WARNING: could not read OpenRouter's model list: {exc}", flush=True)
+        return
+    pools = [m for pool in OPENROUTER_AUTO_POOLS.values() for m in pool if "*" not in m]
+    for model in dict.fromkeys([m for m in OPENROUTER_MODELS if not _auto_tier(m)] + pools):
+        info = known.get(model)
+        if not info:
+            print(f"[chat] WARNING: {model!r} is not in OpenRouter's model list", flush=True)
+            continue
+        if "tools" not in (info.get("supported_parameters") or []):
+            print(f"[chat] WARNING: {model!r} does not support tool calling; the "
+                  "champions-mcp tools won't work with it", flush=True)
+        if info.get("context_length"):
+            model_context[model] = int(info["context_length"])
+    # The Auto Router lists a nominal context; the real limit is the routed
+    # model's, so meter against the smallest of a tier's allowed candidates
+    # (a tier with no pool keeps the router's listed context).
+    nominal = int((known.get(AUTO_ROUTER) or {}).get("context_length") or 0)
+    for model in OPENROUTER_MODELS:
+        tier = _auto_tier(model)
+        if not tier:
+            continue
+        pool = [model_context[m] for m in OPENROUTER_AUTO_POOLS[tier] if m in model_context]
+        if pool or nominal:
+            model_context[model] = min(pool) if pool else nominal
+
+
+def _context_size(model: str) -> int:
+    return model_context.get(model, LLAMA_CTX_SIZE)
+
+
 @app.on_event("startup")
 async def startup() -> None:
     """Open the shared HTTP client and load the champions-mcp tool schemas."""
-    global http_client
+    global http_client, PROVIDER
     http_client = httpx.AsyncClient(timeout=60.0)
+    if PROVIDER == "auto":
+        try:
+            ok = (await http_client.get(f"{LLAMA_URL}/health", timeout=3.0)).status_code == 200
+        except httpx.HTTPError:
+            ok = False
+        PROVIDER = "llama" if ok or not OPENROUTER_API_KEY else "openrouter"
+    print(f"[chat] backend: {PROVIDER} ({_default_model()})", flush=True)
+    if PROVIDER == "openrouter":
+        await _init_openrouter()
     await _init_mcp()
 
 
@@ -403,12 +567,20 @@ class Message(BaseModel):
     # not just the current exchange's tool-calling rounds. Ignored (and
     # harmless) for user messages and for older history that predates this.
     reasoning_content: str | None = None
+    # Earlier turns' tool chains, as returned in the `final` event's
+    # `turn_messages`: assistant tool calls, tool results, OpenRouter's
+    # reasoning_details. Without them a follow-up question only sees the
+    # previous final answers, not the data behind them.
+    tool_calls: list | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
+    reasoning_details: list | None = None
 
 
 class ChatRequest(BaseModel):
     """Body of a POST /api/chat request."""
 
-    model: str = DEFAULT_MODEL
+    model: str | None = None  # None = the backend's default model
     messages: list[Message]
 
 
@@ -420,12 +592,16 @@ async def index() -> FileResponse:
 
 @app.get("/api/models")
 async def get_models():
-    """Normalise llama-server's OpenAI /v1/models to the shape the UI expects."""
+    """Normalise llama-server's OpenAI /v1/models to the shape the UI expects.
+    On OpenRouter, the configured models (its full catalogue is hundreds long)."""
+    if PROVIDER == "openrouter":
+        return {"models": [{"name": m} for m in OPENROUTER_MODELS],
+                "context_size": _context_size(_default_model())}
     try:
         resp = await http_client.get(f"{LLAMA_URL}/v1/models")
         resp.raise_for_status()
         data = resp.json().get("data", [])
-        models = [{"name": m.get("id", DEFAULT_MODEL)} for m in data] or [{"name": DEFAULT_MODEL}]
+        models = [{"name": m.get("id", LLAMA_MODEL)} for m in data] or [{"name": LLAMA_MODEL}]
         return {"models": models, "context_size": LLAMA_CTX_SIZE}
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
@@ -437,7 +613,8 @@ class TurnMetrics:
     every round of a single /api/chat turn, so the UI can show one t/s figure
     for the whole answer rather than a jumpy per-round number."""
 
-    def __init__(self) -> None:
+    def __init__(self, context_max: int = 0) -> None:
+        self.context_max = context_max or LLAMA_CTX_SIZE
         self.prompt_tokens_sum = 0
         self.prompt_ms_sum = 0.0
         self.predicted_tokens_sum = 0
@@ -445,15 +622,27 @@ class TurnMetrics:
         self.cached_tokens_sum = 0
         self.prompt_tokens_total_sum = 0  # incl. cached, for cache-hit %
         self.last_context_tokens = 0
+        self.model = ""  # the model that actually answered (Auto Router resolves it)
 
-    def add(self, resp_json: dict) -> None:
-        """Fold one /v1/chat/completions response's timings/usage into the running totals."""
+    def add(self, resp_json: dict, elapsed_ms: float = 0.0) -> None:
+        """Fold one /v1/chat/completions response's timings/usage into the running totals.
+
+        llama-server reports exact prefill/decode `timings`; OpenRouter
+        doesn't, so there decode speed is approximated as completion tokens
+        over the request's wall time (prefill and network included).
+        """
         t = resp_json.get("timings") or {}
         usage = resp_json.get("usage") or {}
-        self.prompt_tokens_sum += t.get("prompt_n", 0) or 0
-        self.prompt_ms_sum += t.get("prompt_ms", 0.0) or 0.0
-        self.predicted_tokens_sum += t.get("predicted_n", 0) or 0
-        self.predicted_ms_sum += t.get("predicted_ms", 0.0) or 0.0
+        if t:
+            self.prompt_tokens_sum += t.get("prompt_n", 0) or 0
+            self.prompt_ms_sum += t.get("prompt_ms", 0.0) or 0.0
+            self.predicted_tokens_sum += t.get("predicted_n", 0) or 0
+            self.predicted_ms_sum += t.get("predicted_ms", 0.0) or 0.0
+        elif elapsed_ms:
+            self.predicted_tokens_sum += usage.get("completion_tokens", 0) or 0
+            self.predicted_ms_sum += elapsed_ms
+        if resp_json.get("model"):
+            self.model = resp_json["model"]
         cached = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0) or 0
         self.cached_tokens_sum += cached
         self.prompt_tokens_total_sum += usage.get("prompt_tokens", 0) or 0
@@ -470,17 +659,21 @@ class TurnMetrics:
             "decode_tps": (self.predicted_tokens_sum / (self.predicted_ms_sum / 1000)) if self.predicted_ms_sum else 0.0,
             "cache_hit_pct": (self.cached_tokens_sum / cache_denom * 100) if cache_denom else 0.0,
             "context_tokens": self.last_context_tokens,
-            "context_max": LLAMA_CTX_SIZE,
+            "context_max": self.context_max,
+            **({"model": self.model} if self.model else {}),
         }
 
 
-async def _llama_chat(model: str, messages: list[dict], use_tools: bool, metrics: TurnMetrics | None = None) -> dict:
+async def _llama_chat(model: str, messages: list[dict], use_tools: bool, metrics: TurnMetrics | None = None,
+                      session_id: str | None = None, route_tier: str | None = None) -> dict:
     """One round-trip to llama-server's OpenAI chat endpoint; returns the raw
     assistant message (content, optional tool_calls, optional reasoning_content).
     Feeds the response's `timings`/`usage` blocks into `metrics` when given."""
+    if PROVIDER == "openrouter":
+        return await _openrouter_chat(model, messages, use_tools, metrics, session_id, route_tier)
     payload: dict = {
         "model": model,
-        "messages": messages,
+        "messages": [{k: v for k, v in m.items() if k != "reasoning_details"} for m in messages],
         "stream": False,
         # Control the Qwen thinking block via the chat template (ignored by
         # servers that don't support chat_template_kwargs — harmless).
@@ -498,7 +691,90 @@ async def _llama_chat(model: str, messages: list[dict], use_tools: bool, metrics
     return body["choices"][0]["message"]
 
 
-async def _run_tool(name: str, arguments: dict) -> tuple[str, bool]:
+async def _openrouter_chat(model: str, messages: list[dict], use_tools: bool,
+                           metrics: TurnMetrics | None, session_id: str | None = None,
+                           route_tier: str | None = None) -> dict:
+    """The same round-trip against OpenRouter's OpenAI-compatible API.
+
+    Differences from llama-server: bearer auth; no llama.cpp-only fields
+    (chat_template_kwargs, Qwen sampling presets — each model keeps its own
+    defaults unless OPENROUTER_TEMPERATURE is set); reasoning via OpenRouter's
+    unified `reasoning` field, returned as `reasoning` (mapped to
+    reasoning_content for the UI) plus `reasoning_details`, which is sent back
+    on later rounds so reasoning models keep their chain across tool calls.
+    """
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY is not set (add it to .env)")
+    outgoing = []
+    for m in messages:
+        m = dict(m)
+        m.pop("reasoning_content", None)  # llama-server's field; OpenRouter replays reasoning_details
+        outgoing.append(m)
+    tier = _auto_tier(model)
+    payload: dict = {"model": AUTO_ROUTER if tier else model, "messages": outgoing, "stream": False}
+    if use_tools and mcp_tools:
+        payload["tools"] = mcp_tools
+        payload["tool_choice"] = "auto"
+    if tier:
+        # Auto Router: route within this tier's cost band (and pool, if set).
+        router: dict = {"id": "auto-router", "cost_tier": tier}
+        if OPENROUTER_AUTO_POOLS[tier]:
+            router["allowed_models"] = OPENROUTER_AUTO_POOLS[tier]
+        payload["plugins"] = [router]
+    if session_id:
+        # Sticky routing (and caching) across this conversation's turns.
+        payload["session_id"] = session_id
+    # a model pinned after routing keeps its tier's price rule (route_tier)
+    price_tier = tier or route_tier
+    max_price = OPENROUTER_MAX_PRICES[price_tier] if price_tier else OPENROUTER_MAX_PRICE
+    route = OPENROUTER_MODEL_ROUTES.get(model)
+    if route:
+        # this model's own endpoint pinning + price cap (also when the Auto
+        # Router picked it and it was pinned for the rest of the turn)
+        payload["provider"] = dict(route)
+    elif max_price:
+        cap = float(max_price)
+        payload["provider"] = {"max_price": {"prompt": cap, "completion": cap}}
+    if OPENROUTER_REASONING_EFFORT in ("low", "medium", "high"):
+        payload["reasoning"] = {"effort": OPENROUTER_REASONING_EFFORT}
+    if OPENROUTER_TEMPERATURE:
+        payload["temperature"] = float(OPENROUTER_TEMPERATURE)
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        # Optional OpenRouter attribution headers.
+        "X-Title": "champions-mcp chat",
+        "HTTP-Referer": "https://github.com/waldh4ri/champions-mcp",
+    }
+    started = asyncio.get_running_loop().time()
+    resp = await http_client.post(f"{OPENROUTER_URL}/chat/completions", json=payload,
+                                  headers=headers, timeout=300.0)
+    elapsed_ms = (asyncio.get_running_loop().time() - started) * 1000
+    if resp.status_code >= 400:
+        # OpenRouter puts the useful part (bad key, no credits, model down) in the body.
+        try:
+            detail = resp.json().get("error", {}).get("message") or resp.text
+        except ValueError:
+            detail = resp.text
+        raise RuntimeError(f"OpenRouter {resp.status_code}: {detail[:400]}")
+    body = resp.json()
+    if body.get("error"):  # provider errors can arrive with a 200
+        raise RuntimeError(f"OpenRouter: {body['error'].get('message', body['error'])}")
+    if metrics is not None:
+        metrics.add(body, elapsed_ms)
+    msg = body["choices"][0]["message"]
+    if msg.get("reasoning") and not msg.get("reasoning_content"):
+        msg["reasoning_content"] = msg["reasoning"]
+    return msg
+
+
+def _result_cap(model: str) -> int:
+    """Max characters of one tool result fed back to `model`."""
+    if _MAX_TOOL_RESULT_CHARS_ENV:
+        return MAX_TOOL_RESULT_CHARS
+    return 60000 if _context_size(model) >= 500_000 else 16000
+
+
+async def _run_tool(name: str, arguments: dict, cap: int = MAX_TOOL_RESULT_CHARS) -> tuple[str, bool]:
     """Returns (result_text, is_error) — is_error surfaces in the UI's tool-call
     status dot, so a genuine MCP failure reads differently from a normal
     result even though both are just text on the wire."""
@@ -523,17 +799,56 @@ async def _run_tool(name: str, arguments: dict) -> tuple[str, bool]:
     except Exception as exc:
         tool_text = f"Tool error: {exc}"
         is_error = True
-    if len(tool_text) > MAX_TOOL_RESULT_CHARS:
+    # The MCP SDK pretty-prints dict results (indent=2); the indentation is a
+    # third of a catalogue-sized result. Compact it so the model gets the
+    # whole thing (and spends fewer tokens) before any truncation applies.
+    if tool_text and tool_text[0] in "{[":
+        try:
+            tool_text = json.dumps(json.loads(tool_text), ensure_ascii=False, separators=(",", ":"))
+        except ValueError:
+            pass
+    if len(tool_text) > cap:
         # Name the tool: not every tool takes `limit` (list_roles narrows with
         # format/category/query, search_* with query), so a generic "use the
         # limit argument" sends the model looking for an argument that isn't
         # in the schema.
-        tool_text = tool_text[:MAX_TOOL_RESULT_CHARS] + (
+        tool_text = tool_text[:cap] + (
             f"\n...[result truncated — this is a PARTIAL {name} result. Re-call "
             "it with narrower arguments (see its schema for which filters it "
             "takes) rather than drawing conclusions from what's shown.]"
         )
     return tool_text, is_error
+
+
+# Share of the model's context (in ~4-char tokens) that earlier turns may take,
+# leaving the rest for this turn's own tool rounds.
+HISTORY_CONTEXT_SHARE = float(os.getenv("HISTORY_CONTEXT_SHARE", "0.5"))
+OLD_TOOL_RESULT_CHARS = 1500
+
+
+def _fit_history(messages: list[dict], upto: int, model: str) -> None:
+    """Shrink earlier turns (messages[:upto]) until they fit their share of the
+    model's context: first shorten their tool results, oldest first, then drop
+    their tool chains entirely (assistant tool calls + results), oldest first,
+    keeping every user message and final answer."""
+    budget = int(_context_size(model) * 4 * HISTORY_CONTEXT_SHARE)
+    size = lambda: sum(len(json.dumps(m, ensure_ascii=False, default=str)) for m in messages[:upto])  # noqa: E731
+    if size() <= budget:
+        return
+    for m in messages[:upto]:
+        if m.get("role") == "tool" and isinstance(m.get("content"), str) and len(m["content"]) > OLD_TOOL_RESULT_CHARS:
+            m["content"] = (m["content"][:OLD_TOOL_RESULT_CHARS]
+                            + "\n...[earlier tool result shortened to fit the context]")
+            if size() <= budget:
+                return
+    i = 0
+    while i < upto and size() > budget:
+        m = messages[i]
+        if m.get("role") == "tool" or (m.get("role") == "assistant" and m.get("tool_calls")):
+            del messages[i]
+            upto -= 1
+        else:
+            i += 1
 
 
 def _reply(msg: dict) -> dict:
@@ -590,6 +905,10 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
         _cap_reasoning_history(messages)
         if not any(m.get("role") == "system" for m in messages):
             messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+        # Everything after this index is this turn's own chain, returned to the
+        # client in the final event so the next turn sees it too.
+        turn_start = len(messages)
+        nudge_index = None
 
         seen_calls: dict[str, int] = {}
         tool_cache: dict[str, tuple[str, bool]] = {}
@@ -597,14 +916,33 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
         # the last line still gets the complete trace (mirrors the old
         # non-streaming response shape).
         tool_events: list[dict] = []
-        metrics = TurnMetrics()
+        model = req.model or _default_model()
+        # One conversation = one OpenRouter session: derived from its first
+        # user message, which the UI re-sends unchanged every turn.
+        first_user = next((m.get("content") for m in messages if m.get("role") == "user"), "") or ""
+        session_id = "champions-" + hashlib.sha1(
+            json.dumps(first_user, default=str).encode()).hexdigest()[:16]
+        if PROVIDER == "openrouter" and model not in OPENROUTER_MODELS:
+            model = _default_model()  # e.g. a stale llama alias left in the UI
+        _fit_history(messages, turn_start - 1, model)  # keep this turn's user message whole
+        turn_start = len(messages)
+        metrics = TurnMetrics(_context_size(model))
+        route_tier = _auto_tier(model)  # survives pinning the routed model below
+        budget = _round_budget(model)
 
-        for _round in range(MAX_TOOL_ROUNDS):
+        for _round in range(budget):
             try:
-                msg = await _llama_chat(req.model, messages, use_tools=True, metrics=metrics)
+                msg = await _llama_chat(model, messages, use_tools=True, metrics=metrics,
+                                        session_id=session_id, route_tier=route_tier)
             except Exception as exc:
                 yield _ndjson({"type": "error", "detail": str(exc)})
                 return
+            if _auto_tier(model) and metrics.model and not metrics.model.startswith(AUTO_ROUTER):
+                # The Auto Router classifies each request on its own: left alone it
+                # could switch model between this turn's tool rounds, breaking the
+                # reasoning chain and the prompt cache. Route once, then pin.
+                print(f"[chat] auto-router picked {metrics.model}", flush=True)
+                model = metrics.model
             yield _ndjson({"type": "metrics", "metrics": metrics.summary()})
             if msg.get("reasoning_content"):
                 yield _ndjson({"type": "thinking", "text": msg["reasoning_content"]})
@@ -613,6 +951,7 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
                 yield _ndjson({
                     "type": "final", "message": _reply(msg),
                     "tool_events": tool_events, "metrics": metrics.summary(),
+                    "turn_messages": _turn_messages(messages, turn_start, nudge_index, msg),
                 })
                 return
 
@@ -630,6 +969,8 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
             }
             if msg.get("reasoning_content"):
                 assistant_msg["reasoning_content"] = msg["reasoning_content"]
+            if msg.get("reasoning_details"):  # OpenRouter: replayed so reasoning survives tool rounds
+                assistant_msg["reasoning_details"] = msg["reasoning_details"]
             messages.append(assistant_msg)
 
             # Progress is judged per round, not per call: a round that fetched
@@ -654,7 +995,7 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
                 is_error = False
                 if count == 0:
                     seen_calls[sig] = 1
-                    tool_text, is_error = await _run_tool(name, args)
+                    tool_text, is_error = await _run_tool(name, args, _result_cap(model))
                     tool_cache[sig] = (tool_text, is_error)
                     repeated = False
                     round_fetched_something_new = True
@@ -692,6 +1033,16 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
             if round_hit_repeat_cap and not round_fetched_something_new:
                 break
 
+            # Tell the model when its tool budget is nearly spent, so it
+            # validates and exports before the turn is cut off.
+            left = budget - (_round + 1)
+            if 0 < left <= TOOL_ROUNDS_WARNING and messages and messages[-1].get("role") == "tool":
+                messages[-1]["content"] += (
+                    f"\n\n[Turn budget: {left} tool round{'s' if left != 1 else ''} left. Stop "
+                    "researching: finish with the calls that complete the deliverable (validate_team, "
+                    "create_pokepaste), then write the final answer.]"
+                )
+
         # Final turn: tools are disabled at the API level (use_tools=False), so
         # the model answers from the tool results already in `messages`. Without
         # an explicit nudge here the model can still be mid-plan (expecting to
@@ -699,6 +1050,7 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
         # stray word instead of writing up what it already worked out. Ask it
         # to actually compose the answer, but scope the instruction to what's
         # already gathered so it doesn't coax fabrication of new facts.
+        nudge_index = len(messages)
         messages.append({
             "role": "user",
             "content": (
@@ -709,7 +1061,8 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
             ),
         })
         try:
-            msg = await _llama_chat(req.model, messages, use_tools=False, metrics=metrics)
+            msg = await _llama_chat(model, messages, use_tools=False, metrics=metrics,
+                                    session_id=session_id, route_tier=route_tier)
         except Exception as exc:
             yield _ndjson({"type": "error", "detail": str(exc)})
             return
@@ -719,9 +1072,22 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
         yield _ndjson({
             "type": "final", "message": _reply(msg),
             "tool_events": tool_events, "metrics": metrics.summary(),
+            "turn_messages": _turn_messages(messages, turn_start, nudge_index, msg),
         })
     except Exception as exc:
         yield _ndjson({"type": "error", "detail": str(exc)})
+
+
+def _turn_messages(messages: list[dict], start: int, nudge_index: int | None, final: dict) -> list[dict]:
+    """This turn's chain for the client's history: the assistant tool calls
+    and tool results since `start`, minus the internal no-more-tools nudge,
+    plus the final answer (with its reasoning, for replay)."""
+    chain = [m for i, m in enumerate(messages) if i >= start and i != nudge_index]
+    answer = {"role": "assistant", "content": final.get("content") or ""}
+    for k in ("reasoning_content", "reasoning_details"):
+        if final.get(k):
+            answer[k] = final[k]
+    return chain + [answer]
 
 
 @app.post("/api/chat")
