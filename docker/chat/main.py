@@ -49,7 +49,7 @@ AUTO_TIERS = ("low", "medium", "high")
 OPENROUTER_MODELS = [m.strip() for m in os.getenv(
     "OPENROUTER_MODEL",
     ",".join(f"{AUTO_ROUTER} ({t})" for t in AUTO_TIERS)
-    + ",deepseek/deepseek-v4.1-flash,openai/gpt-6-luna").split(",") if m.strip()]
+    + ",deepseek/deepseek-v4.1-flash,openai/gpt-6-luna,google/gemini-4-argon").split(",") if m.strip()]
 
 
 def _env_list(name: str, default: str = "") -> list[str]:
@@ -76,6 +76,24 @@ OPENROUTER_MAX_PRICES = {
     "medium": os.getenv("OPENROUTER_MAX_PRICE_MEDIUM", "").strip(),
     "high": os.getenv("OPENROUTER_MAX_PRICE_HIGH", "").strip(),
 }
+
+# Per-model provider routing (OpenRouter's `provider` object), as JSON keyed
+# by model id. Pins a model to specific endpoints and replaces the generic
+# price cap for it. Default: Gemini 4 Argon only on Google AI Studio's flex
+# tier ($1/M in, $5/M out; its other endpoints run $2-3.60 / $10-18), with
+# no fallback to a pricier endpoint.
+_DEFAULT_ROUTES = {
+    "google/gemini-4-argon": {
+        "only": ["google-ai-studio/flex"],
+        "allow_fallbacks": False,
+        "max_price": {"prompt": 1, "completion": 5},
+    },
+}
+try:
+    OPENROUTER_MODEL_ROUTES = json.loads(os.getenv("OPENROUTER_MODEL_ROUTES", "") or "null") or _DEFAULT_ROUTES
+except ValueError:
+    print("[chat] WARNING: OPENROUTER_MODEL_ROUTES is not valid JSON; using the defaults", flush=True)
+    OPENROUTER_MODEL_ROUTES = _DEFAULT_ROUTES
 
 
 def _auto_tier(model: str) -> str | None:
@@ -701,7 +719,12 @@ async def _openrouter_chat(model: str, messages: list[dict], use_tools: bool,
     # a model pinned after routing keeps its tier's price rule (route_tier)
     price_tier = tier or route_tier
     max_price = OPENROUTER_MAX_PRICES[price_tier] if price_tier else OPENROUTER_MAX_PRICE
-    if max_price:
+    route = OPENROUTER_MODEL_ROUTES.get(model)
+    if route:
+        # this model's own endpoint pinning + price cap (also when the Auto
+        # Router picked it and it was pinned for the rest of the turn)
+        payload["provider"] = dict(route)
+    elif max_price:
         cap = float(max_price)
         payload["provider"] = {"max_price": {"prompt": cap, "completion": cap}}
     if OPENROUTER_REASONING_EFFORT in ("low", "medium", "high"):

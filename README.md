@@ -131,18 +131,22 @@ For a tool-calling agent, the chat makes three adjustments:
 - It caps provider prices, at `OPENROUTER_MAX_PRICE` for the fixed models and the low tier.
 
 The model actually used appears in the UI's metrics. Both pool models are also in the
-model selector, if you want one fixed. Set your own list with `OPENROUTER_MODEL`
+model selector, if you want one fixed, as is **`google/gemini-4-argon`**. It's pinned to
+Google AI Studio's *flex* endpoint ($1 per million input tokens, $5 output) with no
+fallback to its pricier endpoints ($2–3.60 / $10–18). Pin other models the same way with
+`OPENROUTER_MODEL_ROUTES`. Set your own list with `OPENROUTER_MODEL`
 (comma-separated; the first is the default); any model on openrouter.ai that supports
 tools works.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `OPENROUTER_API_KEY` | unset | Your OpenRouter key |
-| `OPENROUTER_MODEL` | `openrouter/auto (low)`, `(medium)`, `(high)`, `deepseek/deepseek-v4.1-flash`, `openai/gpt-6-luna` | Models offered in the UI (comma-separated) |
+| `OPENROUTER_MODEL` | `openrouter/auto (low)`, `(medium)`, `(high)`, `deepseek/deepseek-v4.1-flash`, `openai/gpt-6-luna`, `google/gemini-4-argon` | Models offered in the UI (comma-separated) |
 | `OPENROUTER_AUTO_MODELS` | `deepseek/deepseek-v4.1-flash,openai/gpt-6-luna` | Low-tier candidates (exact ids or wildcards such as `deepseek/*`) |
 | `OPENROUTER_AUTO_MODELS_MEDIUM` / `_HIGH` | empty (whole ranking) | Medium/high-tier candidates |
 | `OPENROUTER_MAX_PRICE` | `1` | Max USD per 1M tokens (input and output) for the fixed models and the low tier; empty = no cap |
 | `OPENROUTER_MAX_PRICE_MEDIUM` / `_HIGH` | empty (no cap) | Price caps for the medium and high tiers |
+| `OPENROUTER_MODEL_ROUTES` | Gemini 4 Argon → `google-ai-studio/flex` | Per-model provider routing (JSON: OpenRouter's `provider` object per model id); replaces the price cap for that model |
 | `OPENROUTER_REASONING_EFFORT` | unset (model default) | `low`, `medium` or `high` |
 | `OPENROUTER_TEMPERATURE` | unset (model default) | Sampling temperature |
 | `CHAT_PROVIDER` | `auto` | `auto` uses the local `llama-server` if it's running, else OpenRouter if a key is set; or force `llama` / `openrouter` |

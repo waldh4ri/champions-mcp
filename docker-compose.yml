@@ -274,7 +274,7 @@ services:
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       # Comma-separated; the first is the default in the UI's model picker.
       # "openrouter/auto (low|medium|high)" = OpenRouter's Auto Router at that cost tier.
-      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-openrouter/auto (low),openrouter/auto (medium),openrouter/auto (high),deepseek/deepseek-v4.1-flash,openai/gpt-6-luna}"
+      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-openrouter/auto (low),openrouter/auto (medium),openrouter/auto (high),deepseek/deepseek-v4.1-flash,openai/gpt-6-luna,google/gemini-4-argon}"
       # Candidate pools per tier (empty = OpenRouter's whole ranking for that band).
       OPENROUTER_AUTO_MODELS: "${OPENROUTER_AUTO_MODELS:-deepseek/deepseek-v4.1-flash,openai/gpt-6-luna}"  # low
       OPENROUTER_AUTO_MODELS_MEDIUM: "${OPENROUTER_AUTO_MODELS_MEDIUM:-}"
@@ -283,6 +283,9 @@ services:
       OPENROUTER_MAX_PRICE: "${OPENROUTER_MAX_PRICE:-1}"  # fixed models + low tier
       OPENROUTER_MAX_PRICE_MEDIUM: "${OPENROUTER_MAX_PRICE_MEDIUM:-}"
       OPENROUTER_MAX_PRICE_HIGH: "${OPENROUTER_MAX_PRICE_HIGH:-}"
+      # Per-model provider routing, JSON keyed by model id (empty = built-in:
+      # google/gemini-4-argon pinned to the google-ai-studio/flex endpoint, $1/$5 per 1M).
+      OPENROUTER_MODEL_ROUTES: "${OPENROUTER_MODEL_ROUTES:-}"
       OPENROUTER_REASONING_EFFORT: "${OPENROUTER_REASONING_EFFORT:-}"  # low | medium | high
       OPENROUTER_TEMPERATURE: "${OPENROUTER_TEMPERATURE:-}"
     depends_on:
