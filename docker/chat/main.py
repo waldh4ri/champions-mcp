@@ -567,6 +567,14 @@ class Message(BaseModel):
     # not just the current exchange's tool-calling rounds. Ignored (and
     # harmless) for user messages and for older history that predates this.
     reasoning_content: str | None = None
+    # Earlier turns' tool chains, as returned in the `final` event's
+    # `turn_messages`: assistant tool calls, tool results, OpenRouter's
+    # reasoning_details. Without them a follow-up question only sees the
+    # previous final answers, not the data behind them.
+    tool_calls: list | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
+    reasoning_details: list | None = None
 
 
 class ChatRequest(BaseModel):
@@ -665,7 +673,7 @@ async def _llama_chat(model: str, messages: list[dict], use_tools: bool, metrics
         return await _openrouter_chat(model, messages, use_tools, metrics, session_id, route_tier)
     payload: dict = {
         "model": model,
-        "messages": messages,
+        "messages": [{k: v for k, v in m.items() if k != "reasoning_details"} for m in messages],
         "stream": False,
         # Control the Qwen thinking block via the chat template (ignored by
         # servers that don't support chat_template_kwargs — harmless).
@@ -812,6 +820,37 @@ async def _run_tool(name: str, arguments: dict, cap: int = MAX_TOOL_RESULT_CHARS
     return tool_text, is_error
 
 
+# Share of the model's context (in ~4-char tokens) that earlier turns may take,
+# leaving the rest for this turn's own tool rounds.
+HISTORY_CONTEXT_SHARE = float(os.getenv("HISTORY_CONTEXT_SHARE", "0.5"))
+OLD_TOOL_RESULT_CHARS = 1500
+
+
+def _fit_history(messages: list[dict], upto: int, model: str) -> None:
+    """Shrink earlier turns (messages[:upto]) until they fit their share of the
+    model's context: first shorten their tool results, oldest first, then drop
+    their tool chains entirely (assistant tool calls + results), oldest first,
+    keeping every user message and final answer."""
+    budget = int(_context_size(model) * 4 * HISTORY_CONTEXT_SHARE)
+    size = lambda: sum(len(json.dumps(m, ensure_ascii=False, default=str)) for m in messages[:upto])  # noqa: E731
+    if size() <= budget:
+        return
+    for m in messages[:upto]:
+        if m.get("role") == "tool" and isinstance(m.get("content"), str) and len(m["content"]) > OLD_TOOL_RESULT_CHARS:
+            m["content"] = (m["content"][:OLD_TOOL_RESULT_CHARS]
+                            + "\n...[earlier tool result shortened to fit the context]")
+            if size() <= budget:
+                return
+    i = 0
+    while i < upto and size() > budget:
+        m = messages[i]
+        if m.get("role") == "tool" or (m.get("role") == "assistant" and m.get("tool_calls")):
+            del messages[i]
+            upto -= 1
+        else:
+            i += 1
+
+
 def _reply(msg: dict) -> dict:
     """Normalise an assistant message into the {content, thinking} the UI reads."""
     return {
@@ -866,6 +905,10 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
         _cap_reasoning_history(messages)
         if not any(m.get("role") == "system" for m in messages):
             messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+        # Everything after this index is this turn's own chain, returned to the
+        # client in the final event so the next turn sees it too.
+        turn_start = len(messages)
+        nudge_index = None
 
         seen_calls: dict[str, int] = {}
         tool_cache: dict[str, tuple[str, bool]] = {}
@@ -881,6 +924,8 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
             json.dumps(first_user, default=str).encode()).hexdigest()[:16]
         if PROVIDER == "openrouter" and model not in OPENROUTER_MODELS:
             model = _default_model()  # e.g. a stale llama alias left in the UI
+        _fit_history(messages, turn_start - 1, model)  # keep this turn's user message whole
+        turn_start = len(messages)
         metrics = TurnMetrics(_context_size(model))
         route_tier = _auto_tier(model)  # survives pinning the routed model below
         budget = _round_budget(model)
@@ -906,6 +951,7 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
                 yield _ndjson({
                     "type": "final", "message": _reply(msg),
                     "tool_events": tool_events, "metrics": metrics.summary(),
+                    "turn_messages": _turn_messages(messages, turn_start, nudge_index, msg),
                 })
                 return
 
@@ -1004,6 +1050,7 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
         # stray word instead of writing up what it already worked out. Ask it
         # to actually compose the answer, but scope the instruction to what's
         # already gathered so it doesn't coax fabrication of new facts.
+        nudge_index = len(messages)
         messages.append({
             "role": "user",
             "content": (
@@ -1025,9 +1072,22 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
         yield _ndjson({
             "type": "final", "message": _reply(msg),
             "tool_events": tool_events, "metrics": metrics.summary(),
+            "turn_messages": _turn_messages(messages, turn_start, nudge_index, msg),
         })
     except Exception as exc:
         yield _ndjson({"type": "error", "detail": str(exc)})
+
+
+def _turn_messages(messages: list[dict], start: int, nudge_index: int | None, final: dict) -> list[dict]:
+    """This turn's chain for the client's history: the assistant tool calls
+    and tool results since `start`, minus the internal no-more-tools nudge,
+    plus the final answer (with its reasoning, for replay)."""
+    chain = [m for i, m in enumerate(messages) if i >= start and i != nudge_index]
+    answer = {"role": "assistant", "content": final.get("content") or ""}
+    for k in ("reasoning_content", "reasoning_details"):
+        if final.get(k):
+            answer[k] = final[k]
+    return chain + [answer]
 
 
 @app.post("/api/chat")

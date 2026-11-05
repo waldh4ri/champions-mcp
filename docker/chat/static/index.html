@@ -1300,12 +1300,14 @@
       const decoder = new TextDecoder();
       let buf = '';
       let finalMessage = null;
+      let finalTurnMessages = null;
 
       const consume = (line) => {
         if (!line.trim()) return;
         const evt = JSON.parse(line);
         if (evt.type === 'final') {
           finalMessage = evt.message;
+          finalTurnMessages = evt.turn_messages;
           toolEvents = evt.tool_events ?? toolEvents;
           updateMeters(evt.metrics);
         } else {
@@ -1334,9 +1336,15 @@
       // back to llama-server on the next turn (--reasoning-preserve keeps
       // the model's thinking coherent across the whole conversation, not
       // just a single exchange's tool-calling rounds).
-      const assistantMsg = { role: 'assistant', content };
-      if (thinking) assistantMsg.reasoning_content = thinking;
-      history.push(assistantMsg);
+      if (Array.isArray(finalTurnMessages) && finalTurnMessages.length) {
+        // the whole turn (tool calls + results + answer), so a follow-up
+        // question still has the data behind this answer
+        history.push(...finalTurnMessages);
+      } else {
+        const assistantMsg = { role: 'assistant', content };
+        if (thinking) assistantMsg.reasoning_content = thinking;
+        history.push(assistantMsg);
+      }
 
       removeTypingOnce(); // in case the model answered with no thinking/tool calls at all
       const bub = addBubble('assistant', '');
