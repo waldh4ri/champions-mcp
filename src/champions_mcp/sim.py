@@ -106,9 +106,18 @@ class BattleSimulator:
     def team_paste(self, team: list[dict[str, Any]] | str, fmt: str) -> tuple[str, list[str]]:
         """Showdown paste for a team given as member dicts or paste text."""
         if isinstance(team, str):
-            if not team.strip():
+            text = team.strip()
+            if not text:
                 raise SimError("empty team")
-            return team, []
+            if "\n" not in text and "@" not in text:
+                # one line: an opponent id from worst/best_matchups, or a mistake
+                found = self.team_by_id(text, fmt)
+                if found:
+                    return found["paste"], [f"{text}: {found['label']} ({found['source']})"]
+                raise SimError(
+                    f"{text[:60]!r} is not a team: pass six member dicts, Showdown paste text, or an "
+                    "opponent `id` from simulate_vs_meta's worst_matchups / best_matchups")
+            return text, []
         if not team:
             raise SimError("empty team")
         fmt_key = game_type(fmt)
@@ -168,21 +177,27 @@ class BattleSimulator:
         for t in rows:
             if len(out) >= limit:
                 break
-            members = json.loads(t["members_json"])
-            if any(self.member_problem(m) for m in members):
-                continue
-            try:
-                paste, _ = self.team_paste(members, "bss" if fmt_key == "singles" else "vgc")
-            except SimError:
-                continue
-            names = [self._db.get_pokemon_row(m["species"]) or {} for m in members]
-            source = " ".join(str(x) for x in (
-                f"M-{t['season']}" if t["season"] else "", f"#{t['rank']}" if t["rank"] else "",
-                f"rating {t['rating']:.0f}" if t["rating"] else "", t["trainer"] or "",
-                f"({t['url']})" if t["url"] else "") if x)
-            out.append({"id": t["team_id"], "label": " / ".join(n.get("showdown_name", "?") for n in names),
-                        "source": source, "paste": paste, "sets_from_usage": False, "title": t["title"]})
+            entry = self._full_team_entry(t)
+            if entry:
+                out.append(entry)
         return out
+
+    def _full_team_entry(self, t: dict[str, Any]) -> dict[str, Any] | None:
+        """One ``full_teams`` row as an opponent, or None if it can't be played."""
+        members = json.loads(t["members_json"])
+        if any(self.member_problem(m) for m in members):
+            return None
+        try:
+            paste, _ = self.team_paste(members, "bss" if t["format"] == "singles" else "vgc")
+        except SimError:
+            return None
+        names = [self._db.get_pokemon_row(m["species"]) or {} for m in members]
+        source = " ".join(str(x) for x in (
+            f"M-{t['season']}" if t["season"] else "", f"#{t['rank']}" if t["rank"] else "",
+            f"rating {t['rating']:.0f}" if t["rating"] else "", t["trainer"] or "",
+            f"({t['url']})" if t["url"] else "") if x)
+        return {"id": t["team_id"], "label": " / ".join(n.get("showdown_name", "?") for n in names),
+                "source": source, "paste": paste, "sets_from_usage": False, "title": t["title"]}
 
     def member_problem(self, m: dict[str, Any]) -> str | None:
         """Why a corpus member can't be played as recorded, or None.
@@ -247,46 +262,67 @@ class BattleSimulator:
                 break
             if t["team_hash"] in seen:
                 continue
-            members = self._db.query(
-                "SELECT slug, item, item_slug, ability, nature, moves_json FROM build_members "
-                "WHERE team_id=? ORDER BY slot", (t["team_id"],))
-            if len(members) != 6:
-                continue
-            # pokedb items are Japanese display names: use the resolved slug's
-            # English name; a held item that didn't resolve makes the team unusable.
-            if any(m["item"] and not m["item_slug"] for m in members):
-                continue
-            for m in members:
-                if m["item_slug"]:
-                    it = self._db.get_item(m["item_slug"])
-                    m["item"] = it["name"] if it else m["item"]
-            team, filled = [], False
-            for m in members:
-                moves = json.loads(m["moves_json"]) if m["moves_json"] else []
-                if not moves:
-                    moves = self.usage_moves(m["slug"], fmt_key, m["item"])
-                    filled = True
-                team.append({"species": m["slug"], "item": m["item"] or None, "ability": m["ability"] or None,
-                             "nature": m["nature"] or None, "moves": moves})
-            if not all(x["moves"] for x in team) or any(self.member_problem(x) for x in team):
-                continue
-            try:
-                paste, _ = self.team_paste(team, "vgc" if fmt_key == "doubles" else "bss")
-            except SimError:
-                continue
-            seen.add(t["team_hash"])
-            names = [self._db.get_pokemon_row(m["slug"]) or {} for m in members]
-            source = " ".join(str(x) for x in (
-                t["event"], f"#{t['placing']}" if t["placing"] else "",
-                f"rating {t['rating']:.0f}" if t["rating"] else "", t["player"] or "", t["date"] or "") if x)
-            out.append({
-                "id": t["team_id"],
-                "label": " / ".join(n.get("showdown_name", "?") for n in names),
-                "source": source.strip(),
-                "paste": paste,
-                "sets_from_usage": filled,
-            })
+            entry = self._corpus_team_entry(t, fmt_key)
+            if entry:
+                seen.add(t["team_hash"])
+                out.append(entry)
         return out
+
+    def _corpus_team_entry(self, t: dict[str, Any], fmt_key: str) -> dict[str, Any] | None:
+        """One ``build_teams`` row as an opponent, or None if it can't be played."""
+        members = self._db.query(
+            "SELECT slug, item, item_slug, ability, nature, moves_json FROM build_members "
+            "WHERE team_id=? ORDER BY slot", (t["team_id"],))
+        if len(members) != 6:
+            return None
+        # pokedb items are Japanese display names: use the resolved slug's
+        # English name; a held item that didn't resolve makes the team unusable.
+        if any(m["item"] and not m["item_slug"] for m in members):
+            return None
+        for m in members:
+            if m["item_slug"]:
+                it = self._db.get_item(m["item_slug"])
+                m["item"] = it["name"] if it else m["item"]
+        team, filled = [], False
+        for m in members:
+            moves = json.loads(m["moves_json"]) if m["moves_json"] else []
+            if not moves:
+                moves = self.usage_moves(m["slug"], fmt_key, m["item"])
+                filled = True
+            team.append({"species": m["slug"], "item": m["item"] or None, "ability": m["ability"] or None,
+                         "nature": m["nature"] or None, "moves": moves})
+        if not all(x["moves"] for x in team) or any(self.member_problem(x) for x in team):
+            return None
+        try:
+            paste, _ = self.team_paste(team, "vgc" if fmt_key == "doubles" else "bss")
+        except SimError:
+            return None
+        names = [self._db.get_pokemon_row(m["slug"]) or {} for m in members]
+        source = " ".join(str(x) for x in (
+            t["event"], f"#{t['placing']}" if t["placing"] else "",
+            f"rating {t['rating']:.0f}" if t["rating"] else "", t["player"] or "", t["date"] or "") if x)
+        return {
+            "id": t["team_id"],
+            "label": " / ".join(n.get("showdown_name", "?") for n in names),
+            "source": source.strip(),
+            "paste": paste,
+            "sets_from_usage": filled,
+        }
+
+    def team_by_id(self, team_id: str, fmt: str) -> dict[str, Any] | None:
+        """The opponent with this id (from simulate_vs_meta's worst/best
+        matchups), built exactly as the meta simulation played it."""
+        team_id = team_id.strip()
+        if team_id.startswith("report:"):
+            try:
+                row = self._db.query_one("SELECT * FROM full_teams WHERE team_id=?", (team_id,))
+            except Exception:
+                return None
+            return self._full_team_entry(row) if row else None
+        row = self._db.query_one(
+            "SELECT team_id, team_hash, format, event, player, placing, rating, date, weight "
+            "FROM build_teams WHERE team_id=?", (team_id,))
+        return self._corpus_team_entry(row, row["format"]) if row else None
 
     @staticmethod
     def paste_species(paste: str) -> list[str]:
@@ -393,6 +429,11 @@ class BattleSimulator:
     def _finish(result: dict[str, Any], notes: list[str], **extra: Any) -> dict[str, Any]:
         if not result.pop("ok", False):
             err = {"error": result.get("error", "simulation failed")}
+            if extra.get("format"):
+                err["format"] = extra["format"]
+                if "not legal in" in err["error"]:
+                    err["error"] += (f" (checked as format={extra['format']!r}; pass "
+                                     f"format='{'vgc' if extra['format'] == 'bss' else 'bss'}' if you meant the other one)")
             for k in ("problems", "dropped"):
                 if result.get(k):
                     err[k] = result[k]

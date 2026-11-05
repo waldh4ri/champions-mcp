@@ -1040,7 +1040,9 @@ def _explain_damage(move: str, defender: str, defender_item: str | None,
 
 _SIM_TEAM_DOC = (
     "Teams: a list of 6 member dicts ({species, item, ability, nature, moves, "
-    "stat_points}, as for validate_team) or Showdown paste text. A missing "
+    "stat_points}, as for validate_team), Showdown paste text, or an opponent's "
+    "`id` from simulate_vs_meta's worst_matchups / best_matchups (that exact "
+    "team, as the simulation played it: use it to replay a bad matchup). A missing "
     "spread/nature/ability is filled with that species' most common one and "
     "reported under `assumptions`. Teams are checked with the simulator's own "
     "Reg M-C validator first; an illegal team returns `problems`.\n\n"

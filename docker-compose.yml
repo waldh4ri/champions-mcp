@@ -99,6 +99,9 @@ services:
       CHAMPIONS_MCP_CACHE_DB: "/data/pull-cache.sqlite"
       # Set to 1 to re-pull fresh data on next restart
       CHAMPIONS_MCP_PULL: "${CHAMPIONS_MCP_PULL:-0}"
+      # A restart also re-pulls when the data is older than this many days, or
+      # was built by an older version than the code needs (0 = age check off).
+      CHAMPIONS_MCP_MAX_DATA_AGE_DAYS: "${CHAMPIONS_MCP_MAX_DATA_AGE_DAYS:-7}"
       # Roster/movepool/reference/usage source (see .env.example)
       CHAMPIONS_MCP_POKECHAMP_BASE: "${CHAMPIONS_MCP_POKECHAMP_BASE:-https://pokechamp.gg}"
       # Observed-team corpus (Limitless teamlists + pokedb ranked ladder).

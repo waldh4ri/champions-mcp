@@ -41,6 +41,13 @@ from typing import Any
 
 from .normalize import normalize_key, slugify
 
+# Version of what a pull produces (tables + what's in them). Bump it whenever
+# a code change needs a fresh pull to take effect; a container restart then
+# rebuilds the data instead of serving the old shape (see pull/freshness.py).
+#   1: roster, usage, observed builds, Smogon sets
+#   2: + full_teams (BSS team reports), Z-Mega stones from the JP export
+DATA_FORMAT = 2
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pokemon (
     slug            TEXT PRIMARY KEY,

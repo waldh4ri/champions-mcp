@@ -126,7 +126,12 @@ MAX_TOOL_ROUNDS = int(os.getenv("MAX_TOOL_ROUNDS", "40"))
 # catalogue-style results in half (list_roles returns ~8.2k for one format, a
 # full movepool or a wide usage ranking can be larger), and a silently halved
 # result is worse than a large one: the model can't tell what it didn't see.
-MAX_TOOL_RESULT_CHARS = int(os.getenv("MAX_TOOL_RESULT_CHARS", "16000"))
+# Scaled to the model's context when not set explicitly: 16k suits the local
+# 131k-context model, but a 1M-context model (the OpenRouter defaults) gets
+# 60k, so catalogue-sized results (usage top-60, threat profile, item pool)
+# arrive whole instead of truncated mid-list.
+_MAX_TOOL_RESULT_CHARS_ENV = os.getenv("MAX_TOOL_RESULT_CHARS", "").strip()
+MAX_TOOL_RESULT_CHARS = int(_MAX_TOOL_RESULT_CHARS_ENV or "16000")
 # A long tool-calling session naturally re-touches earlier lookups (e.g.
 # re-checking a Pokémon it looked at 100 calls ago) — that's not a real loop.
 # Only cut the round loop short once the *same* tool+args signature repeats
@@ -674,7 +679,14 @@ async def _openrouter_chat(model: str, messages: list[dict], use_tools: bool,
     return msg
 
 
-async def _run_tool(name: str, arguments: dict) -> tuple[str, bool]:
+def _result_cap(model: str) -> int:
+    """Max characters of one tool result fed back to `model`."""
+    if _MAX_TOOL_RESULT_CHARS_ENV:
+        return MAX_TOOL_RESULT_CHARS
+    return 60000 if _context_size(model) >= 500_000 else 16000
+
+
+async def _run_tool(name: str, arguments: dict, cap: int = MAX_TOOL_RESULT_CHARS) -> tuple[str, bool]:
     """Returns (result_text, is_error) — is_error surfaces in the UI's tool-call
     status dot, so a genuine MCP failure reads differently from a normal
     result even though both are just text on the wire."""
@@ -699,12 +711,20 @@ async def _run_tool(name: str, arguments: dict) -> tuple[str, bool]:
     except Exception as exc:
         tool_text = f"Tool error: {exc}"
         is_error = True
-    if len(tool_text) > MAX_TOOL_RESULT_CHARS:
+    # The MCP SDK pretty-prints dict results (indent=2); the indentation is a
+    # third of a catalogue-sized result. Compact it so the model gets the
+    # whole thing (and spends fewer tokens) before any truncation applies.
+    if tool_text and tool_text[0] in "{[":
+        try:
+            tool_text = json.dumps(json.loads(tool_text), ensure_ascii=False, separators=(",", ":"))
+        except ValueError:
+            pass
+    if len(tool_text) > cap:
         # Name the tool: not every tool takes `limit` (list_roles narrows with
         # format/category/query, search_* with query), so a generic "use the
         # limit argument" sends the model looking for an argument that isn't
         # in the schema.
-        tool_text = tool_text[:MAX_TOOL_RESULT_CHARS] + (
+        tool_text = tool_text[:cap] + (
             f"\n...[result truncated — this is a PARTIAL {name} result. Re-call "
             "it with narrower arguments (see its schema for which filters it "
             "takes) rather than drawing conclusions from what's shown.]"
@@ -847,7 +867,7 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
                 is_error = False
                 if count == 0:
                     seen_calls[sig] = 1
-                    tool_text, is_error = await _run_tool(name, args)
+                    tool_text, is_error = await _run_tool(name, args, _result_cap(model))
                     tool_cache[sig] = (tool_text, is_error)
                     repeated = False
                     round_fetched_something_new = True
