@@ -618,6 +618,105 @@
     .qp:hover:not(:disabled) { background: #1e293b; border-color: #6366f1; color: #e2e8f0; }
     .qp:disabled { opacity: 0.45; cursor: not-allowed; }
     .qp .qp-tier { color: #818cf8; font-weight: 600; }
+
+    /* ── Team panel: Pokémon and sets read from the conversation's tool calls ── */
+    #layout { flex: 1; display: flex; min-height: 0; }
+    #chatCol { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    #teamPanel {
+      width: 360px;
+      flex-shrink: 0;
+      border-left: 1px solid #334155;
+      background: #111c30;
+      overflow-y: auto;
+      padding: 14px 14px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      scrollbar-width: thin;
+      scrollbar-color: #334155 transparent;
+    }
+    body.hide-panel #teamPanel { display: none; }
+    @media (max-width: 1100px) { #teamPanel { width: 300px; } }
+    @media (max-width: 860px) {
+      #layout { flex-direction: column; }
+      #teamPanel { width: auto; max-height: 40vh; border-left: 0; border-top: 1px solid #334155; }
+    }
+    .tp-section h2 {
+      font-family: 'Lexend', 'Inter', sans-serif;
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #94a3b8;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .tp-section h2 .tp-count { color: #64748b; font-weight: 600; letter-spacing: 0; }
+    .tp-empty { color: #64748b; font-size: 0.8rem; line-height: 1.5; }
+    .tp-team {
+      border: 1px solid #334155;
+      border-radius: 10px;
+      background: #0f172a;
+      padding: 10px;
+    }
+    .tp-team.final { border-color: #6366f1; box-shadow: 0 0 0 1px #6366f155, 0 6px 24px #6366f122; }
+    .tp-team-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    .tp-team-tag {
+      font-size: 0.66rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 2px 7px; border-radius: 999px; background: #1e293b; color: #94a3b8;
+    }
+    .tp-team.final .tp-team-tag { background: #4338ca; color: #e0e7ff; }
+    .tp-team-src { color: #64748b; font-size: 0.72rem; text-align: right; }
+    .tp-team-src a { color: #a5b4fc; }
+    .tp-sim {
+      display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline;
+      font-size: 0.76rem; color: #cbd5e1; margin: -2px 0 8px;
+    }
+    .tp-sim b { color: #4ade80; font-variant-numeric: tabular-nums; }
+    .tp-sim .lo { color: #f87171; }
+    .tp-grid { display: grid; grid-template-columns: 1fr; gap: 6px; }
+    .tp-mon {
+      border: 1px solid #1f2b40;
+      border-radius: 8px;
+      background: #162033;
+      padding: 8px 9px;
+      animation: tpIn 0.25s ease-out;
+    }
+    .tp-mon.fresh { border-color: #6366f1aa; }
+    .tp-mon { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; align-items: start; }
+    .tp-team .tp-mon { grid-template-columns: 96px minmax(0, 1fr); }
+    .tp-sprite {
+      width: 72px; height: 72px; object-fit: contain;
+      background: radial-gradient(circle at 50% 60%, #26344d 0%, #162033 70%);
+      border-radius: 8px;
+      filter: drop-shadow(0 3px 6px #00000066);
+    }
+    .tp-team .tp-sprite { width: 96px; height: 96px; }
+    .tp-body { min-width: 0; }
+    @keyframes tpIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .tp-mon-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .tp-name { font-weight: 700; font-size: 0.86rem; color: #f1f5f9; }
+    .tp-item { color: #fbbf24; font-size: 0.76rem; }
+    .tp-rank { margin-left: auto; color: #64748b; font-size: 0.68rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .tp-type {
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+      padding: 1px 6px; border-radius: 4px; color: #0b1120;
+    }
+    .tp-line { color: #94a3b8; font-size: 0.74rem; margin-top: 4px; line-height: 1.4; }
+    .tp-line b { color: #cbd5e1; font-weight: 600; }
+    .tp-moves { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+    .tp-move {
+      font-size: 0.7rem; color: #e2e8f0; background: #0f172a; border: 1px solid #334155;
+      border-radius: 5px; padding: 1px 6px;
+    }
+    .tp-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; margin-top: 5px; }
+    .tp-stat { text-align: center; font-size: 0.62rem; color: #64748b; }
+    .tp-stat span { display: block; color: #cbd5e1; font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+    .tp-stat.sp span { color: #a5b4fc; }
+    .tp-seen { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 3px; }
+    .tp-seen span { font-size: 0.6rem; color: #64748b; border: 1px dashed #334155; border-radius: 4px; padding: 0 4px; }
   </style>
 </head>
 <body>
@@ -643,11 +742,17 @@
       <input type="checkbox" id="toolsChk" checked>
       Tools
     </label>
+    <label class="viewToggle" title="Show or hide the team panel: Pokémon and sets read from the conversation as it goes">
+      <input type="checkbox" id="panelChk" checked>
+      Team
+    </label>
     <button id="resetBtn" onclick="resetChat()" title="Wipe the conversation and start fresh">Reset</button>
     <select id="modelSelect"><option value="">Loading models…</option></select>
   </div>
 </header>
 
+<div id="layout">
+<div id="chatCol">
 <div id="messagesScroll"><div id="messages"></div></div>
 
 <div id="quickPrompts">
@@ -665,6 +770,18 @@
     <button id="sendBtn" onclick="send()">Send</button>
   </div>
 </footer>
+</div>
+<aside id="teamPanel" aria-label="Team panel">
+  <section class="tp-section" id="tpTeamSec">
+    <h2>Team <span class="tp-count" id="tpTeamCount"></span></h2>
+    <div id="tpTeam"><p class="tp-empty">The team appears here as the model drafts, validates, simulates and exports it.</p></div>
+  </section>
+  <section class="tp-section">
+    <h2>Pokémon in this chat <span class="tp-count" id="tpMonCount"></span></h2>
+    <div class="tp-grid" id="tpMons"><p class="tp-empty">Every Pokémon the model looks up, calcs or builds shows here, with what it has learned about it.</p></div>
+  </section>
+</aside>
+</div>
 
 <script>
   const messagesEl = document.getElementById('messages');
@@ -724,6 +841,7 @@
     mCache.textContent = '--';
     mCtx.textContent = ctxMax ? `0/${fmtK(ctxMax)}` : '--';
     mCtx.style.color = '';
+    TeamPanel.reset();
   }
 
   // ── model loader ─────────────────────────────────────────────────────────────
@@ -1016,6 +1134,7 @@
         toolEvents.push(evt.event);
         removeTypingOnce();
         addToolMessage(evt.event);
+        try { TeamPanel.onTool(evt.event); } catch (e) { console.warn('team panel', e); }
       } else if (evt.type === 'error') {
         throw new Error(evt.detail || 'Stream error');
       }
@@ -1079,6 +1198,7 @@
       removeTypingOnce(); // in case the model answered with no thinking/tool calls at all
       const bub = addBubble('assistant', '');
       renderMarkdown(bub, content);
+      try { TeamPanel.onFinal(content); } catch (e) { console.warn('team panel', e); }
     } catch (err) {
       removeTypingOnce();
       addBubble('info', `<strong>Error:</strong> ${esc(err.message)}`);
@@ -1157,6 +1277,357 @@
     inputEl.value = QUICK_PROMPTS[btn.dataset.k];
     send();
   }));
+
+  // ── team panel ────────────────────────────────────────────────────────────────
+  // Reads Pokémon and builds out of the tool calls as they stream in (arguments
+  // and results), so the right panel fills up while the model works. The team
+  // section shows the latest full team the model handled (validate / analyze /
+  // simulate / paste), and is marked final at the end of the turn.
+  const TeamPanel = (() => {
+    const monsEl = document.getElementById('tpMons');
+    const teamEl = document.getElementById('tpTeam');
+    const monCount = document.getElementById('tpMonCount');
+    const teamCount = document.getElementById('tpTeamCount');
+    const TYPE_COLORS = {
+      Normal: '#a8a77a', Fire: '#ee8130', Water: '#6390f0', Electric: '#f7d02c', Grass: '#7ac74c',
+      Ice: '#96d9d6', Fighting: '#c22e28', Poison: '#a33ea1', Ground: '#e2bf65', Flying: '#a98ff3',
+      Psychic: '#f95587', Bug: '#a6b91a', Rock: '#b6a136', Ghost: '#735797', Dragon: '#6f35fc',
+      Dark: '#9b8b7c', Steel: '#b7b7ce', Fairy: '#d685ad',
+    };
+    const STAT_KEYS = {
+      hp: 'HP', attack: 'Atk', atk: 'Atk', defense: 'Def', def: 'Def',
+      'special-attack': 'SpA', special_attack: 'SpA', specialattack: 'SpA', spa: 'SpA',
+      'special-defense': 'SpD', special_defense: 'SpD', specialdefense: 'SpD', spd: 'SpD',
+      speed: 'Spe', spe: 'Spe',
+    };
+    const STAT_ORDER = ['HP', 'Atk', 'Def', 'SpA', 'SpD', 'Spe'];
+    // Large sprites: Pokémon Showdown's 192px HOME renders, then its dex sprite.
+    // Champions-new Megas have no render yet, so a Mega falls back to its species.
+    const SPRITES = 'https://play.pokemonshowdown.com/sprites/';
+    const NO_HOME = new Set(['floette-eternal']);  // HOME serves a Poké Ball placeholder
+    const REGION = { alolan: 'alola', galarian: 'galar', hisuian: 'hisui', paldean: 'paldea' };
+    function spriteIds(name, item) {
+      let n = String(name || '').trim();
+      let mega = '';
+      const mm = n.match(/^Mega\s+(.+?)(?:\s+([XYZ]))?$/i);
+      if (mm) { n = mm[1]; mega = 'mega' + (mm[2] || '').toLowerCase(); }
+      const rm = n.match(/^(Alolan|Galarian|Hisuian|Paldean)\s+(.+)$/i);
+      if (rm) n = `${rm[2]}-${REGION[rm[1].toLowerCase()]}`;
+      n = n.replace(/\s*\((F|Female)\)$/i, '-f').replace(/\s*\((\w+)\)$/, '-$1');
+      const clean = x => x.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const [head, ...rest] = n.split('-');
+      const base = clean(head) + (rest.length ? '-' + clean(rest.join('')) : '');
+      // a held Mega Stone (Charizardite Y, Garchompite Z, Mawilite) -> its Mega
+      const st = String(item || '').match(/^(\w+?)ite(?:\s+([XYZ]))?$/i);
+      if (!mega && st && clean(head).startsWith(clean(st[1]).slice(0, 4))) mega = 'mega' + (st[2] || '').toLowerCase();
+      const ids = [];
+      if (mega) ids.push(`home-centered/${clean(head)}-${mega}`);
+      if (!NO_HOME.has(base)) ids.push(`home-centered/${base}`);
+      ids.push(`dex/${base}`, `dex/${clean(head)}`);
+      return [...new Set(ids)].map(i => `${SPRITES}${i}.png`);
+    }
+    function spriteTag(name, item) {
+      const [first, ...rest] = spriteIds(name, item);
+      return `<img class="tp-sprite" loading="lazy" alt="${esc(name)}" src="${first}" data-next="${esc(rest.join(' '))}" onerror="nextSprite(this)">`;
+    }
+    // Tools whose `team`-like argument is a whole team, with how much to trust it.
+    const TEAM_TOOLS = {
+      create_pokepaste: 'exported', simulate_vs_meta: 'battle-tested', compare_team_variants: 'battle-tested',
+      simulate_matchup: 'battle-tested', simulate_battle_log: 'battle-tested',
+      validate_team: 'validated', analyze_team: 'analysed',
+    };
+    const TEAM_ARGS = ['team', 'base_team', 'team_a'];
+
+    let mons = new Map();     // key -> {name, types, abilities, base, rank, set, seen:Set, order}
+    let team = null;          // {members:[set], tag, tool, url, sim}
+    let order = 0;
+    let freshKeys = new Set();
+
+    const key = s => String(s || '').toLowerCase().replace(/^mega\s+/, '').replace(/[^a-z0-9]/g, '');
+    const asArray = v => (Array.isArray(v) ? v : v == null || v === '' ? [] : [v]);
+
+    function spOf(m) {
+      const raw = m.stat_points || m.sp || m.evs || m.ev || m.spread;
+      if (!raw) return null;
+      if (typeof raw === 'string') return parseEVs(raw);
+      const out = {};
+      for (const [k, v] of Object.entries(raw)) {
+        const s = STAT_KEYS[String(k).toLowerCase().replace(/\s+/g, '_')];
+        if (s && Number(v)) out[s] = Number(v);
+      }
+      return Object.keys(out).length ? out : null;
+    }
+    function parseEVs(s) {
+      const out = {};
+      for (const part of String(s).split('/')) {
+        const m = part.trim().match(/^(\d+)\s+(\w+)/);
+        if (m) {
+          const k = STAT_KEYS[m[2].toLowerCase()] || ({ hp: 'HP' })[m[2].toLowerCase()];
+          if (k) out[k] = Number(m[1]);
+        }
+      }
+      return Object.keys(out).length ? out : null;
+    }
+
+    function memberOf(m) {
+      if (!m || typeof m !== 'object') return null;
+      const species = m.species || m.name || m.pokemon;
+      if (!species) return null;
+      const moves = asArray(m.moves).flatMap(x => String(x).split(/\s*\/\s*/)).filter(Boolean);
+      return {
+        species: String(species), item: m.item || '', ability: m.ability || '',
+        nature: m.nature || '', moves, sp: spOf(m),
+      };
+    }
+
+    // Showdown paste text -> sets (blocks with an Ability / Nature / EVs / move line)
+    function parsePaste(text) {
+      const out = [];
+      for (const block of String(text).replace(/\r/g, '').split(/\n\s*\n/)) {
+        const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+        if (!lines.length) continue;
+        const head = lines[0].match(/^(.+?)(?:\s*@\s*(.+))?$/);
+        if (!head) continue;
+        let name = head[1].replace(/\s*\((M|F)\)\s*$/, '');
+        const nick = name.match(/\(([^()]+)\)\s*$/);
+        if (nick) name = nick[1];
+        const set = { species: name.trim(), item: (head[2] || '').trim(), ability: '', nature: '', moves: [], sp: null };
+        let isSet = false;
+        for (const l of lines.slice(1)) {
+          if (/^Ability:/i.test(l)) { set.ability = l.replace(/^Ability:\s*/i, ''); isSet = true; }
+          else if (/^EVs:/i.test(l)) { set.sp = parseEVs(l.replace(/^EVs:\s*/i, '')); isSet = true; }
+          else if (/\sNature$/i.test(l)) { set.nature = l.replace(/\s+Nature$/i, ''); isSet = true; }
+          else if (/^[-–]\s+/.test(l)) { set.moves.push(l.replace(/^[-–]\s+/, '')); isSet = true; }
+        }
+        if (isSet) out.push(set);
+      }
+      return out;
+    }
+
+    function teamFrom(value) {
+      if (typeof value === 'string') return parsePaste(value);
+      if (Array.isArray(value)) return value.map(memberOf).filter(Boolean);
+      return [];
+    }
+
+    function upsert(name, patch, source) {
+      if (!name) return;
+      const k = key(name);
+      if (!k) return;
+      const cur = mons.get(k) || { name: String(name), set: {}, seen: new Set(), order: 0 };
+      if (patch.info) {
+        Object.assign(cur, patch.info);
+        if (patch.info.name) cur.name = patch.info.name;
+      }
+      if (patch.set) {
+        // keep what we knew, overwrite with whatever this call states
+        for (const [f, v] of Object.entries(patch.set)) {
+          if (v && !(Array.isArray(v) && !v.length)) cur.set[f] = v;
+        }
+      }
+      if (source) cur.seen.add(source);
+      cur.order = ++order;
+      mons.set(k, cur);
+      freshKeys.add(k);
+    }
+
+    function fromResult(name, text) {
+      let data;
+      try { data = JSON.parse(text); } catch { return null; }
+      return data;
+    }
+
+    function readInfo(obj, source) {
+      // get_pokemon-shaped records: name + types (+ base stats, abilities, usage rank)
+      if (!obj || typeof obj !== 'object' || !Array.isArray(obj.types) || !(obj.name || obj.showdown_name)) return;
+      const base = {};
+      for (const [k, v] of Object.entries(obj.base_stats || {})) {
+        const s = STAT_KEYS[String(k).toLowerCase()];
+        if (s) base[s] = v;
+      }
+      upsert(obj.name || obj.showdown_name, {
+        info: {
+          name: obj.name || obj.showdown_name, types: obj.types,
+          abilities: obj.abilities, base: Object.keys(base).length ? base : undefined,
+          rank: obj.usage_rank,
+        },
+      }, source);
+    }
+
+    function setTeam(members, tag, tool, extra = {}) {
+      if (members.length < 3) return;  // a core or a pair is not "the team"
+      const prev = team && key(team.members.map(m => m.species).sort().join()) === key(members.map(m => m.species).sort().join()) ? team : null;
+      team = { members, tag, tool, url: extra.url || prev?.url, sim: extra.sim || prev?.sim, final: false };
+      for (const m of members) upsert(m.species, { set: m }, tool);
+    }
+
+    function onTool(ev) {
+      const name = ev.name || '';
+      const args = ev.arguments || {};
+      const result = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? '');
+      freshKeys = new Set();
+
+      // whole teams passed to team-level tools
+      if (TEAM_TOOLS[name]) {
+        for (const a of TEAM_ARGS) {
+          if (args[a] == null) continue;
+          const members = teamFrom(args[a]);
+          if (members.length) {
+            let extra = {};
+            const data = fromResult(name, result);
+            if (data && name === 'create_pokepaste' && data.url) extra.url = data.url;
+            if (data && typeof data.win_rate === 'number' && !data.error) {
+              extra.sim = { wr: data.win_rate, ci: data.win_rate_ci95, games: data.games, opp: data.opponents_used,
+                            worst: (data.worst_matchups || [])[0]?.label, format: data.format };
+              for (const m of data.members || []) {
+                upsert(m.species, {}, name);
+                const cur = mons.get(key(m.species));
+                if (cur) cur.sim = m;
+              }
+            }
+            setTeam(members, TEAM_TOOLS[name], name, extra);
+            break;
+          }
+        }
+        if (name === 'compare_team_variants') {
+          for (const v of asArray(args.variants)) for (const m of teamFrom(v)) upsert(m.species, { set: m }, name);
+        }
+        if (args.team_b) for (const m of teamFrom(args.team_b)) upsert(m.species, {}, name + ' (opponent)');
+      }
+
+      // single Pokémon in calc / stat / lookup tools
+      for (const side of ['attacker', 'defender']) {
+        if (args[side]) {
+          upsert(args[side], {
+            set: {
+              item: args[`${side}_item`], ability: args[`${side}_ability`], nature: args[`${side}_nature`],
+              sp: args[`${side}_stat_points`] ? spOf({ stat_points: args[`${side}_stat_points`] }) : null,
+            },
+          }, name);
+        }
+      }
+      if (name === 'calc_damage' && args.attacker && args.move) {
+        const cur = mons.get(key(args.attacker));
+        if (cur) cur.calcMoves = Array.from(new Set([...(cur.calcMoves || []), args.move]));
+      }
+      for (const a of ['species', 'pokemon', 'name']) {
+        if (typeof args[a] === 'string' && /^(get_pokemon|get_pokemon_moves|get_pokemon_sets|get_observed_sets|get_historical_sets|get_pokemon_weaknesses|get_top_teammates|calc_stats|compute_speed|compute_speed_threshold|is_legal_pokemon|is_legal_move)$/.test(name)) {
+          upsert(args[a], {
+            set: name === 'calc_stats' || name === 'compute_speed'
+              ? { nature: args.nature, sp: args.stat_points ? spOf({ stat_points: args.stat_points }) : null } : {},
+          }, name);
+        }
+      }
+
+      // what results teach us (typing, base stats, usage rank)
+      const data = fromResult(name, result);
+      if (data && !data.error) {
+        readInfo(data, name);
+        for (const v of Object.values(data)) {
+          if (Array.isArray(v)) v.slice(0, 12).forEach(x => readInfo(x, null));
+        }
+      }
+      render();
+    }
+
+    function onFinal(content) {
+      // prefer the exported team; else the last team handled; else a paste in the answer
+      if (!team || team.tool !== 'create_pokepaste') {
+        const blocks = [...String(content || '').matchAll(/```[a-z]*\n([\s\S]*?)```/gi)].map(m => m[1]);
+        const pasted = blocks.map(parsePaste).filter(t => t.length >= 3).pop();
+        if (pasted && (!team || pasted.length >= team.members.length)) setTeam(pasted, 'from the answer', 'answer');
+      }
+      const url = String(content || '').match(/https?:\/\/pokepast\.es\/[0-9a-z]+/i);
+      if (team) {
+        if (url && !team.url) team.url = url[0];
+        team.final = true;
+      }
+      freshKeys = new Set();
+      render();
+    }
+
+    function reset() {
+      mons = new Map(); team = null; order = 0; freshKeys = new Set();
+      render();
+    }
+
+    // ── rendering ──
+    const typeBadges = types => (types || []).map(t =>
+      `<span class="tp-type" style="background:${TYPE_COLORS[t] || '#94a3b8'}">${esc(t)}</span>`).join('');
+
+    function statsRow(stats, cls) {
+      if (!stats) return '';
+      return `<div class="tp-stats">${STAT_ORDER.map(s =>
+        `<div class="tp-stat ${cls}">${s}<span>${stats[s] ?? (cls === 'sp' ? 0 : '–')}</span></div>`).join('')}</div>`;
+    }
+
+    function card(m, setOverride) {
+      const set = setOverride || m.set || {};
+      const info = mons.get(key(set.species || m.name)) || m;
+      const rank = info.rank || {};
+      const rankTxt = [rank.singles ? `BSS #${rank.singles}` : '', rank.doubles ? `VGC #${rank.doubles}` : ''].filter(Boolean).join(' · ');
+      const lines = [];
+      if (set.ability || set.nature) {
+        lines.push(`<div class="tp-line">${set.ability ? `<b>${esc(set.ability)}</b>` : ''}${set.ability && set.nature ? ' · ' : ''}${set.nature ? `${esc(set.nature)}` : ''}</div>`);
+      }
+      const moves = (set.moves && set.moves.length ? set.moves : info.calcMoves) || [];
+      const sim = info.sim;
+      return `<div class="tp-mon${freshKeys.has(key(set.species || m.name)) ? ' fresh' : ''}">
+        ${spriteTag(set.species || info.name, set.item)}
+        <div class="tp-body">
+        <div class="tp-mon-head">
+          <span class="tp-name">${esc(info.name || set.species)}</span>${typeBadges(info.types)}
+          ${set.item ? `<span class="tp-item">@ ${esc(set.item)}</span>` : ''}
+          ${rankTxt ? `<span class="tp-rank" title="Usage rank">${esc(rankTxt)}</span>` : ''}
+        </div>
+        ${lines.join('')}
+        ${moves.length ? `<div class="tp-moves">${moves.slice(0, 4).map(x => `<span class="tp-move">${esc(x)}</span>`).join('')}</div>` : ''}
+        ${set.sp ? statsRow(set.sp, 'sp') : (!setOverride && info.base ? statsRow(info.base, '') : '')}
+        ${sim ? `<div class="tp-line">Sim: brought ${Math.round(sim.brought_pct * 100)}% · wins ${sim.win_rate_when_brought != null ? Math.round(sim.win_rate_when_brought * 100) + '%' : '–'} when brought · ${sim.kos_per_game_brought ?? '–'} KO/game</div>` : ''}
+        ${!setOverride && m.seen && m.seen.size ? `<div class="tp-seen">${[...m.seen].slice(-4).map(s => `<span>${esc(s)}</span>`).join('')}</div>` : ''}
+        </div>
+      </div>`;
+    }
+
+    function render() {
+      const list = [...mons.values()].sort((a, b) => b.order - a.order);
+      monCount.textContent = list.length ? `· ${list.length}` : '';
+      monsEl.innerHTML = list.length ? list.map(m => card(m)).join('')
+        : '<p class="tp-empty">Every Pokémon the model looks up, calcs or builds shows here, with what it has learned about it.</p>';
+      if (!team) {
+        teamCount.textContent = '';
+        teamEl.innerHTML = '<p class="tp-empty">The team appears here as the model drafts, validates, simulates and exports it.</p>';
+        return;
+      }
+      teamCount.textContent = `· ${team.members.length}`;
+      const sim = team.sim;
+      const ci = sim && sim.ci ? ` <span title="95% confidence interval">[${Math.round(sim.ci[0] * 100)}–${Math.round(sim.ci[1] * 100)}%]</span>` : '';
+      teamEl.innerHTML = `<div class="tp-team${team.final ? ' final' : ''}">
+        <div class="tp-team-head">
+          <span class="tp-team-tag">${team.final ? 'Final team' : esc(team.tag)}</span>
+          <span class="tp-team-src">${team.url ? `<a href="${esc(team.url)}" target="_blank" rel="noopener">Poképaste ↗</a>` : `via ${esc(team.tool)}`}</span>
+        </div>
+        ${sim ? `<div class="tp-sim">Simulated: <b>${Math.round(sim.wr * 100)}%</b>${ci} over ${sim.games} games vs ${sim.opp} meta teams${sim.worst ? ` · worst: <span class="lo">${esc(sim.worst)}</span>` : ''}</div>` : ''}
+        <div class="tp-grid">${team.members.map(s => card(mons.get(key(s.species)) || { name: s.species }, s)).join('')}</div>
+      </div>`;
+    }
+
+    return { onTool, onFinal, reset, parsePaste, teamFrom, _state: () => ({ mons, team }) };
+  })();
+
+  // Sprite fallback chain (Mega render -> species render -> dex sprite -> hidden).
+  function nextSprite(img) {
+    const rest = (img.dataset.next || '').split(' ').filter(Boolean);
+    if (!rest.length) { img.style.visibility = 'hidden'; img.onerror = null; return; }
+    img.dataset.next = rest.slice(1).join(' ');
+    img.src = rest[0];
+  }
+
+  const panelChk = document.getElementById('panelChk');
+  if (window.matchMedia('(max-width: 860px)').matches) panelChk.checked = false;
+  const applyPanel = () => document.body.classList.toggle('hide-panel', !panelChk.checked);
+  panelChk.addEventListener('change', applyPanel);
+  applyPanel();
 
   // ── initial render ──────────────────────────────────────────────────────────────
   addBubble('info', INTRO_HTML);
