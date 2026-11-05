@@ -128,6 +128,10 @@ def test_bss_pool_is_real_bss_teams(sim, db):
     pool, notes = sim.meta_opponents("bss", 40)
     assert len(pool) == 40
     assert not any("VGC tournament teams" in n for n in notes)
+    # the "most common spread" caveat only covers teams that actually lack spreads
+    n_modal = sum(1 for o in pool if not o["id"].startswith("report:"))
+    spread_notes = [n for n in notes if "most common Stat Point spread" in n]
+    assert (spread_notes and str(n_modal) in spread_notes[0]) if n_modal else not spread_notes
     n_full = db.query_one("SELECT count(*) n FROM full_teams WHERE format='singles'")["n"]
     full = [o for o in pool if o["id"].startswith("report:")]
     assert len(full) == min(40, n_full)

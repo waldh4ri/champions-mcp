@@ -46,7 +46,9 @@ from .normalize import normalize_key, slugify
 # rebuilds the data instead of serving the old shape (see pull/freshness.py).
 #   1: roster, usage, observed builds, Smogon sets
 #   2: + full_teams (BSS team reports), Z-Mega stones from the JP export
-DATA_FORMAT = 2
+#   3: report teams also in build_teams/build_members (full BSS sets for the
+#      observed-set tools)
+DATA_FORMAT = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pokemon (

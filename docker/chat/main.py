@@ -151,7 +151,21 @@ def _sampling() -> dict:
 # get_pokemon_sets) = ~25 rounds BEFORE the first calc_stats/calc_damage,
 # validate_team, analyze_team and create_pokepaste. At 24 a full 6-Pokémon build
 # could not finish; it ran out mid-workflow and answered from partial data.
-MAX_TOOL_ROUNDS = int(os.getenv("MAX_TOOL_ROUNDS", "40"))
+_MAX_TOOL_ROUNDS_ENV = os.getenv("MAX_TOOL_ROUNDS", "").strip()
+MAX_TOOL_ROUNDS = int(_MAX_TOOL_ROUNDS_ENV or "40")
+# Rounds left at which the model is told to wrap up (validate, export, answer):
+# a full sim-tested build ran out at 40 rounds mid-workflow, before exporting
+# its team, because nothing told it the budget was nearly spent.
+TOOL_ROUNDS_WARNING = int(os.getenv("TOOL_ROUNDS_WARNING", "4"))
+
+
+def _round_budget(model: str) -> int:
+    """Tool-call rounds per turn for `model`: 40 for the local 131k model,
+    80 for 1M-context models, where a calc- and simulation-heavy build needs
+    the room and the context can hold it. MAX_TOOL_ROUNDS overrides both."""
+    if _MAX_TOOL_ROUNDS_ENV:
+        return MAX_TOOL_ROUNDS
+    return 80 if _context_size(model) >= 500_000 else 40
 # Cap a single tool result fed back into context. ~4 chars/token, so this is
 # roughly 4k tokens — 3% of the 131k window for one call. The previous 8000 cut
 # catalogue-style results in half (list_roles returns ~8.2k for one format, a
@@ -846,8 +860,9 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
             model = _default_model()  # e.g. a stale llama alias left in the UI
         metrics = TurnMetrics(_context_size(model))
         route_tier = _auto_tier(model)  # survives pinning the routed model below
+        budget = _round_budget(model)
 
-        for _round in range(MAX_TOOL_ROUNDS):
+        for _round in range(budget):
             try:
                 msg = await _llama_chat(model, messages, use_tools=True, metrics=metrics,
                                         session_id=session_id, route_tier=route_tier)
@@ -948,6 +963,16 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
 
             if round_hit_repeat_cap and not round_fetched_something_new:
                 break
+
+            # Tell the model when its tool budget is nearly spent, so it
+            # validates and exports before the turn is cut off.
+            left = budget - (_round + 1)
+            if 0 < left <= TOOL_ROUNDS_WARNING and messages and messages[-1].get("role") == "tool":
+                messages[-1]["content"] += (
+                    f"\n\n[Turn budget: {left} tool round{'s' if left != 1 else ''} left. Stop "
+                    "researching: finish with the calls that complete the deliverable (validate_team, "
+                    "create_pokepaste), then write the final answer.]"
+                )
 
         # Final turn: tools are disabled at the API level (use_tools=False), so
         # the model answers from the tool results already in `messages`. Without

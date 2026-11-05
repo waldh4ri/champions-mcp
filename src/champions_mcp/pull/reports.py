@@ -47,7 +47,7 @@ from ..champions_stats import validate_spread
 from ..db import Db
 from ..names import try_resolve
 from . import reports_extract as extract
-from .builds import POKEDB_SEASON_REGULATION
+from .builds import POKEDB_SEASON_REGULATION, _set_hash, _team_hash, observation_weight
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
@@ -622,8 +622,13 @@ def _stone(db: Db, rec: dict, ja: str) -> str | None:
     return None
 
 
-def ingest_reports(db: Db, teams: list[dict], lex: "extract.Lexicon", regulations: tuple[str, ...]) -> dict[str, int]:
-    """Store every team that resolves completely into ``full_teams``."""
+def ingest_reports(db: Db, teams: list[dict], lex: "extract.Lexicon", regulations: tuple[str, ...],
+                   half_life_days: float = 21.0) -> dict[str, int]:
+    """Store every team that resolves completely into ``full_teams``, and add
+    it to the observed-build corpus (``build_teams``/``build_members``) as
+    ``full_set`` evidence, so the observed-set tools (get_observed_sets,
+    get_team_context, get_sample_teams) see real BSS moves, abilities and
+    natures instead of the ladder export's species + item only."""
     natures = {n.lower() for n in lex.nature_ja2en.values() if n}
     stats = Counter()
     rows = []
@@ -668,14 +673,43 @@ def ingest_reports(db: Db, teams: list[dict], lex: "extract.Lexicon", regulation
     db.executemany("DELETE FROM full_teams WHERE team_id LIKE ?", [("report:%",)])
     db.executemany("INSERT OR REPLACE INTO full_teams VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
     stats["full_teams"] = len(rows)
+
+    # the same teams as observed builds (runs after the corpus flush, which
+    # clears these tables; source='report' rows are replaced on every pull)
+    item_slugs = {r["name"]: r["slug"] for r in db.query("SELECT name, slug FROM items")}
+    team_rows, member_rows = [], []
+    for (team_id, fmt, reg, season, rank, rating, title, trainer, url, _src, members_json) in rows:
+        members = json.loads(members_json)
+        built = []
+        for slot, m in enumerate(members):
+            moves = sorted(m["moves"])
+            built.append({"slot": slot, "slug": m["species"], "item": m["item"],
+                          "item_slug": item_slugs.get(m["item"]) if m["item"] else None,
+                          "ability": m["ability"], "nature": m["nature"], "moves": moves,
+                          "set_hash": _set_hash(m["species"], m["item"], m["ability"], m["nature"], moves)})
+        team_rows.append((
+            team_id, "report", url, f"Team report M-{season}" + (f" #{rank}" if rank else ""),
+            fmt, reg, None, trainer, rank, None, None, None, rating, None, "full_set",
+            observation_weight(None, field_size=None, placing=rank, half_life_days=half_life_days),
+            _team_hash(built),
+        ))
+        for m in built:
+            member_rows.append((team_id, m["slot"], m["slug"], m["item"], m["item_slug"],
+                                m["ability"], m["nature"], json.dumps(m["moves"]), m["set_hash"]))
+    db.executemany("DELETE FROM build_members WHERE team_id IN (SELECT team_id FROM build_teams WHERE source=?)",
+                   [("report",)])
+    db.executemany("DELETE FROM build_teams WHERE source=?", [("report",)])
+    db.executemany("INSERT OR REPLACE INTO build_teams VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", team_rows)
+    db.executemany("INSERT OR REPLACE INTO build_members VALUES (?,?,?,?,?,?,?,?,?)", member_rows)
+    stats["report_builds"] = len(team_rows)
     return dict(stats)
 
 
 def pull_reports(db: Db, cache_dir: Path, regulations: tuple[str, ...],
-                 fetcher: Fetcher | None = None) -> dict[str, Any]:
+                 fetcher: Fetcher | None = None, half_life_days: float = 21.0) -> dict[str, Any]:
     """Scrape this regulation's team reports and store the complete ones."""
     teams, stats = scrape(cache_dir, regulations, fetcher)
     lex = stats.pop("lexicon", None)
     if lex is None:
         return stats
-    return {**stats, **ingest_reports(db, teams, lex, regulations)}
+    return {**stats, **ingest_reports(db, teams, lex, regulations, half_life_days)}

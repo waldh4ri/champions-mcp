@@ -131,11 +131,12 @@ class BattleSimulator:
     def meta_opponents(self, fmt: str, limit: int = 30) -> tuple[list[dict[str, Any]], list[str]]:
         """Top observed teams for the format, as simulator opponents.
 
-        Ordered by the corpus's recency-weighted evidence. Spreads aren't in
-        the corpus, so each member gets its species' modal spread. BSS ladder
-        teams are real top-rated ladder teams (species + item) completed from
-        BSS usage; the pool is topped up with VGC teams only if there aren't
-        enough (noted).
+        Complete report teams (exact sets and spreads) come first; then the
+        observed corpus by recency-weighted evidence, whose teams lack spreads
+        (each member gets its species' modal spread). BSS ladder teams are
+        real top-rated ladder teams (species + item) completed from BSS usage;
+        the pool is topped up with VGC teams only if there aren't enough
+        (noted).
         """
         fmt_key = game_type(fmt)
         notes: list[str] = []
@@ -158,8 +159,10 @@ class BattleSimulator:
             teams += extra
         if not teams:
             raise SimError("the observed-team corpus is empty; run champions-mcp-pull to build it")
-        notes.append("opponent spreads are each species' most common Stat Point spread "
-                     "(the corpus records items/abilities/moves, not spreads)")
+        modal = sum(1 for t in teams if not t["id"].startswith("report:"))
+        if modal:
+            notes.append(f"{modal} opponent team(s) from tournament/ladder data use each species' most "
+                         "common Stat Point spread (that data records items/abilities/moves, not spreads)")
         return teams, notes
 
     def _full_teams(self, fmt_key: str, limit: int) -> list[dict[str, Any]]:
@@ -255,7 +258,7 @@ class BattleSimulator:
         usage, with the real item kept (it decides Megas and Choice locks)."""
         rows = self._db.query(
             "SELECT team_id, team_hash, event, player, placing, rating, date, weight FROM build_teams "
-            "WHERE format=? ORDER BY weight DESC", (fmt_key,))
+            "WHERE format=? AND source != 'report' ORDER BY weight DESC", (fmt_key,))
         out, seen = [], set()
         for t in rows:
             if len(out) >= limit:

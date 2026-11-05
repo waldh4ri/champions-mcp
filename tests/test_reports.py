@@ -88,6 +88,18 @@ def test_recorded_corpus_replays_through_the_real_scrapers(db, tmp_path):
         for m in members:
             assert len(m["moves"]) == 4 and m["ability"] and m["nature"]
             assert sum(m["stat_points"].values()) <= 66
+    # report teams are also observed builds with full sets, so the observed-set
+    # tools see real BSS moves/abilities/natures (the ladder export has none)
+    assert full["report_builds"] == full["full_teams"]
+    reports_in_corpus = sdb.query("SELECT team_id, evidence, format FROM build_teams WHERE source='report'")
+    assert len(reports_in_corpus) == full["full_teams"]
+    assert {r["evidence"] for r in reports_in_corpus} == {"full_set"} and {r["format"] for r in reports_in_corpus} == {"singles"}
+    from champions_mcp import builds as builds_mod
+    species = json.loads(rows[0]["members_json"])[0]["species"]
+    observed = builds_mod.get_observed_sets(sdb, species, "bss")
+    as_text = json.dumps(observed)
+    assert any(m in as_text for m in json.loads(rows[0]["members_json"])[0]["moves"]), \
+        f"get_observed_sets({species}, bss) shows no moves from the report teams"
     builds = out["builds"]
     assert builds.get("limitless_doubles", 0) >= 100 and builds.get("pokedb_single", 0) >= 50
     # Z-Mega stones from the Japanese ladder export resolve (they aren't in PokeAPI)
