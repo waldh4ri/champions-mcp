@@ -223,7 +223,9 @@ services:
       context: .
       dockerfile: docker/chat/Dockerfile
     container_name: champions-chat
-    profiles: ["ai"]  # only built/started with `docker compose --profile ai ...`
+    # --profile ai: with the local llama-server; --profile openrouter: alone,
+    # backed by OpenRouter (set OPENROUTER_API_KEY in .env; no GPU needed).
+    profiles: ["ai", "openrouter"]
     ports:
       - "${WEBUI_PORT:-3000}:3000"  # host:container — override WEBUI_PORT to change the host side; container always listens on 3000 (fixed by the Dockerfile's uvicorn CMD)
     environment:
@@ -263,12 +265,22 @@ services:
       # so --reasoning-preserve doesn't grow context unboundedly.
       MAX_REASONING_HISTORY_TURNS: "${MAX_REASONING_HISTORY_TURNS:-3}"
       MAX_REASONING_CHARS: "${MAX_REASONING_CHARS:-4000}"
+      # Backend: auto (default) = OpenRouter when OPENROUTER_API_KEY is set,
+      # else the local llama-server; or force llama / openrouter.
+      CHAT_PROVIDER: "${CHAT_PROVIDER:-auto}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # Comma-separated; the first is the default in the UI's model picker.
+      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-deepseek/deepseek-v4.1-flash,openai/gpt-6-luna}"
+      OPENROUTER_REASONING_EFFORT: "${OPENROUTER_REASONING_EFFORT:-}"  # low | medium | high
+      OPENROUTER_TEMPERATURE: "${OPENROUTER_TEMPERATURE:-}"
     depends_on:
       llama-server:
         # Wait for the model to finish loading (healthcheck passes) before
         # accepting chat requests — otherwise the first request(s) would hit
         # a backend that's still loading ~22 GB of weights from disk.
         condition: service_healthy
+        # Not started under --profile openrouter: then the chat runs without it.
+        required: false
       champions-mcp:
         # Only needs to have started, not finished: champions-mcp's own
         # first-run data pull can outlast this container's startup, so

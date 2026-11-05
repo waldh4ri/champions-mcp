@@ -102,6 +102,33 @@ tool-calling loop for you. Requires an NVIDIA GPU. Everything (model file, conte
 size, GPU/CPU offload, sampling, and more) is configured through environment
 variables, see [`.env.example`](.env.example) for the full list.
 
+### Optional: web chat on OpenRouter (no GPU)
+
+The same chat UI can use [OpenRouter](https://openrouter.ai) instead of a local model.
+Put your key in `.env` and start the `openrouter` profile, which runs the chat without
+`llama-server`:
+
+```bash
+echo "OPENROUTER_API_KEY=sk-or-..." >> .env
+docker compose --profile openrouter up -d --build
+```
+
+The default models are cheap tool-calling models, both under $1 per million tokens for
+input and output: `deepseek/deepseek-v4.1-flash` and `openai/gpt-6-luna`. Pick one in
+the UI's model selector, or set your own list with `OPENROUTER_MODEL` (comma-separated;
+the first is the default). Any model on openrouter.ai that supports tools works.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OPENROUTER_API_KEY` | unset | Your OpenRouter key |
+| `OPENROUTER_MODEL` | `deepseek/deepseek-v4.1-flash,openai/gpt-6-luna` | Models offered in the UI |
+| `OPENROUTER_REASONING_EFFORT` | unset (model default) | `low`, `medium` or `high` |
+| `OPENROUTER_TEMPERATURE` | unset (model default) | Sampling temperature |
+| `CHAT_PROVIDER` | `auto` | `auto` uses the local `llama-server` if it's running, else OpenRouter if a key is set; or force `llama` / `openrouter` |
+
+With `auto`, a key in `.env` never overrides a local model: under `--profile ai` the
+chat waits for `llama-server` and uses it.
+
 ## Tools
 
 Call `get_game_rules(format)` first (`format='vgc'` for doubles, `'bss'` for singles).

@@ -1,11 +1,15 @@
-"""Light chat bridge: local LLM (llama.cpp server) ↔ champions-mcp tools ↔ web UI.
+"""Light chat bridge: LLM (local llama.cpp server or OpenRouter) ↔ champions-mcp tools ↔ web UI.
 
 Initialises an MCP session to champions-mcp, auto-loads every tool definition,
-and drives the tool-calling loop server-side (over llama-server's OpenAI-compatible
-/v1/chat/completions API) so the single-page UI in static/ stays dumb. The backend
-is llama.cpp serving Qwen3.6-35B-A3B (MoE, 8-of-256 experts active) with the MoE
-expert layers offloaded to CPU — ~86 t/s on a 16 GB GPU with strong tool calling.
-See README for the tuning + benchmark table.
+and drives the tool-calling loop server-side (over an OpenAI-compatible
+/chat/completions API) so the single-page UI in static/ stays dumb. Two
+backends (CHAT_PROVIDER):
+
+  llama       llama.cpp serving Qwen3.6-35B-A3B (MoE, 8-of-256 experts active)
+              with the MoE expert layers offloaded to CPU — ~86 t/s on a 16 GB
+              GPU with strong tool calling. See README for the tuning table.
+  openrouter  any tool-calling model on OpenRouter (OPENROUTER_API_KEY,
+              OPENROUTER_MODEL), no GPU needed.
 """
 
 import asyncio
@@ -20,12 +24,36 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# Chat backend. "llama" = the local llama-server (docker compose --profile ai);
+# "openrouter" = any model on OpenRouter's OpenAI-compatible API (--profile
+# openrouter, no GPU needed). "auto" (default) is decided at startup: the
+# local llama-server if it answers, else OpenRouter if OPENROUTER_API_KEY is
+# set — so a key in .env doesn't override a local model you started.
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+_provider = os.getenv("CHAT_PROVIDER", "auto").strip().lower() or "auto"
+if _provider not in ("auto", "llama", "openrouter"):
+    raise SystemExit(f"[chat] CHAT_PROVIDER must be auto, llama or openrouter (got {_provider!r})")
+PROVIDER = _provider  # "auto" is resolved in startup()
+
 # llama-server OpenAI-compatible endpoint (one model, served under an alias).
 LLAMA_URL = os.getenv("LLAMA_BASE_URL", "http://llama-server:8080")
+OPENROUTER_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+# OpenRouter models offered in the UI's model picker (comma-separated; the first
+# is the default). Any tool-calling model on openrouter.ai/models works.
+OPENROUTER_MODELS = [m.strip() for m in os.getenv(
+    "OPENROUTER_MODEL", "deepseek/deepseek-v4.1-flash,openai/gpt-6-luna").split(",") if m.strip()]
+# OpenRouter's unified reasoning control: low | medium | high, or unset to
+# leave it to the model's default. Ignored by models without reasoning.
+OPENROUTER_REASONING_EFFORT = os.getenv("OPENROUTER_REASONING_EFFORT", "").strip().lower()
+OPENROUTER_TEMPERATURE = os.getenv("OPENROUTER_TEMPERATURE", "").strip()
 MCP_URL = os.getenv("MCP_URL", "http://champions-mcp:8000/mcp")
 # Sent as the OpenAI `model` field. llama-server serves whatever GGUF it loaded
 # regardless, but matching its --alias keeps /v1/models tidy.
-DEFAULT_MODEL = os.getenv("LLAMA_MODEL_NAME", "qwen3.6-35b-a3b")
+LLAMA_MODEL = os.getenv("LLAMA_MODEL_NAME", "qwen3.6-35b-a3b")
+
+
+def _default_model() -> str:
+    return OPENROUTER_MODELS[0] if PROVIDER == "openrouter" and OPENROUTER_MODELS else LLAMA_MODEL
 
 # Reasoning toggle for the hybrid-thinking Qwen model. Passed to the chat
 # template via chat_template_kwargs.enable_thinking. On by default (matching
@@ -378,11 +406,53 @@ async def _init_mcp() -> None:
 app = FastAPI()
 
 
+# Per-model context window, filled from OpenRouter's model list at startup
+# (llama-server's comes from LLAMA_CTX_SIZE) — drives the UI's context meter.
+model_context: dict[str, int] = {}
+
+
+async def _init_openrouter() -> None:
+    """Check the OpenRouter config and learn each configured model's context size."""
+    if not OPENROUTER_API_KEY:
+        print("[chat] ERROR: CHAT_PROVIDER=openrouter but OPENROUTER_API_KEY is not set.", flush=True)
+        return
+    try:
+        resp = await http_client.get(f"{OPENROUTER_URL}/models", timeout=20.0)
+        resp.raise_for_status()
+        known = {m["id"]: m for m in resp.json().get("data", [])}
+    except Exception as exc:  # the chat still works; only the context meter degrades
+        print(f"[chat] WARNING: could not read OpenRouter's model list: {exc}", flush=True)
+        return
+    for model in OPENROUTER_MODELS:
+        info = known.get(model)
+        if not info:
+            print(f"[chat] WARNING: {model!r} is not in OpenRouter's model list", flush=True)
+            continue
+        if "tools" not in (info.get("supported_parameters") or []):
+            print(f"[chat] WARNING: {model!r} does not support tool calling; the "
+                  "champions-mcp tools won't work with it", flush=True)
+        if info.get("context_length"):
+            model_context[model] = int(info["context_length"])
+
+
+def _context_size(model: str) -> int:
+    return model_context.get(model, LLAMA_CTX_SIZE)
+
+
 @app.on_event("startup")
 async def startup() -> None:
     """Open the shared HTTP client and load the champions-mcp tool schemas."""
-    global http_client
+    global http_client, PROVIDER
     http_client = httpx.AsyncClient(timeout=60.0)
+    if PROVIDER == "auto":
+        try:
+            ok = (await http_client.get(f"{LLAMA_URL}/health", timeout=3.0)).status_code == 200
+        except httpx.HTTPError:
+            ok = False
+        PROVIDER = "llama" if ok or not OPENROUTER_API_KEY else "openrouter"
+    print(f"[chat] backend: {PROVIDER} ({_default_model()})", flush=True)
+    if PROVIDER == "openrouter":
+        await _init_openrouter()
     await _init_mcp()
 
 
@@ -408,7 +478,7 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     """Body of a POST /api/chat request."""
 
-    model: str = DEFAULT_MODEL
+    model: str | None = None  # None = the backend's default model
     messages: list[Message]
 
 
@@ -420,12 +490,16 @@ async def index() -> FileResponse:
 
 @app.get("/api/models")
 async def get_models():
-    """Normalise llama-server's OpenAI /v1/models to the shape the UI expects."""
+    """Normalise llama-server's OpenAI /v1/models to the shape the UI expects.
+    On OpenRouter, the configured models (its full catalogue is hundreds long)."""
+    if PROVIDER == "openrouter":
+        return {"models": [{"name": m} for m in OPENROUTER_MODELS],
+                "context_size": _context_size(_default_model())}
     try:
         resp = await http_client.get(f"{LLAMA_URL}/v1/models")
         resp.raise_for_status()
         data = resp.json().get("data", [])
-        models = [{"name": m.get("id", DEFAULT_MODEL)} for m in data] or [{"name": DEFAULT_MODEL}]
+        models = [{"name": m.get("id", LLAMA_MODEL)} for m in data] or [{"name": LLAMA_MODEL}]
         return {"models": models, "context_size": LLAMA_CTX_SIZE}
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
@@ -437,7 +511,8 @@ class TurnMetrics:
     every round of a single /api/chat turn, so the UI can show one t/s figure
     for the whole answer rather than a jumpy per-round number."""
 
-    def __init__(self) -> None:
+    def __init__(self, context_max: int = 0) -> None:
+        self.context_max = context_max or LLAMA_CTX_SIZE
         self.prompt_tokens_sum = 0
         self.prompt_ms_sum = 0.0
         self.predicted_tokens_sum = 0
@@ -446,14 +521,23 @@ class TurnMetrics:
         self.prompt_tokens_total_sum = 0  # incl. cached, for cache-hit %
         self.last_context_tokens = 0
 
-    def add(self, resp_json: dict) -> None:
-        """Fold one /v1/chat/completions response's timings/usage into the running totals."""
+    def add(self, resp_json: dict, elapsed_ms: float = 0.0) -> None:
+        """Fold one /v1/chat/completions response's timings/usage into the running totals.
+
+        llama-server reports exact prefill/decode `timings`; OpenRouter
+        doesn't, so there decode speed is approximated as completion tokens
+        over the request's wall time (prefill and network included).
+        """
         t = resp_json.get("timings") or {}
         usage = resp_json.get("usage") or {}
-        self.prompt_tokens_sum += t.get("prompt_n", 0) or 0
-        self.prompt_ms_sum += t.get("prompt_ms", 0.0) or 0.0
-        self.predicted_tokens_sum += t.get("predicted_n", 0) or 0
-        self.predicted_ms_sum += t.get("predicted_ms", 0.0) or 0.0
+        if t:
+            self.prompt_tokens_sum += t.get("prompt_n", 0) or 0
+            self.prompt_ms_sum += t.get("prompt_ms", 0.0) or 0.0
+            self.predicted_tokens_sum += t.get("predicted_n", 0) or 0
+            self.predicted_ms_sum += t.get("predicted_ms", 0.0) or 0.0
+        elif elapsed_ms:
+            self.predicted_tokens_sum += usage.get("completion_tokens", 0) or 0
+            self.predicted_ms_sum += elapsed_ms
         cached = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0) or 0
         self.cached_tokens_sum += cached
         self.prompt_tokens_total_sum += usage.get("prompt_tokens", 0) or 0
@@ -470,7 +554,7 @@ class TurnMetrics:
             "decode_tps": (self.predicted_tokens_sum / (self.predicted_ms_sum / 1000)) if self.predicted_ms_sum else 0.0,
             "cache_hit_pct": (self.cached_tokens_sum / cache_denom * 100) if cache_denom else 0.0,
             "context_tokens": self.last_context_tokens,
-            "context_max": LLAMA_CTX_SIZE,
+            "context_max": self.context_max,
         }
 
 
@@ -478,6 +562,8 @@ async def _llama_chat(model: str, messages: list[dict], use_tools: bool, metrics
     """One round-trip to llama-server's OpenAI chat endpoint; returns the raw
     assistant message (content, optional tool_calls, optional reasoning_content).
     Feeds the response's `timings`/`usage` blocks into `metrics` when given."""
+    if PROVIDER == "openrouter":
+        return await _openrouter_chat(model, messages, use_tools, metrics)
     payload: dict = {
         "model": model,
         "messages": messages,
@@ -496,6 +582,60 @@ async def _llama_chat(model: str, messages: list[dict], use_tools: bool, metrics
     if metrics is not None:
         metrics.add(body)
     return body["choices"][0]["message"]
+
+
+async def _openrouter_chat(model: str, messages: list[dict], use_tools: bool,
+                           metrics: TurnMetrics | None) -> dict:
+    """The same round-trip against OpenRouter's OpenAI-compatible API.
+
+    Differences from llama-server: bearer auth; no llama.cpp-only fields
+    (chat_template_kwargs, Qwen sampling presets — each model keeps its own
+    defaults unless OPENROUTER_TEMPERATURE is set); reasoning via OpenRouter's
+    unified `reasoning` field, returned as `reasoning` (mapped to
+    reasoning_content for the UI) plus `reasoning_details`, which is sent back
+    on later rounds so reasoning models keep their chain across tool calls.
+    """
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY is not set (add it to .env)")
+    outgoing = []
+    for m in messages:
+        m = dict(m)
+        m.pop("reasoning_content", None)  # llama-server's field; OpenRouter replays reasoning_details
+        outgoing.append(m)
+    payload: dict = {"model": model, "messages": outgoing, "stream": False}
+    if use_tools and mcp_tools:
+        payload["tools"] = mcp_tools
+        payload["tool_choice"] = "auto"
+    if OPENROUTER_REASONING_EFFORT in ("low", "medium", "high"):
+        payload["reasoning"] = {"effort": OPENROUTER_REASONING_EFFORT}
+    if OPENROUTER_TEMPERATURE:
+        payload["temperature"] = float(OPENROUTER_TEMPERATURE)
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        # Optional OpenRouter attribution headers.
+        "X-Title": "champions-mcp chat",
+        "HTTP-Referer": "https://github.com/waldh4ri/champions-mcp",
+    }
+    started = asyncio.get_running_loop().time()
+    resp = await http_client.post(f"{OPENROUTER_URL}/chat/completions", json=payload,
+                                  headers=headers, timeout=300.0)
+    elapsed_ms = (asyncio.get_running_loop().time() - started) * 1000
+    if resp.status_code >= 400:
+        # OpenRouter puts the useful part (bad key, no credits, model down) in the body.
+        try:
+            detail = resp.json().get("error", {}).get("message") or resp.text
+        except ValueError:
+            detail = resp.text
+        raise RuntimeError(f"OpenRouter {resp.status_code}: {detail[:400]}")
+    body = resp.json()
+    if body.get("error"):  # provider errors can arrive with a 200
+        raise RuntimeError(f"OpenRouter: {body['error'].get('message', body['error'])}")
+    if metrics is not None:
+        metrics.add(body, elapsed_ms)
+    msg = body["choices"][0]["message"]
+    if msg.get("reasoning") and not msg.get("reasoning_content"):
+        msg["reasoning_content"] = msg["reasoning"]
+    return msg
 
 
 async def _run_tool(name: str, arguments: dict) -> tuple[str, bool]:
@@ -597,11 +737,14 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
         # the last line still gets the complete trace (mirrors the old
         # non-streaming response shape).
         tool_events: list[dict] = []
-        metrics = TurnMetrics()
+        model = req.model or _default_model()
+        if PROVIDER == "openrouter" and model not in OPENROUTER_MODELS:
+            model = _default_model()  # e.g. a stale llama alias left in the UI
+        metrics = TurnMetrics(_context_size(model))
 
         for _round in range(MAX_TOOL_ROUNDS):
             try:
-                msg = await _llama_chat(req.model, messages, use_tools=True, metrics=metrics)
+                msg = await _llama_chat(model, messages, use_tools=True, metrics=metrics)
             except Exception as exc:
                 yield _ndjson({"type": "error", "detail": str(exc)})
                 return
@@ -630,6 +773,8 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
             }
             if msg.get("reasoning_content"):
                 assistant_msg["reasoning_content"] = msg["reasoning_content"]
+            if msg.get("reasoning_details"):  # OpenRouter: replayed so reasoning survives tool rounds
+                assistant_msg["reasoning_details"] = msg["reasoning_details"]
             messages.append(assistant_msg)
 
             # Progress is judged per round, not per call: a round that fetched
@@ -709,7 +854,7 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
             ),
         })
         try:
-            msg = await _llama_chat(req.model, messages, use_tools=False, metrics=metrics)
+            msg = await _llama_chat(model, messages, use_tools=False, metrics=metrics)
         except Exception as exc:
             yield _ndjson({"type": "error", "detail": str(exc)})
             return
