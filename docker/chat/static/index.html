@@ -1452,24 +1452,62 @@
     const SPRITES = 'https://play.pokemonshowdown.com/sprites/';
     const NO_HOME = new Set(['floette-eternal']);  // HOME serves a Poké Ball placeholder
     const REGION = { alolan: 'alola', galarian: 'galar', hisuian: 'hisui', paldean: 'paldea' };
-    function spriteIds(name, item) {
+    // Form words that aren't part of Showdown's form id ("Blaze Breed" -> blaze).
+    const FORM_WORDS = /\s+(breed|form|forme|mode|variety|plumage|flower|cream|pattern|style)$/i;
+    // Form labels whose Showdown id differs; '' = the default form (no suffix).
+    const FORM_ALIAS = {
+      male: '', m: '', female: 'f', jumbo: 'super', midday: '', zero: '', shield: '', amped: '',
+      disguised: '', normal: '', fullbelly: '', vanilla: '', natural: '', red: '', green: '',
+      phony: '', unremarkable: '', icysnow: '', medium: '', familyofthree: '',
+    };
+    // Champions' only Floette is the Eternal Flower one ("Floette" in its data).
+    const NAME_ALIAS = { floette: 'floette-eternal' };
+    // display name -> Showdown name, learned from get_pokemon results
+    const learnedNames = new Map();
+    const clean = x => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    /**
+     * Any spelling of a Pokémon -> its Showdown id parts. Handles the game's
+     * display names ("Paldean Tauros (Blaze Breed)", "Wash Rotom",
+     * "Basculegion (Male)", "Gourgeist (Jumbo Variety)"), Showdown names
+     * ("Tauros-Paldea-Blaze"), slugs ("basculegion-male") and Megas
+     * ("Mega Charizard Y"). Returns {id: 'tauros-paldeablaze', head: 'tauros', mega}.
+     */
+    function canonical(name) {
       let n = String(name || '').trim();
+      n = learnedNames.get(n.toLowerCase()) || n;
       let mega = '';
       const mm = n.match(/^Mega\s+(.+?)(?:\s+([XYZ]))?$/i);
       if (mm) { n = mm[1]; mega = 'mega' + (mm[2] || '').toLowerCase(); }
+      let region = '', forme = '';
       const rm = n.match(/^(Alolan|Galarian|Hisuian|Paldean)\s+(.+)$/i);
-      if (rm) n = `${rm[2]}-${REGION[rm[1].toLowerCase()]}`;
-      n = n.replace(/\s*\((F|Female)\)$/i, '-f').replace(/\s*\((\w+)\)$/, '-$1');
-      const clean = x => x.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const [head, ...rest] = n.split('-');
-      const base = clean(head) + (rest.length ? '-' + clean(rest.join('')) : '');
+      if (rm) { region = REGION[rm[1].toLowerCase()]; n = rm[2]; }
+      const rot = n.match(/^(Wash|Fan|Frost|Heat|Mow)\s+Rotom$/i);
+      if (rot) { n = 'Rotom'; forme = rot[1]; }
+      const pm = n.match(/^(.+?)\s*\(([^()]+)\)$/);
+      if (pm) { n = pm[1]; forme = pm[2].trim().replace(FORM_WORDS, ''); }
+      let head = n, rest = '';
+      if (n.includes('-')) { const [h, ...r] = n.split('-'); head = h; rest = r.join(''); }
+      let f = clean(forme);
+      if (f in FORM_ALIAS) f = FORM_ALIAS[f];
+      let r = clean(rest);
+      if (r in FORM_ALIAS) r = FORM_ALIAS[r];
+      const suffix = r || (clean(region) + f);
+      let id = clean(head) + (suffix ? '-' + suffix : '');
+      id = NAME_ALIAS[id] || id;
+      return { id, head: clean(head), mega };
+    }
+
+    function spriteIds(name, item) {
+      const { id: base, head, mega: megaName } = canonical(name);
+      let mega = megaName;
       // a held Mega Stone (Charizardite Y, Garchompite Z, Mawilite) -> its Mega
       const st = String(item || '').match(/^(\w+?)ite(?:\s+([XYZ]))?$/i);
-      if (!mega && st && clean(head).startsWith(clean(st[1]).slice(0, 4))) mega = 'mega' + (st[2] || '').toLowerCase();
+      if (!mega && st && head.startsWith(clean(st[1]).slice(0, 4))) mega = 'mega' + (st[2] || '').toLowerCase();
       const ids = [];
-      if (mega) ids.push(`home-centered/${clean(head)}-${mega}`);
+      if (mega) ids.push(`home-centered/${head}-${mega}`);
       if (!NO_HOME.has(base)) ids.push(`home-centered/${base}`);
-      ids.push(`dex/${base}`, `dex/${clean(head)}`);
+      ids.push(`dex/${base}`, `dex/${head}`);
       return [...new Set(ids)].map(i => `${SPRITES}${i}.png`);
     }
     function spriteTag(name, item) {
@@ -1489,7 +1527,7 @@
     let order = 0;
     let freshKeys = new Set();
 
-    const key = s => String(s || '').toLowerCase().replace(/^mega\s+/, '').replace(/[^a-z0-9]/g, '');
+    const key = s => canonical(s).id;
     const asArray = v => (Array.isArray(v) ? v : v == null || v === '' ? [] : [v]);
 
     function spOf(m) {
@@ -1584,6 +1622,7 @@
     }
 
     function readInfo(obj, source) {
+      if (obj && obj.name && obj.showdown_name) learnedNames.set(String(obj.name).toLowerCase(), obj.showdown_name);
       // get_pokemon-shaped records: name + types (+ base stats, abilities, usage rank)
       if (!obj || typeof obj !== 'object' || !Array.isArray(obj.types) || !(obj.name || obj.showdown_name)) return;
       const base = {};
