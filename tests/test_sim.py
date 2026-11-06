@@ -108,6 +108,13 @@ def test_errors_name_the_format_that_was_used(sim):
     assert out["format"] == "vgc" and "format='bss'" in out["error"]
 
 
+def test_beliefs_populates_spread_nature_item_ability_and_moves(sim):
+    b = sim.beliefs(["Garchomp @ Life Orb\n- Earthquake\n\nKingambit @ Leftovers\n- Iron Head"], "vgc")
+    assert "Garchomp" in b and "Kingambit" in b
+    for entry in b.values():
+        assert entry["spread"] and entry.get("moves") and len(entry["moves"]) <= 4
+
+
 # -------------------------------------------------------------- meta pool
 
 def test_meta_opponents_are_complete_distinct_teams(sim):
