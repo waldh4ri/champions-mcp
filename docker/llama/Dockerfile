@@ -16,6 +16,7 @@ FROM ghcr.io/ggml-org/llama.cpp:server-cuda
 RUN rm -rf /usr/local/cuda*/compat
 
 COPY docker/llama/entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 # The upstream image may be distroless-ish; ensure the script is executable.
 # (COPY preserves mode from the host, but be explicit in case it isn't.)
 ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]

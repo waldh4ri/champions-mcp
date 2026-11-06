@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir -e .
 # server. Copied after the pip install so entrypoint edits don't bust the
 # dependency-install layer cache.
 COPY docker/mcp/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 # MCP streamable-HTTP port (see FASTMCP_PORT in docker-compose.yml).
 EXPOSE 8000
