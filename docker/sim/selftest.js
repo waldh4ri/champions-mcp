@@ -119,6 +119,11 @@ async function main() {
     tacticSwitchWhenDoomed();
     tacticSwitchIntoImmunity();
     tacticStayWhenWinning();
+    tacticNoFirstImpressionAfterTurn1();
+    tacticImmunitiesAndBlockers();
+    tacticMegaTurnProjection();
+    tacticDoublesProtectEarthquake();
+    tacticFastAllyKoSavesPartner();
     ok('tactics');
 
     // 6. information modes: beliefs are used while deciding, truth restored after
@@ -238,6 +243,98 @@ function tacticStayWhenWinning() {
   b.destroy();
 }
 
+/** First Impression works on entry (turn 1) and must never be clicked once activeMoveActions >= 1. */
+function tacticNoFirstImpressionAfterTurn1() {
+  const b = singles(
+    [set('Golisopod', ['First Impression', 'Liquidation', 'Leech Life', 'Aqua Jet'], { ability: 'Emergency Exit', nature: 'Adamant' })],
+    [spa('Whimsicott', ['Moonblast', 'Energy Ball', 'Tailwind', 'Protect'], { ability: 'Infiltrator', item: 'Leftovers' })]);
+  const t1 = tally(b);
+  assert((t1['move 1'] || 0) >= 16, `expected First Impression on turn 1, got ${JSON.stringify(t1)}`);
+  b.sides[0].active[0].activeMoveActions = 1;
+  const t2 = tally(b);
+  assert((t2['move 1'] || 0) === 0, `must never pick First Impression after turn 1, got ${JSON.stringify(t2)}`);
+  b.destroy();
+}
+
+/** Good as Gold, Prankster vs Dark, and Armor Tail must block futile status/priority moves. */
+function tacticImmunitiesAndBlockers() {
+  // 1. Prankster Thunder Wave / Encore / Taunt into Dark-type Kingambit -> must use Moonblast (move 1)
+  const b1 = singles(
+    [spa('Whimsicott', ['Moonblast', 'Thunder Wave', 'Taunt', 'Encore'], { ability: 'Prankster' })],
+    [set('Kingambit', ['Iron Head', 'Kowtow Cleave', 'Sucker Punch', 'Swords Dance'], { ability: 'Defiant' })]);
+  const c1 = tally(b1);
+  assert((c1['move 1'] || 0) === 20, `Prankster vs Dark: expected only Moonblast (move 1), got ${JSON.stringify(c1)}`);
+  b1.destroy();
+
+  // 2. Spore / Will-O-Wisp into Good as Gold Gholdengo -> must use Shadow Ball (move 1)
+  const b2 = singles(
+    [spa('Gengar', ['Shadow Ball', 'Will-O-Wisp', 'Thunder Wave', 'Taunt'], { ability: 'Cursed Body' })],
+    [spa('Gholdengo', ['Shadow Ball', 'Make It Rain', 'Nasty Plot', 'Recover'], { ability: 'Good as Gold' })]);
+  const c2 = tally(b2);
+  assert((c2['move 1'] || 0) === 20, `vs Good as Gold: expected only Shadow Ball (move 1), got ${JSON.stringify(c2)}`);
+  b2.destroy();
+
+  // 3. Priority move into Armor Tail Farigiraf -> must use Kowtow Cleave (move 2), never Sucker Punch (move 1)
+  const b3 = singles(
+    [set('Kingambit', ['Sucker Punch', 'Kowtow Cleave', 'Iron Head', 'Protect'], { ability: 'Defiant' })],
+    [spa('Farigiraf', ['Psychic', 'Hyper Voice', 'Trick Room', 'Protect'], { ability: 'Armor Tail' })]);
+  const c3 = tally(b3);
+  assert((c3['move 1'] || 0) === 0 && (c3['move 2'] || 0) >= 18, `vs Armor Tail: expected Kowtow Cleave (move 2), got ${JSON.stringify(c3)}`);
+  b3.destroy();
+}
+
+/** Turn-of-Mega evaluation projects Drought + Weather Ball and Aerilate + Hyper Voice. */
+function tacticMegaTurnProjection() {
+  // Charizard @ Charizardite Y facing Gholdengo knows Weather Ball becomes a 100 BP Sun Fire move (not 0-dmg Normal)
+  const b = singles(
+    [spa('Charizard', ['Weather Ball', 'Dragon Pulse', 'Air Slash', 'Protect'], { ability: 'Blaze', item: 'Charizardite Y', nature: 'Modest' })],
+    [spa('Gholdengo', ['Shadow Ball', 'Make It Rain', 'Recover', 'Protect'], { ability: 'Good as Gold', nature: 'Modest' })]);
+  const counts = tally(b);
+  assert((counts['move 1 mega'] || 0) >= 18, `expected Weather Ball mega (move 1 mega), got ${JSON.stringify(counts)}`);
+  b.destroy();
+}
+
+/** Doubles: Garchomp (Earthquake) + low-HP ally (Protect) discovers the Protect + Earthquake combo. */
+function tacticDoublesProtectEarthquake() {
+  const b = new Battle({ formatid: 'gen9championsdoublescustomgame', seed: [1, 2, 3, 4] });
+  b.setPlayer('p1', { name: 'A', team: [
+    set('Garchomp', ['Earthquake', 'Rock Slide', 'Dragon Claw', 'Protect'], { ability: 'Rough Skin', item: 'Life Orb', nature: 'Jolly' }),
+    spa('Gholdengo', ['Make It Rain', 'Shadow Ball', 'Nasty Plot', 'Protect'], { ability: 'Good as Gold', nature: 'Modest' }),
+  ] });
+  b.setPlayer('p2', { name: 'B', team: [
+    set('Kingambit', ['Iron Head', 'Kowtow Cleave', 'Sucker Punch', 'Protect'], { ability: 'Defiant' }),
+    spa('Gholdengo', ['Make It Rain', 'Shadow Ball', 'Nasty Plot', 'Protect'], { ability: 'Good as Gold' }),
+  ] });
+  b.choose('p1', 'team 12'); b.choose('p2', 'team 12');
+  b.sides[0].active[1].hp = 10; // ally Gholdengo at ~5% HP, threatened and would faint to friendly Earthquake without Protect
+  b.sides[1].active[0].hp = 70;
+  b.sides[1].active[1].hp = 70;
+  const counts = tally(b);
+  assert((counts['move 1, move 4'] || 0) >= 14, `expected Earthquake + Protect (move 1, move 4), got ${JSON.stringify(counts)}`);
+  b.destroy();
+}
+
+/** Doubles: when fast Slot 1 KOs the only foe threatening Slot 2, Slot 2 attacks Foe 2 instead of Protecting. */
+function tacticFastAllyKoSavesPartner() {
+  const b = new Battle({ formatid: 'gen9championsdoublescustomgame', seed: [1, 2, 3, 4] });
+  b.setPlayer('p1', { name: 'A', team: [
+    set('Sneasler', ['Close Combat', 'Dire Claw', 'Rock Slide', 'Protect'], { ability: 'Poison Touch', nature: 'Jolly' }),
+    spa('Gholdengo', ['Shadow Ball', 'Make It Rain', 'Nasty Plot', 'Protect'], { ability: 'Good as Gold', nature: 'Modest' }),
+  ] });
+  b.setPlayer('p2', { name: 'B', team: [
+    set('Garchomp', ['Earthquake', 'Dragon Claw', 'Rock Slide', 'Protect'], { ability: 'Rough Skin', nature: 'Jolly' }),
+    spa('Sinistcha', ['Matcha Gotcha', 'Shadow Ball', 'Life Dew', 'Protect'], { ability: 'Hospitality', nature: 'Bold' }),
+  ] });
+  b.choose('p1', 'team 12'); b.choose('p2', 'team 12');
+  b.sides[1].active[0].hp = 15; // Garchomp at 8% HP: outsped and OHKO'd by Sneasler before it can Earthquake Gholdengo
+  const counts = tally(b);
+  const gholdengoAttacks = Object.entries(counts)
+    .filter(([c]) => c.split(', ')[1].startsWith('move 1') || c.split(', ')[1].startsWith('move 2'))
+    .reduce((x, [, n]) => x + n, 0);
+  assert(gholdengoAttacks >= 16, `expected rescued Gholdengo to attack, got ${JSON.stringify(counts)}`);
+  b.destroy();
+}
+
 const SAMPLE_BELIEFS = {
   Garchomp: { spread: { hp: 32, defense: 32, speed: 2 }, nature: 'Impish', item: 'Sitrus Berry', ability: 'Rough Skin', moves: ['Protect', 'Stomping Tantrum', 'Rock Slide', 'Dragon Claw'] },
   Kingambit: { spread: { hp: 32, attack: 32, 'special-defense': 2 }, nature: 'Adamant', item: 'Black Glasses', ability: 'Defiant', moves: ['Sucker Punch', 'Kowtow Cleave', 'Protect', 'Iron Head'] },
@@ -259,6 +356,11 @@ function informationViews() {
   restore = applyView(b, b.sides[0], { mode: 'open_sheets', beliefs: SAMPLE_BELIEFS });
   assert.deepStrictEqual(foe.moveSlots.map(m => m.id), real.moves, 'open sheets: real moves');
   assert(foe.item === real.item && foe.storedStats.spe < real.spe, 'open sheets: real item, assumed (hidden) spread');
+  restore();
+  // Once an item or ability is revealed in battle.log, closed mode must keep the truth
+  b.log.push('|-ability|p2a: Garchomp|Rough Skin', '|-item|p2a: Garchomp|Life Orb');
+  restore = applyView(b, b.sides[0], { mode: 'closed', beliefs: SAMPLE_BELIEFS });
+  assert(foe.item === 'lifeorb' && foe.ability === 'roughskin', 'closed: revealed item/ability are preserved');
   restore();
   b.destroy();
 }

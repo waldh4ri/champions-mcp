@@ -360,11 +360,9 @@ class BattleSimulator:
                     top = self._usage_top(slug, fmt_key, category)
                     if top:
                         b[key] = top["name"]
-                moves = self._db.query(
-                    "SELECT name FROM usage WHERE slug=? AND format=? AND category='move' "
-                    "ORDER BY rank LIMIT 4", (slug, fmt_key))
+                moves = self.usage_moves(slug, fmt_key, b.get("item"))
                 if moves:
-                    b["moves"] = [m["name"] for m in moves]
+                    b["moves"] = moves
                 out[name] = b
         return out
 
