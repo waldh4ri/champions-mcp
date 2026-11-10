@@ -48,7 +48,9 @@ from .normalize import normalize_key, slugify
 #   2: + full_teams (BSS team reports), Z-Mega stones from the JP export
 #   3: report teams also in build_teams/build_members (full BSS sets for the
 #      observed-set tools)
-DATA_FORMAT = 3
+#   4: usage / usage_rank / teammates from pokedb's ranked ladder (current
+#      season) instead of pokechamp.gg
+DATA_FORMAT = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pokemon (
