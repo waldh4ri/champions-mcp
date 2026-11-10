@@ -21,7 +21,12 @@ def test_db_counts(db):
     assert total > 200
     assert db.count("type_chart") == 324  # 18 x 18
     assert db.count("moves") >= 500
-    assert db.count("usage_rank") == total * 2  # one row per format
+    # one row per ranked Pokémon and format; the ladder ranks nearly the whole
+    # roster, and never ranks anything twice
+    for fmt in ("singles", "doubles"):
+        ranked = db.query("SELECT slug FROM usage_rank WHERE format = ?", (fmt,))
+        assert total * 0.85 <= len(ranked) <= total
+        assert len({r["slug"] for r in ranked}) == len(ranked)
 
 
 def test_name_resolution(db):
@@ -334,10 +339,13 @@ def test_speed_tiers_use_the_mega_speed_when_that_is_what_is_played(db):
 
 def test_analyze_team_flags_mega_threats(db):
     a = teambuilder.analyze_team(db, [{"species": "Garchomp"}], "vgc")
-    mence = next(t for t in a["top_meta_threats_not_on_team"]
-                 if t["slug"] == "salamence")
-    assert mence["faced_as"] == "Mega Salamence"
-    assert mence["mega_stone"] == "Salamencite"   # pass this to calc_damage
+    # whichever top threats are mostly played as Megas (the ladder decides
+    # which: Salamence in M-7, Charizard Y in M-8 doubles)
+    megas = [t for t in a["top_meta_threats_not_on_team"] if t.get("faced_as")]
+    assert megas, "no top threat flagged as faced in its Mega form"
+    for t in megas:
+        assert t["faced_as"].startswith("Mega ")
+        assert t["mega_stone"]                      # pass this to calc_damage
     assert "faced_as" in a["note"]
 
 

@@ -17,9 +17,9 @@ from ..db import Db
 from . import build as build_mod
 from . import builds as builds_mod
 
-# pokechamp.gg ranks every legal Pokémon in both formats with several usage
-# categories each, so a healthy pull lands in the tens of thousands of usage
-# rows. A pull that comes back near-empty — e.g. mid-season-rollover, before
+# pokedb ranks ~260 Pokémon in both formats with several usage categories
+# each, so a healthy pull lands in the tens of thousands of usage rows. A
+# pull that comes back near-empty — e.g. mid-season-rollover, before
 # the ladder has logged battles under the new regulation yet — has happened
 # for real on the previous upstream and is easy to miss since `pokemon`/
 # `moves`/etc. still populate fine. Catch it here instead of silently

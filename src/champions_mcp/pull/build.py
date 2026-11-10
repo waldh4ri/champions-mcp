@@ -4,10 +4,12 @@ Run order:
   1. parse pokechamp.gg -> pokemon / types / abilities / learnable_moves /
      moves / abilities / items (the current legal roster + the whole
      move/ability/item pool, from a handful of whole-game requests)
-  2. one page fetch per non-Mega legal entry -> usage / usage_rank / teammates
-     (the only pokechamp data that needs a per-entry request)
+  2. pokedb ranked-ladder stats -> usage / usage_rank / teammates (one page
+     per ranked entry and format; joined to step 1 by game id, see
+     ``pull.pokedb_usage``)
   3. build_mega_forms -> mega_forms, from the Mega/Z-Mega legal entries
-     already parsed in step 1
+     already parsed in step 1 (before step 2 writes, so usage can resolve
+     Mega Stones through them)
   4. PokeAPI enrichment -> type_chart + localized species names (unrelated to
      which roster source is used; ``pull.builds``' pokedb ingestion resolves
      Japanese names against the latter)
@@ -29,6 +31,7 @@ from ..config import Settings
 from ..db import Db
 from ..normalize import slugify
 from . import builds as builds_mod
+from . import pokedb_usage
 from .pokeapi import TYPES, PokeApiEnricher
 from .pokechamp_source import PokechampClient
 from .smogon import ingest_smogon_sets
@@ -86,21 +89,6 @@ SHOWDOWN_OVERRIDES: dict[str, str] = {
     "toxtricity-low-key": "Toxtricity-Low-Key",
     "wash-rotom": "Rotom-Wash",
 }
-
-# usage.py category strings each per-format usage list maps onto.
-_USAGE_CATEGORY = {
-    "moveUsage": "move", "itemUsage": "held_item", "abilityUsage": "ability",
-}
-
-_RAISED = {
-    "atk": "Atk", "def": "Def", "spatk": "SpA", "spdef": "SpD", "spe": "Spe",
-}
-
-_STAT_COLS = (
-    "hp_points", "attack_points", "defense_points",
-    "sp_atk_points", "sp_def_points", "speed_points",
-)
-
 
 def _stat_dict(bs: dict[str, Any]) -> dict[str, int]:
     """Map pokechamp's ``{hp,atk,def,spatk,spdef,spe}`` to the schema's stat keys."""
@@ -184,8 +172,7 @@ def _resolve_mega_stones(
 async def parse_pokechamp(
     db: Db, client: PokechampClient,
 ) -> dict[str, Any]:
-    """Populate every pokechamp-derived table: roster, reference pools, and
-    (via one page fetch per legal non-Mega entry) usage/teammates.
+    """Populate every pokechamp-derived table: the roster and reference pools.
 
     Args:
         db: Open database handle with ``SCHEMA`` already applied.
@@ -353,97 +340,22 @@ async def parse_pokechamp(
         list(items_by_slug.values()),
     )
 
-    usage_stats = await _ingest_usage(db, client, base_entries)
     return {
         "pokemon": len(rows_pokemon), "moves": len(move_rows),
         "abilities": len(ability_rows), "items": len(items_by_slug),
         **{f"skipped_{k}": v for k, v in skipped.items()},
-        **usage_stats,
+        # pokedb's usage pages key everything by these same game ids
+        "_roster_keys": {(e["no"], e["formNo"]): e["slug"] for e in base_entries},
+        "_usage_refs": {
+            "moves": {i: (m["name"], m["slug"]) for i, m in move_by_id.items()},
+            "abilities": {i: (a["name"], a["slug"]) for i, a in ability_by_id.items()},
+            "items": {it["id"]: (it["name"], slugify(it["name"])) for it in items_listing},
+        },
         # carried through to build_mega_forms / build
         "_mega_entries": mega_entries, "_by_no": by_no,
         "_items_listing": items_listing, "_ability_by_id": ability_by_id,
         "_regulations": regulations,
     }
-
-
-def _spread_points(raw: str) -> dict[str, int]:
-    """Decode an ``evSpreadUsage`` hex spread (``"20-20-00-00-02-00"``) into
-    the schema's per-stat SP columns, in hp/atk/def/spatk/spdef/spe order."""
-    parts = [int(tok, 16) for tok in raw.split("-")]
-    return dict(zip(_STAT_COLS, parts))
-
-
-async def _ingest_usage(
-    db: Db, client: PokechampClient, base_entries: list[dict[str, Any]],
-) -> dict[str, int]:
-    """Fetch each legal non-Mega entry's page and write its per-format usage.
-
-    This is the one part of the pokechamp pull that costs one request per
-    roster entry — everything else (roster, movepool, reference pools) comes
-    from whole-game listing endpoints.
-
-    Args:
-        db: Open database handle, already holding `pokemon` rows.
-        client: Open `PokechampClient`.
-        base_entries: The (non-Mega) legal entries just written to `pokemon`.
-
-    Returns:
-        Row counts for `usage`, `usage_rank` and `teammates`.
-    """
-    pages = await client.gather([client.pokemon_page(e["slug"]) for e in base_entries])
-
-    rows_usage: list[tuple] = []
-    rows_rank: list[tuple] = []
-    rows_teammates: list[tuple] = []
-    rank_updates: list[tuple] = []
-
-    for entry, page in zip(base_entries, pages):
-        slug = entry["slug"]
-        ranks: dict[str, int | None] = {"doubles": None, "singles": None}
-        for fmt, block in page["usage"].items():
-            if fmt not in ("singles", "doubles"):
-                continue
-            ranks[fmt] = block.get("overallRank")
-            if block.get("overallRank") is not None:
-                rows_rank.append((fmt, block["overallRank"], slug))
-            for key, category in _USAGE_CATEGORY.items():
-                for rank, row in enumerate(block.get(key) or [], start=1):
-                    rows_usage.append((
-                        slug, fmt, category, rank, row["name"], row["slug"],
-                        f"{row['rate']}%", row["rate"],
-                        None, None, None, None, None, None, None, None,
-                    ))
-            for rank, row in enumerate(block.get("natureUsage") or [], start=1):
-                rows_usage.append((
-                    slug, fmt, "stat_alignment", rank, row["name"], row["slug"],
-                    f"{row['rate']}%", row["rate"],
-                    _RAISED.get(row.get("raisedStat"), row.get("raisedStat")),
-                    _RAISED.get(row.get("loweredStat"), row.get("loweredStat")),
-                    None, None, None, None, None, None,
-                ))
-            for rank, row in enumerate(block.get("evSpreadUsage") or [], start=1):
-                pts = _spread_points(row["raw"])
-                rows_usage.append((
-                    slug, fmt, "stat_points", rank, None, None,
-                    f"{row['rate']}%", row["rate"], None, None,
-                    pts["hp_points"], pts["attack_points"], pts["defense_points"],
-                    pts["sp_atk_points"], pts["sp_def_points"], pts["speed_points"],
-                ))
-            for rank, row in enumerate(block.get("teamTtog") or [], start=1):
-                rows_teammates.append((slug, fmt, rank, row["name"], row["slug"]))
-        rank_updates.append((ranks["doubles"], ranks["singles"], slug))
-
-    db.executemany(
-        "INSERT INTO usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows_usage
-    )
-    db.executemany("INSERT INTO usage_rank VALUES (?,?,?)", rows_rank)
-    db.executemany("INSERT INTO teammates VALUES (?,?,?,?,?)", rows_teammates)
-    db.executemany(
-        "UPDATE pokemon SET rank_doubles = ?, rank_singles = ? WHERE slug = ?",
-        [(d, s, slug) for d, s, slug in rank_updates],
-    )
-    return {"usage": len(rows_usage), "usage_rank": len(rows_rank),
-            "teammates": len(rows_teammates)}
 
 
 def build_mega_forms(
@@ -560,8 +472,8 @@ async def enrich(db: Db, settings: Settings, keys: dict[str, Any]) -> None:
 
 
 async def build(db: Db, settings: Settings, *, with_builds: bool = True) -> dict[str, int]:
-    """Run the full build: parse pokechamp.gg, derive Megas, enrich via
-    PokeAPI, then ingest the observed-team corpus.
+    """Run the full build: parse pokechamp.gg, read pokedb's ladder usage,
+    derive Megas, enrich via PokeAPI, then ingest the observed-team corpus.
 
     Args:
         db: Open database handle.
@@ -574,7 +486,7 @@ async def build(db: Db, settings: Settings, *, with_builds: bool = True) -> dict
     """
     db.reset_build_tables()
     cache = Cache(settings.cache_db)
-    client = PokechampClient(settings, cache, concurrency=settings.pokechamp_concurrency)
+    client = PokechampClient(settings, cache)
     try:
         parsed = await parse_pokechamp(db, client)
     finally:
@@ -593,6 +505,11 @@ async def build(db: Db, settings: Settings, *, with_builds: bool = True) -> dict
         base = min(non_mega_siblings, key=lambda s: s["formNo"], default=None)
         e["_species_name"] = base["displayName"] if base else e["displayName"]
     build_mega_forms(db, mega_entries, items_listing, ability_by_id)
+
+    # after the Megas: stones pokedb numbers differently resolve through them
+    usage_stats = await pokedb_usage.ingest_usage(
+        db, settings, roster=parsed.pop("_roster_keys"), refs=parsed.pop("_usage_refs"))
+    db.set_meta("usage", usage_stats)
 
     species = sorted({
         slugify(_PAREN_SUFFIX_RE.sub("", r["base_name"]))
@@ -623,7 +540,7 @@ async def build(db: Db, settings: Settings, *, with_builds: bool = True) -> dict
     db.set_meta("generated_at", datetime.now(timezone.utc).isoformat())
     from ..db import DATA_FORMAT
     db.set_meta("data_format", DATA_FORMAT)
-    db.set_meta("source", "pokechamp.gg")
+    db.set_meta("source", "pokechamp.gg (roster, reference) + champs.pokedb.tokyo (usage)")
     counts = {t: db.count(t) for t in (
         "pokemon", "learnable_moves", "usage", "moves", "abilities",
         "items", "mega_forms", "type_chart", "teammates",

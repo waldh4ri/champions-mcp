@@ -80,6 +80,27 @@ def test_pokeapi_name_tables(fetcher):
         assert text and "local_language_id" in text.splitlines()[0], table
 
 
+def test_pokedb_ranked_usage(settings):
+    """The current season's ranking and its #1's page still parse."""
+    from champions_mcp.pull.pokedb_usage import PokedbUsageClient
+
+    async def go():
+        cache = Cache(settings.cache_db)
+        client = PokedbUsageClient(settings, cache)
+        try:
+            ranking = await client.ranking(None, 0)
+            dex, form = ranking["ranking"][0]
+            return ranking, await client.pokemon(ranking["season"], 0, dex, form)
+        finally:
+            await client.aclose()
+            cache.close()
+    ranking, page = _run(go())
+    assert ranking["season"] >= 8 and ranking["ranking"]
+    assert str(ranking["season"]) in ranking["seasons"]
+    for key in ("moves", "abilities", "natures", "items", "spreads", "teammates"):
+        assert page[key], f"{key} parsed to nothing"
+
+
 # ------------------------------------------------------- observed teams
 
 def test_limitless_tournaments_and_standings(settings):

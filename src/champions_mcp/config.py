@@ -31,15 +31,15 @@ class Settings:
     db_path: Path          # the served SQLite mirror (champions.sqlite)
     cache_db: Path         # pull-time HTTP cache (pokechamp + PokeAPI mirror)
     # --- pull-only ---
-    pokechamp_base: str      # pokechamp.gg — roster/movepool/reference/usage
-    pokechamp_concurrency: int  # max in-flight per-Pokémon page requests
+    pokechamp_base: str      # pokechamp.gg — roster/movepool/reference
     pokeapi_base: str      # PokeAPI, used only for the type chart + localized species names
     http_timeout: float
     user_agent: str
     # --- pull-only: observed builds (see pull/builds.py) ---
     limitless_base: str      # play.limitlesstcg.com API — VGC tournament teamlists
     limitless_key: str | None  # optional; only raises the rate limit
-    pokedb_base: str         # champs.pokedb.tokyo — BSS ranked-ladder team export
+    pokedb_base: str         # champs.pokedb.tokyo — ranked usage stats + BSS ladder team export
+    pokedb_concurrency: int  # max in-flight pokedb usage-page requests
     builds_regulations: tuple[str, ...]  # which regulations to ingest
     builds_max_events: int   # cap on tournaments fetched per regulation
     builds_min_players: int  # skip tiny events — they are noise, not evidence
@@ -81,9 +81,6 @@ class Settings:
             pokechamp_base=os.environ.get(
                 "CHAMPIONS_MCP_POKECHAMP_BASE", "https://pokechamp.gg"
             ).rstrip("/"),
-            pokechamp_concurrency=int(
-                os.environ.get("CHAMPIONS_MCP_POKECHAMP_CONCURRENCY", "6")
-            ),
             pokeapi_base=os.environ.get(
                 "CHAMPIONS_MCP_POKEAPI_BASE", "https://pokeapi.co/api/v2"
             ).rstrip("/"),
@@ -99,6 +96,9 @@ class Settings:
             pokedb_base=os.environ.get(
                 "CHAMPIONS_MCP_POKEDB_BASE", "https://champs.pokedb.tokyo"
             ).rstrip("/"),
+            pokedb_concurrency=int(
+                os.environ.get("CHAMPIONS_MCP_POKEDB_CONCURRENCY", "4")
+            ),
             builds_regulations=tuple(
                 r.strip() for r in os.environ.get(
                     "CHAMPIONS_MCP_BUILDS_REGULATIONS", "M-C"

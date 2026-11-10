@@ -10,9 +10,10 @@ MCP server for AI-assisted Pokémon **Champions** team building (VGC doubles and
 
 Game data is pulled once into a local SQLite database (`champions.sqlite`):
 [pokechamp.gg](https://pokechamp.gg) for the current legal roster, Champions
-stats/types/abilities, movepools, moves/abilities/items reference text, and per-format
-usage stats, and [PokeAPI](https://pokeapi.co) for the (game-invariant) type chart and
-localized species names, cached permanently. Two further sources supply a corpus of
+stats/types/abilities, movepools and moves/abilities/items reference text,
+[バトルデータベース チャンピオンズ](https://champs.pokedb.tokyo) for the current ladder
+season's ranked usage stats (both formats), and [PokeAPI](https://pokeapi.co) for the
+(game-invariant) type chart and localized species names, cached permanently. Two further sources supply a corpus of
 **complete teams people actually brought** — Limitless tournament teamlists for VGC and
 the champs.pokedb.tokyo ranked-ladder export for BSS. A fifth source, Pokémon
 Showdown's published sets (every generation/tier Smogon curates), is ingested as a
@@ -246,9 +247,13 @@ resource exposes the full roster as JSON.
 
 1. **Fetch the roster** from [pokechamp.gg](https://pokechamp.gg): the current legal
    roster (species/forms + Mega/Z-Mega forms), full movepools, and the whole move/
-   ability/item reference pool — a handful of whole-game requests, plus one page fetch
-   per legal (non-Mega) roster entry for its per-format usage stats (moves, items,
-   abilities, natures, SP spreads, teammates, usage rank).
+   ability/item reference pool — a handful of whole-game requests.
+   **Read ranked usage** from [pokedb](https://champs.pokedb.tokyo): the current
+   ladder season's ranking plus one page per ranked Pokémon and format (moves, items,
+   abilities, natures, exact SP spreads, teammates, usage rank), joined to the roster
+   by game id. Only the parsed numbers are cached, for a day. In a season's first days
+   (under 100 Pokémon ranked) the previous season is used if the regulation is
+   unchanged.
 2. **Derive Mega forms** (`mega_forms`) from the Mega/Z-Mega entries collected above:
    stats, ability, typing, and the Mega Stone that unlocks each.
 3. **Enrich** from PokeAPI, cached permanently: the 18-type chart (game-invariant) and
@@ -291,13 +296,13 @@ clobbers a good existing database.
 | `CHAMPIONS_MCP_DATA_DIR` | `<repo>/data` | Data directory |
 | `CHAMPIONS_MCP_DB` | `<data>/champions.sqlite` | Served database |
 | `CHAMPIONS_MCP_PULL` | `0` | Force a refresh on container start (`1`) |
-| `CHAMPIONS_MCP_POKECHAMP_BASE` | `https://pokechamp.gg` | Roster/movepool/reference/usage source (pull) |
-| `CHAMPIONS_MCP_POKECHAMP_CONCURRENCY` | `6` | Max in-flight per-Pokémon page requests (pull) |
+| `CHAMPIONS_MCP_POKECHAMP_BASE` | `https://pokechamp.gg` | Roster/movepool/reference source (pull) |
 | `CHAMPIONS_MCP_POKEAPI_BASE` | `https://pokeapi.co/api/v2` | Type chart + localized names (pull) |
 | `CHAMPIONS_MCP_CACHE_DB` | `<data>/pull-cache.sqlite` | Pull cache (PokeAPI + observed teams) |
 | `CHAMPIONS_MCP_LIMITLESS_BASE` | `https://play.limitlesstcg.com/api` | VGC observed builds (pull) |
 | `CHAMPIONS_MCP_LIMITLESS_KEY` | unset | Optional Limitless API key — only raises the rate limit |
-| `CHAMPIONS_MCP_POKEDB_BASE` | `https://champs.pokedb.tokyo` | BSS observed builds (pull) |
+| `CHAMPIONS_MCP_POKEDB_BASE` | `https://champs.pokedb.tokyo` | Ranked usage stats + BSS observed builds (pull) |
+| `CHAMPIONS_MCP_POKEDB_CONCURRENCY` | `4` | Max in-flight pokedb usage-page requests (pull) |
 | `CHAMPIONS_MCP_BUILDS_REGULATIONS` | `M-C` | Regulations to ingest, comma-separated |
 | `CHAMPIONS_MCP_BUILDS_MAX_EVENTS` | `150` | Cap on tournaments fetched per regulation |
 | `CHAMPIONS_MCP_BUILDS_MIN_PLAYERS` | `16` | Skip events smaller than this |
@@ -320,8 +325,8 @@ timeouts.
 
 ## Refreshing the data
 
-pokechamp.gg updates as each regulation rolls over, and new tournaments finish daily. To
-pick up both:
+Ladder usage refreshes daily, pokechamp.gg updates as each regulation rolls over, and
+new tournaments finish daily. To pick up all three:
 
 ```bash
 CHAMPIONS_MCP_PULL=1 docker compose up -d   # docker
@@ -339,10 +344,10 @@ evidence level) are reported by `get_game_rules` under `data`.
 
 | Source | Used for |
 |---|---|
-| [pokechamp.gg](https://pokechamp.gg) | Primary source: roster, Champions stats/types/abilities, movepools, move/ability/item reference text, usage data |
+| [pokechamp.gg](https://pokechamp.gg) | Roster, Champions stats/types/abilities, movepools, move/ability/item reference text |
 | [PokeAPI](https://pokeapi.co) | Type chart + localized species names |
 | [Limitless](https://play.limitlesstcg.com) | VGC observed builds: tournament open team sheets via their public API |
-| [バトルデータベース チャンピオンズ](https://champs.pokedb.tokyo) | BSS observed builds: ranked-ladder team export, published as open data ([@pokedb_tokyo](https://x.com/pokedb_tokyo)) |
+| [バトルデータベース チャンピオンズ](https://champs.pokedb.tokyo) | Ranked usage stats (both formats, per ladder season) and BSS observed builds: ranked-ladder team export, published as open data ([@pokedb_tokyo](https://x.com/pokedb_tokyo)) |
 | [Pokémon Showdown](https://play.pokemonshowdown.com) | Historical-builds fallback: every generation/tier of Smogon-curated sets |
 | [smogon/damage-calc](https://github.com/smogon/damage-calc) | `@smogon/calc` with native Champions (gen 0) support |
 | [smogon/pokemon-showdown](https://github.com/smogon/pokemon-showdown) | Battle simulator (`champions` mod) behind the simulate tools |

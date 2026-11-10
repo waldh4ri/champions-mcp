@@ -1,11 +1,13 @@
-"""Reads roster/reference/usage data from pokechamp.gg.
+"""Reads roster/reference data from pokechamp.gg.
 
-pokechamp.gg publishes the current Pokémon Champions legal roster, full move/
-ability/item reference text, and per-Pokémon usage stats (both formats) well
-ahead of championsbattledata.com and pokedb.tokyo — confirmed live with
+pokechamp.gg publishes the current Pokémon Champions legal roster, learnsets
+and full move/ability/item reference text well ahead of other sites —
+confirmed live with
 Regulation M-C's additions (Golisopod, Baxcalibur, Rillaboom, the new Mega/
 Z-Mega forms and their stones) days after rollout, while those two upstreams
 were still on the previous regulation. Used here with the site's permission.
+Its per-Pokémon usage pages are no longer read: they stopped following the
+ladder seasons, and ``pull.pokedb_usage`` reads the game's own ranked stats.
 
 Two response shapes:
 
@@ -14,13 +16,10 @@ Two response shapes:
   :mod:`.nuxt_payload` into a ``{cache_key: value}`` dict per page. The cache
   keys are Nuxt's own content-addressed ``useAsyncData`` hashes, not a stable
   public contract, so callers here pick the right value by *shape* (does it
-  look like a list of rows? does it have a ``singles``/``doubles`` key?)
-  rather than by key name.
+  look like a list of rows?) rather than by key name.
 
-Only the per-Pokémon page (``pokemon_page``) needs one request per legal
-roster entry (~350); every listing endpoint covers the whole game in one
-request each, cached permanently. Everything is cached through ``Cache`` so a
-rebuild only re-fetches what a season change actually invalidates.
+Every endpoint used covers the whole game in one request, cached through
+``Cache`` so a rebuild costs a handful of requests at most.
 """
 
 from __future__ import annotations
@@ -34,9 +33,8 @@ from ..cache import Cache
 from ..config import Settings
 from . import nuxt_payload
 
-# The site's usage stats move as a season progresses; a finished season's
-# reference tables (moves/abilities/items) don't. One conservative ttl for
-# everything keeps this simple — a rebuild a day later just re-fetches.
+# The roster and reference tables only change with a regulation; a day keeps
+# a rollover from going unnoticed for long.
 _TTL = 86_400
 
 
@@ -68,7 +66,7 @@ def _is_row_list(v: Any) -> bool:
 
 
 class PokechampClient:
-    """Reads Champions roster/reference/usage data from pokechamp.gg."""
+    """Reads Champions roster/reference data from pokechamp.gg."""
 
     def __init__(self, settings: Settings, cache: Cache, *, concurrency: int = 6) -> None:
         """Open an HTTP client against pokechamp.gg, backed by ``cache``.
@@ -76,7 +74,7 @@ class PokechampClient:
         Args:
             settings: Runtime settings (base URL, timeout, user agent).
             cache: Pull cache to read/write through.
-            concurrency: Maximum in-flight per-Pokémon page requests.
+            concurrency: Maximum in-flight requests.
         """
         self._http = httpx.AsyncClient(
             base_url=settings.pokechamp_base,
@@ -134,24 +132,6 @@ class PokechampClient:
         """
         data = await self._get_payload("/database/pokemon/_payload.json")
         return _pick(data, _is_row_list)
-
-    async def pokemon_page(self, slug: str) -> dict[str, Any]:
-        """One Pokémon's full page: movepool, abilities and per-format usage.
-
-        Args:
-            slug: The entry's pokechamp slug (species or ``mega-<species>``
-                form of it).
-
-        Returns:
-            A dict with the identity block spread in directly (``slug``,
-            ``learnsetMoves`` — full move rows, ``abilityDetails``) plus a
-            ``usage`` key holding the ``{"singles": {...}, "doubles": {...}}``
-            per-format usage block.
-        """
-        data = await self._get_payload(f"/database/pokemon/{slug}/_payload.json")
-        identity = _pick(data, lambda v: isinstance(v, dict) and "slug" in v)
-        usage = _pick(data, lambda v: isinstance(v, dict) and "singles" in v)
-        return {**identity, "usage": usage}
 
     async def moves_options(self) -> list[dict[str, Any]]:
         """id -> slug/name for every move (a superset of :meth:`moves_listing`
