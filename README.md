@@ -1,358 +1,65 @@
-<div align="center">
-
 # champions-mcp
 
-MCP server for AI-assisted Pokémon **Champions** team building (VGC doubles and BSS singles).
+An [MCP](https://modelcontextprotocol.io) server that lets AI assistants build and
+improve **Pokémon Champions** teams for VGC doubles and BSS singles.
 
-</div>
+It provides Champions-specific Pokémon data, legal moves and items, usage stats,
+team validation, damage calculations, battle simulation, and Poképaste export.
+Game data is stored locally in SQLite; normal lookups do not scrape websites.
 
-## What it does
+## Run with Docker
 
-Game data is pulled once into a local SQLite database (`champions.sqlite`):
-[pokechamp.gg](https://pokechamp.gg) for the current legal roster, Champions
-stats/types/abilities, movepools and moves/abilities/items reference text,
-[バトルデータベース チャンピオンズ](https://champs.pokedb.tokyo) for the current ladder
-season's ranked usage stats (both formats), and [PokeAPI](https://pokeapi.co) for the
-(game-invariant) type chart and localized species names, cached permanently. Two further sources supply a corpus of
-**complete teams people actually brought** — Limitless tournament teamlists for VGC and
-the champs.pokedb.tokyo ranked-ladder export for BSS. A fifth source, Pokémon
-Showdown's published sets (every generation/tier Smogon curates), is ingested as a
-**historical-builds fallback** — cross-game evidence, legality-checked against
-Champions at read time, surfaced automatically when the real observed-team corpus is
-thin (e.g. right after a regulation rollover). For BSS the pull also reads players'
-published **team reports** (構築記事, indexed by pokedb.tokyo, yakkun, damekei and
-pokemon-teams) for the one thing the ladder export lacks: complete sets, spreads
-included. Every tool call is then answered from that local file, no live lookups, no
-scraping at runtime.
+Requires Docker with Docker Compose. From the repository root:
 
-Teams can also be **tested in battle**: a battle-simulator sidecar runs Pokémon
-Showdown's engine with its Champions mod (real Champions mechanics and Reg M-C rules)
-across every CPU core, an AI playing both sides, against those real top teams.
-
-The only outbound calls happen at two points, both opt-in:
-
-- `champions-mcp-pull` fetches the roster/reference/usage data, runs the PokeAPI
-  enrichment pass, ingests the Smogon/Showdown historical-sets pool, and ingests the
-  observed-team corpus (`--skip-builds` to omit the last).
-- `create_pokepaste` uploads a finished team to pokepast.es.
-
-46 MCP tools cover the Pokedex, legal rosters and movepools, usage stats/sets/teammates,
-observed builds and team context, historical (cross-game) sets, Stat Point and speed
-math, team validation, damage calculation, battle simulation, and Pokepaste export. A bundled skill walks
-an LLM through the whole team-building workflow end to end.
-
-## Quick start
-
-### Docker
-
-Builds and starts `champions-calc` (the damage sidecar), `champions-sim` (the battle
-simulator) and `champions-mcp` (the server), and runs the data pull automatically on
-first start, persisted in the
-`champions-data` volume. Expect several minutes on the first build: the observed-team
-stage paces itself against Limitless's unauthenticated rate limit (50 requests per
-5 minutes). Later starts reuse the pull cache and fetch only genuinely new events.
-Set `CHAMPIONS_MCP_BUILDS_SKIP=1` to skip that stage and get the ~30-second build.
-
-```bash
+```sh
 docker compose up -d --build
 ```
 
-```
-MCP URL : http://localhost:8000/mcp
-```
+This starts the MCP server and its damage-calculator and battle-simulator services.
+The first start downloads the data and can take several minutes. Check readiness:
 
-Force a data refresh with `CHAMPIONS_MCP_PULL=1 docker compose up -d`.
-
-To stop and remove the containers:
-
-```bash
-docker compose down             # stop, keep champions.sqlite in the champions-data volume
-docker compose down -v          # also delete the volume, next start does a full re-pull
+```sh
+docker compose logs -f champions-mcp
 ```
 
-### Local (pip, no Docker)
+When the server reports **ready**, connect your MCP-compatible AI client to
+**http://localhost:8000/mcp** using Streamable HTTP.
 
-For development, or if you want to run the MCP server directly without Docker:
+To stop the stack without deleting its data:
 
-Requires Python 3.11+ and MCP SDK 2.x (`mcp>=2.0.0` — the 2.0 release replaced the
-1.x `FastMCP` class with `MCPServer`, so a 1.x install will not run this server).
-
-```bash
-pip install -e ".[dev]"    # or pip install -r requirements.txt
-champions-mcp-pull         # build data/champions.sqlite (downloads + enriches + observed teams)
-champions-mcp-pull --skip-builds   # ...without the observed-team corpus (much faster)
-champions-mcp              # run the MCP server (stdio by default)
-pytest                     # offline tests against the built DB
+```sh
+docker compose down
 ```
 
-### Optional: local LLM + web chat
+## Use it
 
-Adds a self-contained chat UI on top of the same MCP server, backed by a local model
-served through llama.cpp. No API key, no external client needed. A model is not shipped
-with the project: put a GGUF file in `./models` first (or set `LLAMA_MODEL_HF` to
-auto-download one from Hugging Face).
+Once connected, ask your assistant:
 
-```bash
-docker compose --profile ai up -d --build
+- “Build me a Pokémon Champions VGC team around Garchomp.”
+- “Check whether this Champions BSS team is legal: …”
+- “What are the most-used Pokémon in Champions singles?”
+
+The assistant should call `get_game_rules` first, with `format="vgc"` or
+`format="bss"`. The bundled `champions_team_building` prompt provides the full
+workflow; clients without prompt support can use `get_team_building_guide`.
+
+## Run locally
+
+Requires Python 3.11+. From the repository root:
+
+```sh
+pip install -e .
+champions-mcp-pull
+champions-mcp
 ```
 
-Open **http://localhost:3000**. This starts two more services: `llama-server`
-(llama.cpp, OpenAI-compatible API, GPU-backed) and `champions-chat`, a web UI that
-opens an MCP session to `champions-mcp`, auto-loads every tool, and runs the
-tool-calling loop for you. Requires an NVIDIA GPU. Everything (model file, context
-size, GPU/CPU offload, sampling, and more) is configured through environment
-variables, see [`.env.example`](.env.example) for the full list.
+The server uses **stdio** by default: configure your MCP client to launch
+`champions-mcp`. Damage calculations and battle simulation still need Docker
+images or running sidecars; other data tools work without them.
 
-### Optional: web chat on OpenRouter (no GPU)
+## Documentation
 
-The same chat UI can use [OpenRouter](https://openrouter.ai) instead of a local model.
-Put your key in `.env` and start the `openrouter` profile, which runs the chat without
-`llama-server`:
+See **[docs/README.md](docs/README.md)** for client configuration, optional web
+chat, data refreshes, configuration, the tool reference, and development.
 
-```bash
-echo "OPENROUTER_API_KEY=sk-or-..." >> .env
-docker compose --profile openrouter up -d --build
-```
-
-The default is OpenRouter's [Auto Router](https://openrouter.ai/docs/guides/routing/routers/auto-router),
-offered at three cost tiers in the model selector:
-
-- **`openrouter/auto (low)`** (default): picks from a pool of cheap tool-calling models,
-  both under $1 per million tokens for input and output: `deepseek/deepseek-v4.1-flash`
-  and `openai/gpt-6-luna`.
-- **`openrouter/auto (medium)`** and **`(high)`**: route over OpenRouter's ranking for
-  those cost bands, for stronger and pricier models. They're uncapped unless you set
-  `OPENROUTER_MAX_PRICE_MEDIUM` / `_HIGH`, and you can restrict them to a pool with
-  `OPENROUTER_AUTO_MODELS_MEDIUM` / `_HIGH`.
-
-For a tool-calling agent, the chat makes three adjustments:
-- It routes once per turn and keeps the chosen model for all of that turn's tool rounds,
-  so the reasoning chain and the prompt cache aren't broken mid-turn.
-- It sends a per-conversation `session_id`, so later turns stay on the same model.
-- It caps provider prices, at `OPENROUTER_MAX_PRICE` for the fixed models and the low tier.
-
-The model actually used appears in the UI's metrics. Both pool models are also in the
-model selector, if you want one fixed, as is **`google/gemini-4-argon`**. It's pinned to
-Google AI Studio's *flex* endpoint ($1 per million input tokens, $5 output) with no
-fallback to its pricier endpoints ($2–3.60 / $10–18). Pin other models the same way with
-`OPENROUTER_MODEL_ROUTES`. Set your own list with `OPENROUTER_MODEL`
-(comma-separated; the first is the default); any model on openrouter.ai that supports
-tools works.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `OPENROUTER_API_KEY` | unset | Your OpenRouter key |
-| `OPENROUTER_MODEL` | `openrouter/auto (low)`, `(medium)`, `(high)`, `deepseek/deepseek-v4.1-flash`, `openai/gpt-6-luna`, `google/gemini-4-argon` | Models offered in the UI (comma-separated) |
-| `OPENROUTER_AUTO_MODELS` | `deepseek/deepseek-v4.1-flash,openai/gpt-6-luna` | Low-tier candidates (exact ids or wildcards such as `deepseek/*`) |
-| `OPENROUTER_AUTO_MODELS_MEDIUM` / `_HIGH` | empty (whole ranking) | Medium/high-tier candidates |
-| `OPENROUTER_MAX_PRICE` | `1` | Max USD per 1M tokens (input and output) for the fixed models and the low tier; empty = no cap |
-| `OPENROUTER_MAX_PRICE_MEDIUM` / `_HIGH` | empty (no cap) | Price caps for the medium and high tiers |
-| `OPENROUTER_MODEL_ROUTES` | Gemini 4 Argon → `google-ai-studio/flex` | Per-model provider routing (JSON: OpenRouter's `provider` object per model id); replaces the price cap for that model |
-| `OPENROUTER_REASONING_EFFORT` | unset (model default) | `low`, `medium` or `high` |
-| `OPENROUTER_TEMPERATURE` | unset (model default) | Sampling temperature |
-| `CHAT_PROVIDER` | `auto` | `auto` uses the local `llama-server` if it's running, else OpenRouter if a key is set; or force `llama` / `openrouter` |
-
-With `auto`, a key in `.env` never overrides a local model: under `--profile ai` the
-chat waits for `llama-server` and uses it.
-
-## Tools
-
-Call `get_game_rules(format)` first (`format='vgc'` for doubles, `'bss'` for singles).
-
-**Pokedex** - `get_pokemon`, `search_pokemon`, `get_random_pokemon`, `list_megas`,
-`get_move`, `search_moves`, `list_items`, `get_item`, `search_items`, `get_ability`,
-`get_type_matchups`, `get_pokemon_weaknesses`, `get_field_effects` (what a weather,
-terrain, Trick Room, Tailwind or screen does). A Mega name passed to `get_pokemon`
-returns the Mega itself. `list_items` returns the whole item
-pool grouped by category (Mega Stones hidden by default - they are around half of
-the ~166 items); if an item is not in it, it does not exist in Champions.
-
-**Roster and movepool** - `list_pokemon`, `search_pokemon_by_type`, `search_pokemon_by_ability`,
-`search_pokemon_by_move`, `get_pokemon_moves`, `is_legal_move`, `is_legal_pokemon`
-
-**Meta, both formats** - `get_threat_profile` (the threat map in one call: played
-form, typing, Speed tier, weaknesses, common moves/items), `get_usage_stats` (rows
-carry the played form's typing/ability/Speed), `get_pokemon_sets`, `get_top_teammates`,
-`suggest_cores`, `get_speed_tiers`
-
-**Observed builds** - `get_observed_sets`, `get_team_context`, `get_sample_teams`.
-The usage tools above return *marginal* distributions: how often a Pokémon runs each
-move, and how often it holds each item, computed independently. They cannot tell you
-which moves go with which item, so stacking their top picks yields a build nobody
-plays. These three read a corpus of complete teams people actually brought, which
-makes the conditional question answerable — a Choice Scarf Garchomp runs different
-moves *and* different teammates than a Life Orb one. Every answer splits each
-decision into `locked` (near-universal), `contested` (where strong players disagree —
-your call, from your own matchups) and `fringe` (rare but attested), and
-`marginal_stacking_check` reports how few real builds run the naive
-"four most popular moves" set. `get_team_context` conditions partners on your whole
-core and scores each by `affinity` — how much a partner prefers *your* core over
-being merely popular — surfacing under-explored options alongside the obvious ones.
-
-**Historical sets** - `get_historical_sets` — curated Smogon/Pokémon Showdown sets
-(every generation/tier, filtered only to doubles vs. singles), used as a fallback for
-when the real observed-team corpus above is thin or empty (e.g. right after a
-regulation rollover). Not Champions tournament data: every set is checked against the
-current Champions roster and carries `legal_in_champions` (overall, plus per-move/
-item/ability) so a build that doesn't translate is visible rather than presented as
-fact. `get_observed_sets` surfaces this automatically as `historical_sets` when its own
-corpus is thin.
-
-**Type & stat profiles** - `list_type_profiles`, `list_profile_tags`,
-`search_pokemon_by_profile`. Every typing (18 singles + 153 pairs) is graded
-defensively and offensively against all the others, and every Pokémon is tagged
-from its typing plus its stat spread *relative to the Champions roster* (which
-rescaled base stats, so absolute thresholds from other games are meaningless).
-Search the whole legal pool by tag - `build:glass-cannon`, `build:trick-room`,
-`def:fortress`, `off:elite-coverage`. `get_pokemon` returns each Pokémon's tags.
-
-**Competitive roles** - `list_roles`, `get_role_description`. The role vocabulary
-(wallbreaker, offensive pivot, redirection support, Trick Room setter, ...) graded
-per format, since VGC and BSS need very different slots. Each brief's signature
-moves, items and abilities are checked against the Champions data before being
-returned.
-
-**Stat Points and speed** - `calc_stats`, `compute_speed`, `compute_speed_threshold`
-
-**Team** - `validate_team`, `analyze_team`
-
-**Damage and export** - `calc_damage` (via the `champions-calc` sidecar),
-`create_pokepaste` (uploads to pokepast.es, the only runtime outbound call besides the pull)
-
-**Battle simulation** - `simulate_vs_meta`, `compare_team_variants`, `simulate_matchup`,
-`simulate_battle_log` (via the `champions-sim` sidecar). Real battles on Pokémon
-Showdown's simulator (`champions` mod, pinned commit; every team is checked by its Reg
-M-C validator first). An AI plays both sides. It takes KOs, avoids overkill in doubles,
-Protects and controls speed, switches into resistances and immunities when outsped or
-walled, values pivots, and picks brings and leads by matchup. Opponents are the top
-observed teams: BSS team reports with full sets (best final ranks first) topped up with
-the pokedb ladder, and Limitless teamlists for VGC. `information` sets what each AI
-knows about the other: open team sheets by default, closed sheets (usage-based guesses
-until moves are revealed), or omniscient. Results come with confidence intervals and
-are reproducible by `seed`. `compare_team_variants` A/B tests a change on identical
-opponents and seeds, so its delta isolates the change. Several hundred battles take
-seconds; the sidecar sizes its worker pool to the CPUs and memory it may use. See
-[docs/tools.md](docs/tools.md#battle-simulation).
-
-A team-building [`SKILL.md`](skills/champions-team-building/SKILL.md) ships with the repo
-and is exposed as the `champions_team_building` MCP prompt. It is a short core (hard
-rules, order of work with commit points, pre-flight, output format); the deeper
-guidance lives in `skills/champions-team-building/sections/` and is served one
-section at a time by the `get_team_building_guide(section)` tool. A `pokedex://champions` MCP
-resource exposes the full roster as JSON.
-
-## How the data pull works
-
-`champions-mcp-pull` (`python -m champions_mcp.pull`):
-
-1. **Fetch the roster** from [pokechamp.gg](https://pokechamp.gg): the current legal
-   roster (species/forms + Mega/Z-Mega forms), full movepools, and the whole move/
-   ability/item reference pool — a handful of whole-game requests.
-   **Read ranked usage** from [pokedb](https://champs.pokedb.tokyo): the current
-   ladder season's ranking plus one page per ranked Pokémon and format (moves, items,
-   abilities, natures, exact SP spreads, teammates, usage rank), joined to the roster
-   by game id. Only the parsed numbers are cached, for a day. In a season's first days
-   (under 100 Pokémon ranked) the previous season is used if the regulation is
-   unchanged.
-2. **Derive Mega forms** (`mega_forms`) from the Mega/Z-Mega entries collected above:
-   stats, ability, typing, and the Mega Stone that unlocks each.
-3. **Enrich** from PokeAPI, cached permanently: the 18-type chart (game-invariant) and
-   localized species names (used to match pokedb's Japanese-language BSS export).
-4. **Ingest Smogon/Showdown historical sets** into `smogon_sets`: every generation and
-   tier [Pokémon Showdown](https://play.pokemonshowdown.com) publishes, matched to the
-   Champions roster by species name and split only into doubles/singles — a fallback
-   pool for when the observed-team corpus below is thin.
-5. **Ingest observed teams** into `build_teams`/`build_members`:
-   - **VGC** from the [Limitless](https://play.limitlesstcg.com) public API
-     (`/tournaments/{id}/standings`). These events enforce open team sheets, so each
-     response carries every player's full list — species, item, ability, nature and all
-     four moves. No API key needed; unauthenticated access is rate-limited to 50
-     requests per 5 minutes, so the first run paces itself over several minutes.
-   - **BSS** from the [champs.pokedb.tokyo](https://champs.pokedb.tokyo/guide/opendata)
-     ranked-ladder export. Japan is where singles is actually played, and this is the
-     top of the official ladder per season. It carries species and held item but **no
-     moves**, so those rows are marked `team_and_item` and the tools never present a
-     singles moveset as observed.
-6. **Scrape BSS team reports** into `full_teams` (`pull/reports.py`). The current regulation's 構築記事 are listed from
-   [pokedb.tokyo's article index](https://champs.pokedb.tokyo/article/search) (final
-   rank and rating), yakkun.com, damekei.com and pokemon-teams.pages.dev. Then each
-   article's sets are read: pokesol.app and yakkun pages are structured, and blog text
-   is parsed against PokeAPI's Japanese name tables. Only teams that resolve completely
-   are kept (species, item, ability, nature, four moves and a legal spread). Listings
-   refresh twice a day; articles are cached under `<data>/reports-cache`. This runs
-   with the observed-team stage; `CHAMPIONS_MCP_REPORTS_SKIP=1` skips just this step.
-7. Write build markers and report row counts.
-
-Re-running is idempotent and nearly free: every upstream response is cached in
-`pull-cache.sqlite`, so a rebuild costs no network beyond what's genuinely new or
-changed. `--skip-builds` omits the observed-team stage (step 5). A pull is only
-swapped in after passing sanity checks, so a bad or empty upstream response never
-clobbers a good existing database.
-
-## Configuration
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `CHAMPIONS_MCP_DATA_DIR` | `<repo>/data` | Data directory |
-| `CHAMPIONS_MCP_DB` | `<data>/champions.sqlite` | Served database |
-| `CHAMPIONS_MCP_PULL` | `0` | Force a refresh on container start (`1`) |
-| `CHAMPIONS_MCP_POKECHAMP_BASE` | `https://pokechamp.gg` | Roster/movepool/reference source (pull) |
-| `CHAMPIONS_MCP_POKEAPI_BASE` | `https://pokeapi.co/api/v2` | Type chart + localized names (pull) |
-| `CHAMPIONS_MCP_CACHE_DB` | `<data>/pull-cache.sqlite` | Pull cache (PokeAPI + observed teams) |
-| `CHAMPIONS_MCP_LIMITLESS_BASE` | `https://play.limitlesstcg.com/api` | VGC observed builds (pull) |
-| `CHAMPIONS_MCP_LIMITLESS_KEY` | unset | Optional Limitless API key — only raises the rate limit |
-| `CHAMPIONS_MCP_POKEDB_BASE` | `https://champs.pokedb.tokyo` | Ranked usage stats + BSS observed builds (pull) |
-| `CHAMPIONS_MCP_POKEDB_CONCURRENCY` | `4` | Max in-flight pokedb usage-page requests (pull) |
-| `CHAMPIONS_MCP_BUILDS_REGULATIONS` | `M-C` | Regulations to ingest, comma-separated |
-| `CHAMPIONS_MCP_BUILDS_MAX_EVENTS` | `150` | Cap on tournaments fetched per regulation |
-| `CHAMPIONS_MCP_BUILDS_MIN_PLAYERS` | `16` | Skip events smaller than this |
-| `CHAMPIONS_MCP_BUILDS_HALF_LIFE_DAYS` | `21` | Recency half-life for observation weights |
-| `CHAMPIONS_MCP_BUILDS_SKIP` | `0` | Skip the observed-team stage on container start (`1`) |
-| `CHAMPIONS_MCP_POKEDB_SEASON_REGS` | built-in | Override the pokedb season → regulation map |
-| `CHAMPIONS_MCP_CALC_HTTP` | unset | Calc sidecar URL (else one-shot `docker run`) |
-| `CHAMPIONS_MCP_CALC_IMAGE` | `champions-calc:latest` | Damage-calc image tag |
-| `CHAMPIONS_MCP_REPORTS_SKIP` | `0` | Skip scraping BSS team reports in the pull (`1`) |
-| `CHAMPIONS_MCP_SIM_HTTP` | unset | Simulator sidecar URL (else one-shot `docker run`) |
-| `CHAMPIONS_MCP_SIM_IMAGE` | `champions-sim:latest` | Simulator image tag |
-| `CHAMPIONS_MCP_SIM_TIMEOUT` | `300` | Seconds before a simulation call gives up |
-| `CHAMPIONS_MCP_SIM_MAX_BATTLES` | `20000` | Battle cap per simulation tool call |
-| `SIM_WORKERS` (sidecar) | `0` = auto | Worker threads; auto = all CPUs allowed, capped by memory |
-| `MCP_TRANSPORT` | `stdio` | `stdio`, `streamable-http`, or `sse` |
-| `FASTMCP_HOST` / `FASTMCP_PORT` | `127.0.0.1` / `8000` | Bind address (HTTP transports only) |
-
-See [`.env.example`](.env.example) for the full list, including pull and calc-sidecar
-timeouts.
-
-## Refreshing the data
-
-Ladder usage refreshes daily, pokechamp.gg updates as each regulation rolls over, and
-new tournaments finish daily. To pick up all three:
-
-```bash
-CHAMPIONS_MCP_PULL=1 docker compose up -d   # docker
-# or
-champions-mcp-pull                          # local
-```
-
-A refresh re-reads everything already cached and fetches only what is new, so it is
-much faster than the first build.
-
-The active season, data version and observed-team corpus (team counts, regulations,
-evidence level) are reported by `get_game_rules` under `data`.
-
-## Acknowledgements
-
-| Source | Used for |
-|---|---|
-| [pokechamp.gg](https://pokechamp.gg) | Roster, Champions stats/types/abilities, movepools, move/ability/item reference text |
-| [PokeAPI](https://pokeapi.co) | Type chart + localized species names |
-| [Limitless](https://play.limitlesstcg.com) | VGC observed builds: tournament open team sheets via their public API |
-| [バトルデータベース チャンピオンズ](https://champs.pokedb.tokyo) | Ranked usage stats (both formats, per ladder season) and BSS observed builds: ranked-ladder team export, published as open data ([@pokedb_tokyo](https://x.com/pokedb_tokyo)) |
-| [Pokémon Showdown](https://play.pokemonshowdown.com) | Historical-builds fallback: every generation/tier of Smogon-curated sets |
-| [smogon/damage-calc](https://github.com/smogon/damage-calc) | `@smogon/calc` with native Champions (gen 0) support |
-| [smogon/pokemon-showdown](https://github.com/smogon/pokemon-showdown) | Battle simulator (`champions` mod) behind the simulate tools |
-| pokedb.tokyo [構築記事検索](https://champs.pokedb.tokyo/article/search), [yakkun.com](https://yakkun.com/bbs/party/), [damekei.com](https://damekei.com/build-articles), [pokemon-teams.pages.dev](https://pokemon-teams.pages.dev), [pokesol.app](https://pokesol.app) and the players' own articles | Complete BSS teams from published team reports (each team keeps its article URL) |
-| [pokepast.es](https://pokepast.es) | Team paste hosting for `create_pokepaste` |
-
-Pokémon is © Nintendo / Creatures Inc. / GAME FREAK inc. This project is an unofficial
-fan tool, not affiliated with or endorsed by any of the above.
+Unofficial fan project; not affiliated with Nintendo, Creatures Inc., or GAME FREAK.

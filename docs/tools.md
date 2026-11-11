@@ -1,12 +1,16 @@
 # champions-mcp Tool Reference
 
-`champions-mcp` exposes 46 MCP tools over the local `champions.sqlite` mirror
-(built by `champions-mcp-pull` from pokechamp.gg + PokeAPI (type chart,
-localized names), plus a corpus of complete teams from Limitless and
-champs.pokedb.tokyo).
-Two tools (`calc_damage`, `create_pokepaste`) make outbound calls, and the four
-battle-simulation tools call the `champions-sim` sidecar; everything else is a
-local read against the SQLite mirror.
+[Documentation index](README.md) · [Usage guide](usage.md)
+
+`champions-mcp` exposes 48 MCP tools over the local `champions.sqlite` mirror.
+The pull combines pokechamp.gg roster/reference data, pokedb ranked usage,
+PokeAPI enrichment, observed tournament/ladder teams, BSS reports and historical
+Smogon sets. See [data and sources](data.md) for coverage and limitations.
+
+`calc_damage` calls the calculator sidecar and the four simulation tools call
+the simulator sidecar (or use one-shot Docker containers). `create_pokepaste`
+uploads to an external service. The other tools use local data and Python
+calculations, without live upstream lookups.
 
 Every tool also accepts localized Pokémon/move/item names where noted, and
 most take an optional `format` argument, always `"vgc"` (doubles) or `"bss"`
@@ -105,8 +109,8 @@ The team-building skill, one piece at a time. With no argument it returns the
 checklist, the output format) — the same text as the `champions_team_building`
 prompt — plus the section index. Pass a section name to get that section:
 `lenses`, `roles`, `workflow`, `principles`, `creative`, `pitfalls`,
-`iterate`, `setup`. Meant to be called at the step that needs a section, so a
-small model never has to hold the whole guide at once.
+`simulate`, `iterate`, `setup`. Meant to be called at the step that needs a
+section, so a small model never has to hold the whole guide at once.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -200,7 +204,7 @@ Mega Stones (around half of the ~166-item pool) are hidden by default.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `category` | `str \| None` | `None` | e.g. `berry`, `power-boost`, `stat-boost`, `effect-extend`, `recovery`, `defense`, `other` (pokechamp's own category labels) |
+| `category` | `str \| None` | `None` | pokechamp category, e.g. `held-items`, `type-enhancement`, `type-protection`, `medicine`, `choice`, `bad-held-items`, `species-specific` |
 | `query` | `str \| None` | `None` | Name substring |
 | `include_mega_stones` | `bool` | `False` | Include the Mega Stones |
 | `limit` | `int` | `200` | Maximum results |
@@ -272,9 +276,9 @@ older games (snow is not hail: no chip damage, no Ice power boost).
 
 Roster pick list (every entry is legal this season). Filter by name
 substring and/or a single type; pass a format to sort by usage rank. The
-roster is 235 Pokémon, so this returns the first `limit` matches; narrow
-with `query`/`type` rather than raising `limit` blindly. To rank by usage,
-use `get_usage_stats` instead.
+roster size changes with regulations, so this returns the first `limit`
+matches; narrow with `query`/`type` rather than raising `limit` blindly. To rank
+by usage, use `get_usage_stats` instead.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -457,8 +461,9 @@ the set the team actually needs.
 When the observed-team corpus covers this Pokémon, the response carries a
 `joint_data_available` block pointing at
 [`get_observed_sets`](#get_observed_sets), which answers the same question
-jointly. Prefer it when committing to a set. This tool remains the only source
-of **Stat Point spreads**, which neither observed-build upstream publishes.
+jointly. Prefer it when committing to a set. This tool provides the general
+**Stat Point spread distributions**. Tournament sheets and ladder exports lack
+spreads; complete BSS report spreads are stored separately for simulation.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -524,12 +529,14 @@ people actually brought, which makes the joint question answerable.
 | Level | Source | Contains |
 |---|---|---|
 | `full_set` | Limitless tournament open team sheets (VGC) | species, item, ability, nature, 4 moves |
+| `full_set` | Fully resolved published team reports (BSS) | species, item, ability, nature, 4 moves; report spreads are retained separately in `full_teams` |
 | `team_and_item` | champs.pokedb.tokyo ranked ladder (BSS) | species and held item only |
 
-BSS therefore has **no observed movesets**. Item and teammate correlations are
-real there; any moveset is your own inference and should be justified with
-`get_pokemon_moves` + `calc_damage` rather than presented as observed. Neither
-source carries Stat Points — those still come from `get_pokemon_sets`.
+BSS can therefore include both complete report sets and item-only ladder
+observations. Read `evidence` and provenance in the returned result. For
+`team_and_item` evidence, moves are inference and should be justified with
+`get_pokemon_moves` + `calc_damage`, not presented as observed. The observed-set
+tables do not store Stat Points; use `get_pokemon_sets` for spread distributions.
 
 **Reading the bands.** Each decision (item, ability, nature, and every move) is
 labelled:
@@ -592,7 +599,7 @@ structure, not as templates — copying a list also copies whatever it loses to.
 Curated sets from Smogon/Pokémon Showdown — every generation and tier Smogon
 has ever published, filtered only to this format's battle type (doubles for
 `vgc`, singles for `bss`; the specific tier/generation inside that doesn't
-matter). **Not Champions tournament data** — Champions predates all of it, has
+matter). **Not Champions tournament data** — Champions has
 a much smaller item pool, and a different movepool per species, so every set
 carries `legal_in_champions` (overall) plus per-move/item/ability legality
 flags. `invested_stats` names which stats the original EV spread favoured;
@@ -762,8 +769,10 @@ sides; hundreds of games take a few seconds on the `champions-sim` sidecar
 `champions-sim` image), which uses every CPU core it is allowed.
 
 **Teams** are a list of six member dicts (`{species, item, ability, nature,
-moves, stat_points}`, as for `validate_team`) or Showdown paste text. A
-missing spread, nature or ability is filled with the species' most common one
+moves, stat_points}`, as for `validate_team`), Showdown paste text, or an opponent
+`id` from `simulate_vs_meta`'s `worst_matchups` / `best_matchups`. Use that ID to
+replay the exact opponent. A missing spread, nature or ability in member-list
+input is filled with the species' most common one
 and listed under `assumptions`. Every team is checked with the simulator's
 own Reg M-C validator first; an illegal one returns `problems`. (Choice Specs,
 Choice Band and Assault Vest are "Past" items in Champions and are rejected.)
@@ -771,10 +780,15 @@ Choice Band and Assault Vest are "Past" items in Champions and are rejected.)
 **Opponents** for `simulate_vs_meta` / `compare_team_variants` are real
 teams:
 - **BSS:** complete teams from players' published team reports (moves,
-  ability, nature and spread exactly as played), best final ranks first,
+  ability, nature and spread as recorded), highest ratings first, then ranked
+  teams without ratings and finally unranked teams,
   topped up with pokedb's top ladder teams (species and item as played, the
   rest from BSS usage).
 - **VGC:** Limitless tournament teamlists, using each species' modal spread.
+
+If the BSS pool is too small, the simulator may top it up with VGC teams played
+as bring-three; this is reported in its assumptions. Results are diagnostics
+under the AI policy, not a forecast of human ladder performance.
 
 **AI policy** (`policy`): `"heuristic"` (default) uses the simulator's own
 damage numbers, and it:
@@ -830,7 +844,7 @@ includes:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `team` | `list[dict] \| str` | *(required)* | The team (member dicts or Showdown paste) |
+| `team` | `list[dict] \| str` | *(required)* | Team members, Showdown paste, or a returned opponent ID |
 | `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
 | `opponents` | `int` | `30` | How many top observed teams to play |
 | `games_per_opponent` | `int` | `20` | Games against each (sides alternate) |
@@ -847,8 +861,8 @@ difference".
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `base_team` | `list[dict] \| str` | *(required)* | The current team |
-| `variants` | `list[list[dict] \| str]` | *(required)* | Full alternative teams |
+| `base_team` | `list[dict] \| str` | *(required)* | Current team (members, paste, or opponent ID) |
+| `variants` | `list[list[dict] \| str]` | *(required)* | Full alternatives, each as members, paste, or opponent ID |
 | `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
 | `opponents` | `int` | `20` | How many top observed teams to play |
 | `games_per_opponent` | `int` | `20` | Games against each |
@@ -864,8 +878,8 @@ members.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `team_a` | `list[dict] \| str` | *(required)* | First team |
-| `team_b` | `list[dict] \| str` | *(required)* | Second team |
+| `team_a` | `list[dict] \| str` | *(required)* | First team (members, paste, or opponent ID) |
+| `team_b` | `list[dict] \| str` | *(required)* | Second team (members, paste, or opponent ID) |
 | `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
 | `games` | `int` | `500` | Battles to play (500 give about ±4 points) |
 | `policy` | `str` | `"heuristic"` | AI policy for team_a |
@@ -882,8 +896,8 @@ another game.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `team_a` | `list[dict] \| str` | *(required)* | First team |
-| `team_b` | `list[dict] \| str` | *(required)* | Second team |
+| `team_a` | `list[dict] \| str` | *(required)* | First team (members, paste, or opponent ID) |
+| `team_b` | `list[dict] \| str` | *(required)* | Second team (members, paste, or opponent ID) |
 | `format` | `str` | `"vgc"` | `"vgc"` or `"bss"` |
 | `seed` | `int` | `1` | Battle seed |
 | `policy` | `str` | `"heuristic"` | AI policy for both sides |
