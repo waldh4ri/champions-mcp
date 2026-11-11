@@ -21,6 +21,8 @@
  *      OHKO and can set up when the boost outspeeds; multi-hit moves break a
  *      foe's Sash (KO odds from the hit distribution); hazards break a
  *      switch-in's Sash.
+ *  12. Protean / Libero: a faster foe's pending type change is applied before
+ *      our hit lands; a pending Protean attacker gets STAB on any first move.
  *   7. Setup + Baton Pass: a passer with only setup moves and Baton Pass sets
  *      up, then passes, into the recipient that uses the boosts; full battles
  *      with such a team actually hand the boosts over.
@@ -187,6 +189,11 @@ async function main() {
     tacticMultiHitBreaksSash();
     sashAndHazards();
     ok('sash + multi-hit tactics');
+
+    // 12. Protean / Libero
+    tacticHitTheProteanType();
+    proteanStab();
+    ok('protean tactics');
     for (const fmt of ['bss', 'vgc']) {
       const v = await api.handle(pool, 'validate', { format: fmt, teams: [{ id: 'bp', paste: PASS_TEAM }, { id: 'nofire', paste: NO_FIRE_TEAM }] });
       assert(v.ok && v.teams.every(t => t.valid), `Baton Pass test teams must be legal in ${fmt}: ${JSON.stringify(v.teams)}`);
@@ -718,6 +725,51 @@ function sashAndHazards() {
   b.sides[0].addSideCondition('stealthrock', whim);
   const rocked = switchEval(b, b.sides[0], 0, chomp, a, false);
   assert(intact.followUp < 1 && rocked.followUp >= 1, `Rocks break the switch-in's Sash: ${JSON.stringify({ intact, rocked })}`);
+  b.destroy();
+}
+
+// ------------------------------------------------------- Protean / Libero
+
+const sneasler = () => set('Sneasler', ['Close Combat', 'Gunk Shot', 'Rock Slide', 'Protect'], { ability: 'Poison Touch', nature: 'Jolly' });
+const meow = () => set('Meowscarada', ['Knock Off', 'Protect', 'Taunt', 'Encore'], { ability: 'Protean', nature: 'Jolly' });
+
+/**
+ * Sneasler vs Meowscarada (Grass/Dark) whose only attack is Knock Off:
+ * slower, its Protean triggers after our hit, so Gunk Shot is still 2x;
+ * faster, it turns pure Dark first: Gunk Shot drops to 1x and Close Combat
+ * (still 2x) is right. Once Protean has triggered, its new typing is just
+ * its typing.
+ */
+function tacticHitTheProteanType() {
+  const run = (foeSpe, prep) => {
+    const b = singles([sneasler()], [meow()]);
+    const [me, foe] = [b.sides[0].active[0], b.sides[1].active[0]];
+    foe.storedStats.spe = foeSpe(me);
+    if (prep) prep(b, foe);
+    const c = tally(b);
+    b.destroy();
+    return c;
+  };
+  const slower = run(me => Math.floor(me.storedStats.spe / 2));
+  assert((slower['move 2'] || 0) >= 16, `slower Meowscarada stays Grass/Dark: expected Gunk Shot (2x), got ${JSON.stringify(slower)}`);
+  const faster = run(me => me.storedStats.spe * 2);
+  assert((faster['move 1'] || 0) >= 16, `faster Meowscarada turns Dark first: expected Close Combat, got ${JSON.stringify(faster)}`);
+  const used = run(me => Math.floor(me.storedStats.spe / 2), (b, foe) => { foe.setType('Dark'); foe.abilityState.protean = true; });
+  assert((used['move 1'] || 0) >= 16, `already turned Dark: expected Close Combat, got ${JSON.stringify(used)}`);
+}
+
+/** A pending Protean makes an off-type move STAB (1.5x); not once it has triggered this switch-in. */
+function proteanStab() {
+  const { simDamage, _test: { proteanPending } } = require('./policies');
+  const b = singles([set('Meowscarada', ['Brick Break', 'Flower Trick', 'Knock Off', 'U-turn'], { ability: 'Protean', nature: 'Jolly' })],
+    [set('Kingambit', ['Iron Head', 'Kowtow Cleave', 'Sucker Punch', 'Low Kick'], { ability: 'Defiant' })]);
+  const [me, foe] = [b.sides[0].active[0], b.sides[1].active[0]];
+  assert(proteanPending(me), 'fresh on the field: Protean pending');
+  const pending = simDamage(b, me, foe, 'brickbreak', false);
+  me.abilityState.protean = true;
+  assert(!proteanPending(me), 'used this switch-in');
+  const used = simDamage(b, me, foe, 'brickbreak', false);
+  assert(Math.abs(pending / used - 1.5) < 0.05, `Protean STAB on Brick Break: ${pending} vs ${used}`);
   b.destroy();
 }
 

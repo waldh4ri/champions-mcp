@@ -354,6 +354,42 @@ function formulaDamage(dex, att, def, moveId) {
   return base * hits * stab * eff * mod * 0.925 * acc;
 }
 
+// Protean / Libero: the user becomes the type of the move it's about to use,
+// once per switch-in (the flag lives on its ability state, reset on entry).
+const PROTEAN = new Set(['protean', 'libero']);
+
+/** Protean / Libero still to trigger: benched (fresh on entry) or active and unused. */
+function proteanPending(p) {
+  if (!p || !PROTEAN.has(abilityId(p))) return false;
+  return !(p.isActive && p.abilityState && p.abilityState.protean);
+}
+
+/** Run `fn` with `p` temporarily typed `types` (restored after). */
+function withTypes(p, types, fn) {
+  const saved = p.types, savedAdded = p.addedType;
+  p.types = types;
+  p.addedType = '';
+  try {
+    return fn();
+  } finally {
+    p.types = saved;
+    p.addedType = savedAdded;
+  }
+}
+
+/**
+ * The typing `t` will have when our `moveId` hits it, if a pending Protean /
+ * Libero changes it first: `t` is a foe that moves before us and is
+ * predicted to use an attack of another type. Null when its typing holds.
+ */
+function proteanShift(battle, t, mon, moveId, a) {
+  if (!t || t.side === mon.side || !t.isActive || !proteanPending(t)) return null;
+  const pred = a && a.byFoe.get(t);
+  if (!pred || !pred.moveId || !movesFirst(battle, t, pred.moveId, mon, moveId)) return null;
+  const type = battle.dex.moves.get(pred.moveId).type;
+  return type && type !== '???' && t.getTypes().join() !== type ? [type] : null;
+}
+
 // Reusable scratch PRNG and noop handler so simDamage never allocates them per call.
 const SCRATCH_PRNG = new PRNG([7, 7, 7, 7]);
 const NOOP_FALSE = () => false;
@@ -377,7 +413,7 @@ function simDamage(battle, att, def, moveId, spreadHit) {
   if (cache && att.side && def.side) {
     // Boosts are part of the key: setup / Baton Pass evaluation projects them.
     const ab = att.boosts || {}, db = def.boosts || {};
-    cacheKey = `${att.side.n}:${att.position}:${att.species.id}:${att.ability}:${ab.atk | 0},${ab.spa | 0},${ab.def | 0},${ab.spd | 0},${ab.spe | 0}:${def.side.n}:${def.position}:${def.species.id}:${def.ability}:${db.def | 0},${db.spd | 0}:${att.status || ''}:${def.status || ''}:${def.hp}:${moveId}:${spreadHit ? 1 : 0}:${battle.field.weather}:${battle.field.terrain}`;
+    cacheKey = `${att.side.n}:${att.position}:${att.species.id}:${att.ability}:${att.types}:${ab.atk | 0},${ab.spa | 0},${ab.def | 0},${ab.spd | 0},${ab.spe | 0}:${def.side.n}:${def.position}:${def.species.id}:${def.ability}:${def.types}:${db.def | 0},${db.spd | 0}:${att.status || ''}:${def.status || ''}:${def.hp}:${moveId}:${spreadHit ? 1 : 0}:${battle.field.weather}:${battle.field.terrain}`;
     const hit = cache.get(cacheKey);
     if (hit !== undefined) return hit;
   }
@@ -390,6 +426,8 @@ function simDamage(battle, att, def, moveId, spreadHit) {
   const savedLogLen = battle.log.length;
   const savedAttEat = att.eatItem, savedAttUse = att.useItem, savedAttAct = att.isActive;
   const savedDefEat = def.eatItem, savedDefUse = def.useItem, savedDefAct = def.isActive;
+  const attProtean = proteanPending(att); // (read before isActive is forced below)
+  let protSaved = null;
 
   try {
     SCRATCH_PRNG.rng.seed = [7, 7, 7, 7];
@@ -419,6 +457,12 @@ function simDamage(battle, att, def, moveId, spreadHit) {
     }
     m = battle.runEvent('ModifyType', att, def, m, m) || m;
     battle.activeMove = m;
+    // Protean / Libero: it turns into the move's type just before hitting (STAB).
+    if (attProtean && m.type && m.type !== '???' && att.getTypes().join() !== m.type) {
+      protSaved = { types: att.types, addedType: att.addedType };
+      att.types = [m.type];
+      att.addedType = '';
+    }
 
     let d = battle.actions.getDamage(att, def, m, true);
     if (typeof d !== 'number' || !(d > 0)) {
@@ -440,6 +484,7 @@ function simDamage(battle, att, def, moveId, spreadHit) {
   } catch (e) {
     return formulaDamage(battle.dex, att, def, moveId);
   } finally {
+    if (protSaved) { att.types = protSaved.types; att.addedType = protSaved.addedType; }
     battle.prng = savedPrng; battle.randomizer = savedRand;
     battle.activeMove = savedMove; battle.activePokemon = savedPoke; battle.activeTarget = savedTarg;
     att.eatItem = savedAttEat; att.useItem = savedAttUse; att.isActive = savedAttAct;
@@ -1815,7 +1860,9 @@ function scoreSlot(battle, side, slot, opts, a, ctx) {
       }
 
       for (const t of o.targets) {
-        const d = hitScale * simDamage(battle, mon, t, o.id, spread);
+        // A faster foe's pending Protean / Libero retypes it before our hit lands.
+        const shifted = proteanShift(battle, t, mon, o.id, a);
+        const d = hitScale * (shifted ? withTypes(t, shifted, () => simDamage(battle, mon, t, o.id, spread)) : simDamage(battle, mon, t, o.id, spread));
         if (d > 0) {
           const pred = a.byFoe.get(t);
           const sash = !o.move.multihit && abilityId(mon) !== 'parentalbond' &&
@@ -2140,4 +2187,4 @@ const POLICIES = ['random', 'greedy', 'heuristic'];
 
 module.exports = { choose, POLICIES, INFO_MODES, applyView, simDamage, formulaDamage,
   // internals, for the self-test only
-  _test: { foeDisruption, statusSwing, residualDelta, switchEval, assess, sashHolds } };
+  _test: { foeDisruption, statusSwing, residualDelta, switchEval, assess, sashHolds, proteanPending } };
