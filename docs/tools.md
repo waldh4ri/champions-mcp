@@ -783,7 +783,22 @@ damage numbers, and it:
   setup and status where they pay;
 - switches when the active Pokémon is outsped and KO'd, walled or about to
   take a big hit, preferring a switch-in that resists or is immune to the
-  predicted move;
+  predicted move; a doomed Pokémon with little left to offer is sacrificed
+  instead, so the replacement comes in for free after the KO;
+- values setup moves by what the boosts change (KOs, speed order, bulk), and
+  sets up behind Focus Sash / Sturdy when the boost lets it move first;
+- Baton Passes only with boosts and a safe recipient, picks the recipient
+  that uses them (and one a foe's Roar / Whirlwind / Dragon Tail can't force
+  out), and counts passed Def / SpD on the incoming hit;
+- heals only when the heal lands before a KO (speed, priority, Triage) and
+  the HP actually matters, including weather-dependent heals, Strength Sap,
+  Rest, Wish and ally heals;
+- values burn / paralysis / poison by the damage and speed they take off the
+  foe (never into Guts and the like), respects status immunities (Thunder Wave
+  vs Ground, Volt Absorb...), and discounts status moves into a faster Taunt
+  or an Encore;
+- accounts for Focus Sash / Sturdy on both sides, multi-hit KO odds, entry
+  hazards (Defog / Rapid Spin when they pay) and end-of-turn damage;
 - values pivot moves;
 - picks brings and leads by matchup, judging Mega Stone holders as their Mega.
 

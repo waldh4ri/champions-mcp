@@ -251,7 +251,12 @@ function blockedByAbilityOrItem(battle, att, def, move) {
     if (hasType(def, 'Grass') || itemId(def) === 'safetygoggles' || (!mold && ab === 'overcoat')) return true;
   }
   if (move.category === 'Status') {
-    if (foeTarget && !mold && (ab === 'goodasgold' || (ab === 'magicbounce' && move.flags && move.flags.reflectable))) return true;
+    if (!foeTarget) return false;
+    if (!mold && (ab === 'goodasgold' || (ab === 'magicbounce' && move.flags && move.flags.reflectable))) return true;
+    // Thunder Wave respects type immunity (Ground); absorbing abilities
+    // (Volt Absorb, Lightning Rod, Sap Sipper, Flash Fire...) eat any move of their type.
+    if (move.ignoreImmunity === false && battle && !battle.dex.getImmunity(move.type, def)) return true;
+    if (!mold && move.type !== 'Ground' && TYPE_IMMUNE_ABILITY[ab] === move.type) return true;
     return false;
   }
   // Partner Telepathy immunity to spread moves.
@@ -313,6 +318,8 @@ function formulaDamage(dex, att, def, moveId) {
   if (move.id === 'bodypress') a = att.storedStats.def;
   else if (move.id === 'foulplay') a = def.storedStats.atk;
   if (move.category === 'Physical' && (attAb === 'hugepower' || attAb === 'purepower')) a *= 2;
+  if (move.category === 'Physical' && att.status === 'brn' && attAb !== 'guts' && move.id !== 'facade') a *= 0.5;
+  if (att.status && attAb === 'guts' && move.category === 'Physical') a *= 1.5;
   if (moveType === 'Fire' && attAb === 'firemane') a *= 1.5;
 
   let d = (move.overrideDefensiveStat ? def.storedStats[move.overrideDefensiveStat] : null) ||
@@ -368,7 +375,9 @@ function simDamage(battle, att, def, moveId, spreadHit) {
   const cache = battle._dmgCache;
   let cacheKey = null;
   if (cache && att.side && def.side) {
-    cacheKey = `${att.side.n}:${att.position}:${att.species.id}:${att.ability}:${def.side.n}:${def.position}:${def.species.id}:${def.ability}:${ def.hp}:${moveId}:${spreadHit ? 1 : 0}:${battle.field.weather}:${battle.field.terrain}`;
+    // Boosts are part of the key: setup / Baton Pass evaluation projects them.
+    const ab = att.boosts || {}, db = def.boosts || {};
+    cacheKey = `${att.side.n}:${att.position}:${att.species.id}:${att.ability}:${ab.atk | 0},${ab.spa | 0},${ab.def | 0},${ab.spd | 0},${ab.spe | 0}:${def.side.n}:${def.position}:${def.species.id}:${def.ability}:${db.def | 0},${db.spd | 0}:${att.status || ''}:${def.status || ''}:${def.hp}:${moveId}:${spreadHit ? 1 : 0}:${battle.field.weather}:${battle.field.terrain}`;
     const hit = cache.get(cacheKey);
     if (hit !== undefined) return hit;
   }
@@ -539,13 +548,49 @@ function movesFirst(battle, att, moveId, def, defMoveId) {
   return speedOf(att) > speedOf(def);
 }
 
-/** Best (moveId, expected damage, priority) of `att` against `def`. */
+/**
+ * Focus Sash / Sturdy keep `def` at 1 HP against this hit: full HP, a
+ * single-hit move (multi-hit moves and Parental Bond break through), and no
+ * Mold Breaker against Sturdy.
+ */
+function sashHolds(battle, att, def, move) {
+  if (!def || def.hp < def.maxhp) return false;
+  const m = typeof move === 'string' ? battle.dex.moves.get(move) : move;
+  if (m.multihit || abilityId(att) === 'parentalbond') return false;
+  if (itemId(def) === 'focussash') return true;
+  return abilityId(def) === 'sturdy' && !MOLD_BREAKERS.has(abilityId(att));
+}
+
+/**
+ * Hit-count distribution of a multi-hit move, [[hits, probability], ...]
+ * (2-5 hits: 35/35/15/15%; Skill Link: always the max; Loaded Dice: 4-5),
+ * or null for a single-hit move. Matches the averaging in simDamage.
+ */
+function hitDist(att, move) {
+  const mh = move.multihit;
+  if (!mh) return null;
+  if (!Array.isArray(mh)) return [[mh, 1]];
+  if (abilityId(att) === 'skilllink') return [[mh[1], 1]];
+  if (mh[0] === 2 && mh[1] === 5) {
+    return itemId(att) === 'loadeddice' ? [[4, 0.5], [5, 0.5]] : [[2, 0.35], [3, 0.35], [4, 0.15], [5, 0.15]];
+  }
+  const out = [];
+  for (let k = mh[0]; k <= mh[1]; k++) out.push([k, 1 / (mh[1] - mh[0] + 1)]);
+  return out;
+}
+
+/** Expected damage after Focus Sash / Sturdy: a would-be OHKO leaves 1 HP. */
+function capSash(battle, att, def, move, d) {
+  return d >= def.hp && sashHolds(battle, att, def, move) ? def.hp - 1 : d;
+}
+
+/** Best (moveId, expected damage, priority) of `att` against `def` (Sash / Sturdy aware). */
 function bestMove(battle, att, def) {
   let best = { id: null, d: 0, pri: 0 };
   for (const ms of att.moveSlots) {
     if (ms.pp <= 0 || ms.disabled) continue;
     if (ms.id === 'upperhand' || ms.id === 'focuspunch') continue; // situational: not a reliable threat
-    const d = simDamage(battle, att, def, ms.id, false);
+    const d = capSash(battle, att, def, ms.id, simDamage(battle, att, def, ms.id, false));
     if (d > best.d) best = { id: ms.id, d, pri: effectivePriority(battle, att, ms.id) };
   }
   return best;
@@ -602,6 +647,18 @@ function assess(battle, side) {
  * `free` = replacing a fainted Pokémon (nothing to absorb this turn).
  */
 function switchEval(battle, side, slot, cand, a, free) {
+  // It comes in after the entry hazards (which also break a Focus Sash).
+  const savedHp = cand.hp;
+  const hz = Math.floor(hazardCost(battle, side, cand) * cand.maxhp);
+  if (hz > 0 && !cand.isActive) cand.hp = Math.max(1, cand.hp - hz);
+  try {
+    return switchEvalAt(battle, side, slot, cand, a, free);
+  } finally {
+    cand.hp = savedHp;
+  }
+}
+
+function switchEvalAt(battle, side, slot, cand, a, free) {
   let absorb = 0, followUp = 0, offense = 0, faster = true;
   const intim = abilityId(cand) === 'intimidate';
   for (const foe of foesOf(side)) {
@@ -612,7 +669,7 @@ function switchEval(battle, side, slot, cand, a, free) {
         if (pr.foe === foe && pr.slot === slot) {
           const mv = battle.dex.moves.get(pr.moveId);
           const scale = intimCut && mv.category === 'Physical' ? 2 / 3 : 1;
-          absorb += scale * simDamage(battle, foe, cand, pr.moveId, false) / Math.max(1, cand.hp);
+          absorb += scale * capSash(battle, foe, cand, pr.moveId, simDamage(battle, foe, cand, pr.moveId, false)) / Math.max(1, cand.hp);
         }
       }
     }
@@ -644,6 +701,64 @@ function hazardCost(battle, side, cand) {
 }
 
 /**
+ * What `mon` is still worth to the rest of the battle, 0..1: its HP (full
+ * credit from 40%) times what it can do to the foes left: full against those
+ * it moves before, half against slower-acting ones that can't KO it, nothing
+ * against those that KO it before it moves.
+ */
+function preserveValue(battle, side, mon) {
+  const hpPart = Math.min(1, mon.hp / mon.maxhp / 0.4);
+  let use = 0;
+  const picked = battle.ruleTable.pickedTeamSize || side.foe.pokemon.length;
+  for (const f of side.foe.pokemon.slice(0, picked)) {
+    if (!alive(f)) continue;
+    const b = bestMove(battle, mon, f);
+    if (!b.id) continue;
+    const back = bestMove(battle, f, mon);
+    const first = movesFirst(battle, mon, b.id, f, back.id);
+    if (!first && back.d >= mon.hp) continue; // KO'd before it can do anything to this one
+    use = Math.max(use, Math.min(1, b.d / Math.max(1, f.hp)) * (first ? 1 : 0.5));
+  }
+  return hpPart * (0.25 + 0.75 * use);
+}
+
+/** Switch-in matchup used to break ties: hits it lands vs takes afterwards. */
+function matchupTerm(e) {
+  return 40 * Math.min(1, e.offense) + (e.faster ? 12 : 0) - 30 * Math.min(1, e.followUp);
+}
+
+/**
+ * What the entry hazards on `side` will cost its Pokémon still to come in:
+ * each bench Pokémon's entry damage (Stealth Rock, Spikes), plus Toxic Spikes
+ * and Sticky Web, in move-score units. `side` = the side the hazards are on.
+ */
+function hazardBurden(battle, side) {
+  const sc = side.sideConditions;
+  if (!sc['stealthrock'] && !sc['spikes'] && !sc['toxicspikes'] && !sc['stickyweb']) return 0;
+  let v = 0;
+  for (const i of benchIndices(side, new Set())) {
+    const p = side.pokemon[i];
+    v += 90 * hazardCost(battle, side, p); // HP it loses coming in (attacks score ~100 per max HP)
+    const grounded = isGrounded(p) && itemId(p) !== 'heavydutyboots';
+    if (sc['toxicspikes'] && grounded && !p.status && !hasType(p, 'Poison') && !hasType(p, 'Steel')) v += 10;
+    if (sc['stickyweb'] && grounded) v += 8;
+  }
+  return v;
+}
+
+/** Hazard control move value: removal (Defog, Rapid Spin, Tidy Up) or swap (Court Change). */
+function hazardControlValue(battle, side, id) {
+  const ours = hazardBurden(battle, side), theirs = hazardBurden(battle, side.foe);
+  if (id === 'rapidspin' || id === 'mortalspin' || id === 'tidyup') return ours;
+  if (id === 'courtchange') return ours - theirs; // our hazards go to them, theirs come to us
+  if (id === 'defog') {
+    const screens = ['reflect', 'lightscreen', 'auroraveil'].filter(c => side.foe.sideConditions[c]).length;
+    return ours - theirs + 18 * screens; // clears both sides, and the foe's screens
+  }
+  return 0;
+}
+
+/**
  * Value of switching `slot`'s active into `cand`, in the same units as move
  * scores (~100 per foe-HP removed).
  */
@@ -655,8 +770,38 @@ function switchScore(battle, side, slot, cand, a, free) {
   let v = -80 * hCost;
   if (cand.hp <= hCost * cand.maxhp) return -200; // dies to hazards on entry
   if (!free && mon) {
-    if (s.koFirst) v += 55;                       // would faint before acting
-    else if (s.threat >= 0.6) v += 30 * Math.min(1, s.threat);
+    // (only needed when it's in danger; memoized per decision on the assessment)
+    const keepOf = () => {
+      a.keep = a.keep || new Map();
+      if (!a.keep.has(mon)) a.keep.set(mon, preserveValue(battle, side, mon));
+      return a.keep.get(mon);
+    };
+    if (s.koFirst) {
+      const keep = keepOf();
+      // Doomed (KO'd before it acts): the turn is lost either way, and a
+      // replacement comes in regardless, now or for free after the KO. What
+      // switching changes is keeping `mon` (worth what it still brings) at
+      // the price of the hit the switch-in takes. A spent Pokémon is better
+      // sacked. The matchup only breaks ties between switch-ins.
+      v += 55 * keep;
+      v -= 70 * Math.min(1, e.absorb) + (e.absorb >= 1 ? 40 : 0);
+      if (e.absorb === 0 && a.predicted.some(p => p.slot === slot)) v += 18;
+      if (abilityId(mon) === 'regenerator' && mon.hp < mon.maxhp * 0.75) v += 14;
+      v -= 12 * posBoosts(mon.boosts) * keep;
+      // Relative to the best free replacement after a KO (who comes in anyway).
+      a.bestFree = a.bestFree || new Map();
+      if (!a.bestFree.has(slot)) {
+        let best = -Infinity;
+        for (const i of benchIndices(side, new Set())) {
+          best = Math.max(best, matchupTerm(switchEval(battle, side, slot, side.pokemon[i], a, true)));
+        }
+        a.bestFree.set(slot, best);
+      }
+      const bestFree = a.bestFree.get(slot);
+      v += 0.3 * (matchupTerm(e) - bestFree);
+      return v;
+    }
+    if (s.threat >= 0.6) v += 30 * Math.min(1, s.threat) * (0.5 + 0.5 * keepOf());
     if (s.bestOut < 0.15) v += 30;                // walled: nothing it does matters
     else if (s.bestOut < 0.3) v += 12;
     v -= 32;                                      // the turn spent switching
@@ -680,6 +825,155 @@ function switchScore(battle, side, slot, cand, a, free) {
   v += 40 * Math.min(1, e.offense) + (e.faster ? 12 : 0);
   v -= 30 * Math.min(1, e.followUp) + (e.followUp >= 1 && !e.faster ? 15 : 0);
   return v;
+}
+
+// ------------------------------------------------- setup and Baton Pass
+//
+// Stat boosts are valued by what they change on the board: project them onto
+// a Pokémon (the setter itself, or a Baton Pass recipient) and re-run the real
+// damage and speed checks against every foe still standing.
+
+const BOOST_STATS = ['atk', 'def', 'spa', 'spd', 'spe', 'accuracy', 'evasion'];
+const NO_BOOSTS = Object.freeze({ atk: 0, def: 0, spa: 0, spd: 0, spe: 0, accuracy: 0, evasion: 0 });
+// Moves that undo a setup turn: phazing and boost-clearing.
+const ANTI_SETUP = new Set(['haze', 'clearsmog', 'roar', 'whirlwind', 'dragontail', 'circlethrow', 'spectralthief']);
+const clampBoost = v => Math.max(-6, Math.min(6, v));
+const posBoosts = b => BOOST_STATS.reduce((x, k) => x + Math.max(0, (b && b[k]) || 0), 0);
+const negBoosts = b => BOOST_STATS.reduce((x, k) => x + Math.max(0, -((b && b[k]) || 0)), 0);
+
+/** Self-boosts `move` gives `mon` (Swords Dance, Shell Smash, Belly Drum, non-Ghost Curse...), or null. */
+function setupBoosts(mon, move) {
+  let b = null;
+  if (move.id === 'bellydrum') b = { atk: 12 }; // maximises Attack whatever the current stage
+  else if (move.id === 'curse') b = hasType(mon, 'Ghost') ? null : { atk: 1, def: 1, spe: -1 };
+  else if (move.target === 'self' && move.boosts) b = move.boosts;
+  if (!b) return null;
+  if (abilityId(mon) === 'contrary') b = Object.fromEntries(Object.entries(b).map(([k, v]) => [k, -v]));
+  else if (abilityId(mon) === 'simple') b = Object.fromEntries(Object.entries(b).map(([k, v]) => [k, 2 * v]));
+  return b;
+}
+
+function addBoosts(base, delta) {
+  const out = { ...NO_BOOSTS };
+  for (const k of BOOST_STATS) out[k] = clampBoost(((base && base[k]) || 0) + ((delta && delta[k]) || 0));
+  return out;
+}
+
+/** Foes that matter for a sweep: the active ones fully, the brought bench partly. */
+function sweepTargets(battle, side) {
+  const picked = battle.ruleTable.pickedTeamSize || side.foe.pokemon.length;
+  return side.foe.pokemon.slice(0, picked).filter(alive).map(f => ({ f, w: f.isActive ? 1 : 0.4 }));
+}
+
+/**
+ * Board value of `cand` holding `boosts`: how hard and how fast it hits every
+ * remaining foe, minus how hard they hit it back (all from the real damage
+ * calc, so Stored Power, Body Press, Unaware and resistances come out right).
+ */
+function boostValue(battle, side, cand, boosts) {
+  const saved = cand.boosts;
+  cand.boosts = { ...NO_BOOSTS, ...boosts };
+  try {
+    let v = 0;
+    for (const { f, w } of sweepTargets(battle, side)) {
+      const out = bestMove(battle, cand, f).d / Math.max(1, f.hp);
+      const inc = bestMove(battle, f, cand).d / Math.max(1, cand.hp);
+      const fast = speedOf(cand) > speedOf(f);
+      v += w * (40 * Math.min(1, out) + (out >= 1 ? (fast ? 35 : 15) : 0) + (fast && out > 0.05 ? 10 : 0));
+      v -= w * (25 * Math.min(1, inc) + (inc >= 1 && !fast ? 15 : 0));
+    }
+    return v;
+  } finally {
+    cand.boosts = saved;
+  }
+}
+
+/** Can `mon` Baton Pass right now (a healthy bench to pass to)? */
+function canBatonPass(side, mon) {
+  return !!mon.moveSlots.find(ms => ms.id === 'batonpass' && ms.pp > 0 && !ms.disabled) &&
+    !(mon.volatiles && mon.volatiles['commanded']) && benchIndices(side, new Set()).length > 0;
+}
+
+/** What `boosts` are worth to `cand` compared with coming in unboosted. */
+function relayGain(battle, side, cand, boosts) {
+  if (!posBoosts(boosts) && !negBoosts(boosts)) return 0;
+  return boostValue(battle, side, cand, boosts) - boostValue(battle, side, cand, NO_BOOSTS);
+}
+
+// Moves that force the target out (and wipe its boosts). All run at -6
+// priority, so after a Baton Pass they land on the recipient.
+const PHAZE_MOVES = new Set(['roar', 'whirlwind', 'dragontail', 'circlethrow']);
+
+/** Phazing moves the active foes carry (as this side believes them). */
+function foePhazes(side) {
+  const out = new Set();
+  for (const f of foesOf(side)) {
+    for (const ms of f.moveSlots) if (PHAZE_MOVES.has(ms.id) && ms.pp > 0 && !ms.disabled) out.add(ms.id);
+  }
+  return [...out];
+}
+
+/**
+ * Can't be forced out by `moveId`: Suction Cups / Guard Dog; Magic Bounce /
+ * Good as Gold (/ Soundproof vs Roar) against the status ones; a type
+ * immunity (Fairy vs Dragon Tail, Ghost vs Circle Throw) or an inherited
+ * Substitute against the damaging ones.
+ */
+function phazeProof(battle, cand, moveId, withSub) {
+  const ab = abilityId(cand);
+  if (ab === 'suctioncups' || ab === 'guarddog') return true;
+  const mv = battle.dex.moves.get(moveId);
+  if (mv.category === 'Status') {
+    return ab === 'magicbounce' || ab === 'goodasgold' || (ab === 'soundproof' && !!(mv.flags && mv.flags.sound));
+  }
+  const types = cand.getTypes ? cand.getTypes() : cand.types;
+  return withSub || !battle.dex.getImmunity(mv.type, types);
+}
+
+/**
+ * Value of Baton Passing from `passer` into bench `cand`: the switch itself
+ * (hit absorbed, matchup) plus the boosts it inherits. `safe` = the recipient
+ * survives coming in and isn't outsped and OHKO'd right after; with a phazer
+ * on the other side the boosts only stick on a recipient it can't force out.
+ * `free` = the passer moves after the foes, so the recipient takes no hit.
+ */
+function passScore(battle, side, slot, passer, cand, a, free) {
+  // The recipient arrives already holding the boosts, so it meets the incoming
+  // hit (a fast passer's case) and the follow-up with the passed Def / SpD /
+  // Spe: evaluate the switch-in with them on.
+  const savedBoosts = cand.boosts;
+  cand.boosts = { ...NO_BOOSTS, ...passer.boosts };
+  let v, e;
+  try {
+    v = switchScore(battle, side, slot, cand, a, free);
+    e = switchEval(battle, side, slot, cand, a, free);
+  } finally {
+    cand.boosts = savedBoosts;
+  }
+  if (free) v -= 32; // the turn is still spent
+  else v += 12 * posBoosts(passer.boosts) - 5 * Math.min(4, negBoosts(passer.boosts)); // switchScore assumed they're dropped
+  const hazard = hazardCost(battle, side, cand) * cand.maxhp;
+  const safe = cand.hp > hazard && (free || e.absorb < 1) && !(e.followUp >= 1 && !e.faster);
+  let relay = relayGain(battle, side, cand, passer.boosts);
+  const withSub = !!(passer.volatiles && passer.volatiles['substitute']);
+  const phazes = posBoosts(passer.boosts) ? foePhazes(side) : [];
+  if (phazes.length) {
+    if (phazes.every(id => phazeProof(battle, cand, id, withSub))) v += 15; // the boosts can't be roared away
+    else relay *= 0.15; // expect the phaze: the boosts are as good as gone
+  }
+  v += 0.85 * relay;
+  if (withSub) v += 18;
+  return { score: v, safe };
+}
+
+/** Best safe Baton Pass recipient for `slot`'s active: {i, score} (i = -1: none is safe). */
+function bestPass(battle, side, slot, passer, a, free, used = new Set()) {
+  let best = { i: -1, score: -Infinity };
+  for (const i of benchIndices(side, used)) {
+    const r = passScore(battle, side, slot, passer, side.pokemon[i], a, free);
+    if (r.safe && r.score > best.score) best = { i, score: r.score };
+  }
+  return best;
 }
 
 // ------------------------------------------------------- option generation
@@ -750,13 +1044,16 @@ function previewForm(battle, p, asMega = true) {
   };
 }
 
+/** Preview offense of `a` on `b`: best hit as a fraction of HP, bonus if faster. */
+function previewOff(dex, a, b) {
+  let best = 0;
+  for (const ms of a.moveSlots) best = Math.max(best, formulaDamage(dex, a, b, ms.id) / b.maxhp);
+  return Math.min(best, 1.2) * (a.storedStats.spe > b.storedStats.spe ? 1.15 : 1);
+}
+
 function memberPreviewScore(battle, p, theirs, doubles, lead) {
   const dex = battle.dex;
-  const off = (a, b) => {
-    let best = 0;
-    for (const ms of a.moveSlots) best = Math.max(best, formulaDamage(dex, a, b, ms.id) / b.maxhp);
-    return Math.min(best, 1.2) * (a.storedStats.spe > b.storedStats.spe ? 1.15 : 1);
-  };
+  const off = (a, b) => previewOff(dex, a, b);
   let o = 0, d = 0;
   for (const q of theirs) { o += off(p, q); d += off(q, p); }
   let s = o / theirs.length - 0.7 * d / theirs.length;
@@ -776,16 +1073,75 @@ function memberPreviewScore(battle, p, theirs, doubles, lead) {
   return s;
 }
 
+/**
+ * Boosts a Baton Passer can realistically hand over: each of its setup moves
+ * used once (plus a Speed Boost tick), at most +2 per stat.
+ */
+function passerBoosts(dex, p) {
+  const total = {};
+  for (const ms of p.moveSlots) {
+    const b = setupBoosts(p, dex.moves.get(ms.id));
+    if (b) for (const [k, v] of Object.entries(b)) if (v > 0) total[k] = (total[k] || 0) + v;
+  }
+  if (abilityId(p) === 'speedboost') total.spe = (total.spe || 0) + 1;
+  for (const k of Object.keys(total)) total[k] = Math.min(2, total[k]);
+  return total;
+}
+
+/** How much `boosts` raise recipient `r`'s preview offense across their team. */
+function previewPassGain(dex, r, boosts, theirs) {
+  const mult = k => (2 + (boosts[k] || 0)) / 2;
+  const boosted = Object.create(r);
+  const st = r.storedStats;
+  boosted.storedStats = { ...st, atk: st.atk * mult('atk'), spa: st.spa * mult('spa'), spe: st.spe * mult('spe') };
+  let g = 0;
+  for (const q of theirs) g += previewOff(dex, boosted, q) - previewOff(dex, r, q);
+  return g / theirs.length;
+}
+
+/** Baton Pass plus a way to build boosts (a setup move, or Speed Boost). */
+function isPasserSet(dex, p) {
+  const ids = p.moveSlots.map(m => m.id);
+  return ids.includes('batonpass') &&
+    (abilityId(p) === 'speedboost' || ids.some(id => {
+      const b = setupBoosts(p, dex.moves.get(id));
+      return b && Object.values(b).some(v => v > 0);
+    }));
+}
+
+/** Has a real damaging move (someone worth passing boosts to). */
+function isAttackerSet(dex, p) {
+  return p.moveSlots.some(m => {
+    const mv = dex.moves.get(m.id);
+    return mv.category !== 'Status' && (mv.basePower > 0 || mv.basePowerCallback || VAR_BP_FALLBACK[mv.id]);
+  });
+}
+
 function previewScores(battle, side, lead) {
   const doubles = side.active.length > 1;
   const theirs = side.foe.pokemon.map(p => previewForm(battle, p, true));
-  return side.pokemon.map((p, i) => {
+  const info = side.pokemon.map((p, i) => {
     const megaForm = previewForm(battle, p, true);
     const isMegaHolder = megaForm !== p;
     const sMega = memberPreviewScore(battle, megaForm, theirs, doubles, lead);
     const sBase = isMegaHolder ? memberPreviewScore(battle, p, theirs, doubles, lead) - 0.45 : sMega;
-    return { i, s: sMega, sMega, sBase, isMegaHolder, form: megaForm };
+    const passer = isPasserSet(battle.dex, p);
+    return { i, s: sMega, sMega, sBase, isMegaHolder, form: megaForm, passer, attacker: !passer && isAttackerSet(battle.dex, p) };
   });
+  // A Baton Passer is worth what its boosts add to each possible recipient.
+  for (const x of info) {
+    if (!x.passer) continue;
+    const boosts = passerBoosts(battle.dex, side.pokemon[x.i]);
+    x.passGain = info.map(r => (r.attacker ? previewPassGain(battle.dex, r.form, boosts, theirs) : 0));
+  }
+  return info;
+}
+
+/** Each passer's gain through its best recipient in `subset`, best first. */
+function subsetPassGains(subset, info) {
+  return subset.filter(i => info[i].passer)
+    .map(i => Math.max(0, ...subset.map(j => info[i].passGain[j])))
+    .sort((a, b) => b - a);
 }
 
 function subsetSynergy(subset, info) {
@@ -805,6 +1161,10 @@ function subsetSynergy(subset, info) {
   }
   if (abils.has('sandstream') && abils.has('sandrush')) bonus += 0.16;
   if (abils.has('snowwarning') && (abils.has('slushrush') || moves.has('auroraveil') || moves.has('blizzard'))) bonus += 0.16;
+  // Baton Pass needs someone to receive the boosts: a passer counts for what
+  // it adds to the best recipient brought along, weighted up because a
+  // boosted recipient keeps sweeping (a second passer counts half).
+  subsetPassGains(subset, info).forEach((g, k) => { bonus += (k ? 0.75 : 1.5) * g; });
   if (moves.has('trickroom')) {
     const slowCount = forms.filter(f => f.storedStats.spe <= 85).length;
     bonus += slowCount >= 2 ? 0.15 : -0.1;
@@ -854,9 +1214,12 @@ function teamPreview(policy, battle, side, req, rng) {
   const leadInfo = previewScores(battle, side, true);
   const primaryMega = [...bring].filter(i => leadInfo[i].isMegaHolder)
     .sort((a, b) => info[b].sMega - info[a].sMega)[0];
+  // A Baton Passer leads: it needs turns on the field to set up before its
+  // recipient (still in the back) comes in.
+  const passLead = i => (info[i].passer ? 0.6 + Math.max(0, ...bring.map(j => info[i].passGain[j])) : 0);
   const leadScore = new Map(bring.map(i => [
     i,
-    (leadInfo[i].isMegaHolder && i !== primaryMega ? leadInfo[i].sBase : leadInfo[i].sMega) + (rng() - 0.5) * 0.08,
+    (leadInfo[i].isMegaHolder && i !== primaryMega ? leadInfo[i].sBase : leadInfo[i].sMega) + passLead(i) + (rng() - 0.5) * 0.08,
   ]));
   bring.sort((a, b) => leadScore.get(b) - leadScore.get(a));
   return 'team ' + bring.map(i => i + 1).join('');
@@ -873,9 +1236,20 @@ function forcedSwitch(policy, battle, side, req, rng) {
     let pick = opts[rint(rng, opts.length)];
     if (policy === 'heuristic') {
       const a = assess(battle, side);
-      const scored = opts.map(i => ({
-        i, score: switchScore(battle, side, slot, side.pokemon[i], a, true) + 10 * side.pokemon[i].hp / side.pokemon[i].maxhp,
-      }));
+      // After Baton Pass the outgoing Pokémon is still active, flagged to copy
+      // its boosts and Substitute over: pick who makes the most of them.
+      const passer = side.active[slot];
+      // (switchFlag holds the id of the move that triggered the switch.)
+      const passing = passer && alive(passer) && typeof passer.switchFlag === 'string' &&
+        battle.dex.moves.get(passer.switchFlag).selfSwitch === 'copyvolatile';
+      // Foes still to move this turn will hit whoever comes in.
+      const free = !passing || !battle.queue.list.some(q => q.choice === 'move' && q.pokemon && q.pokemon.side === side.foe);
+      const value = i => {
+        if (!passing) return switchScore(battle, side, slot, side.pokemon[i], a, true);
+        const r = passScore(battle, side, slot, passer, side.pokemon[i], a, free);
+        return r.score + (free ? 32 : 0) - (r.safe ? 0 : 60);
+      };
+      const scored = opts.map(i => ({ i, score: value(i) + 10 * side.pokemon[i].hp / side.pokemon[i].maxhp }));
       pick = pickTop(rng, scored, 0.05).i;
     }
     used.add(pick);
@@ -886,7 +1260,6 @@ function forcedSwitch(policy, battle, side, req, rng) {
 // ---------------------------------------------------------- move decisions
 
 const PROTECT = new Set(['protect', 'detect', 'spikyshield', 'kingsshield', 'banefulbunker', 'silktrap', 'burningbulwark', 'obstruct']);
-const SETUP_BOOST = 2;
 const SPREAD_MOVE_IDS = new Set([
   'heatwave', 'makeitrain', 'earthquake', 'rockslide', 'hypervoice', 'dazzlinggleam',
   'icywind', 'electroweb', 'snarl', 'muddywater', 'bleakwindstorm', 'blizzard',
@@ -916,6 +1289,237 @@ function canInflictStatus(battle, mon, t, move, status) {
     if (!mold && t.side && t.side.active.some(p => alive(p) && abilityId(p) === 'pastelveil')) return false;
   }
   return true;
+}
+
+// ---------------------------------------------------------- end of turn
+
+/**
+ * HP `p` gains (+) or loses (-) at the end of this turn: burn, poison and
+ * Toxic's growing damage, sandstorm, Leech Seed, Curse, Salt Cure, Black
+ * Sludge; Leftovers, Poison Heal, Grassy Terrain. Magic Guard skips the damage.
+ */
+function residualDelta(battle, p) {
+  if (!alive(p)) return 0;
+  const max = p.maxhp, ab = abilityId(p), it = itemId(p), vol = p.volatiles || {};
+  let d = 0;
+  if (ab !== 'magicguard') {
+    if (battle.field.effectiveWeather() === 'sandstorm' && !['Rock', 'Ground', 'Steel'].some(t => hasType(p, t)) &&
+        !['sandveil', 'sandrush', 'sandforce', 'overcoat'].includes(ab) && it !== 'safetygoggles') d -= max / 16;
+    if (p.status === 'brn') d -= max / 16;
+    if (p.status === 'psn' && ab !== 'poisonheal') d -= max / 8;
+    if (p.status === 'tox' && ab !== 'poisonheal') d -= max * Math.min(15, ((p.statusState && p.statusState.stage) || 0) + 1) / 16;
+    if (vol['leechseed']) d -= max / 8;
+    if (vol['curse']) d -= max / 4;
+    if (vol['saltcure']) d -= max * (hasType(p, 'Water') || hasType(p, 'Steel') ? 0.25 : 0.125);
+    if (it === 'blacksludge' && !hasType(p, 'Poison')) d -= max / 8;
+  }
+  if (!vol['healblock']) {
+    if ((p.status === 'psn' || p.status === 'tox') && ab === 'poisonheal') d += max / 8;
+    if (it === 'leftovers' || (it === 'blacksludge' && hasType(p, 'Poison'))) d += max / 16;
+    if (battle.field.terrain === 'grassyterrain' && isGrounded(p)) d += max / 16;
+  }
+  return d;
+}
+
+// ---------------------------------------------------------------- healing
+//
+// A heal is worth the HP it actually leaves us with after this turn's
+// exchange, and only if it lands: turn order (speed, priority, Triage)
+// decides whether the foe's hits come before or after it, and a foe that
+// KOs us first means the heal never happens.
+
+/** HP `move` restores to `target` (negative: Liquid Ooze), before the max-HP cap. */
+function healAmount(battle, user, target, move, foe) {
+  const wx = battle.field.effectiveWeather();
+  const max = target.maxhp;
+  switch (move.id) {
+    case 'moonlight': case 'synthesis': case 'morningsun':
+      if (['sunnyday', 'desolateland'].includes(wx)) return max * 0.667;
+      if (wx && wx !== 'deltastream') return max * 0.25;
+      return max * 0.5;
+    case 'shoreup': return max * (wx === 'sandstorm' ? 0.667 : 0.5);
+    case 'rest': return max;
+    case 'lifedew': case 'junglehealing': return max * 0.25;
+    case 'healpulse': return max * (abilityId(user) === 'megalauncher' ? 0.75 : 0.5);
+    case 'floralhealing': return max * (battle.field.terrain === 'grassyterrain' ? 0.667 : 0.5);
+    case 'strengthsap': {
+      if (!foe || (foe.boosts.atk || 0) <= -6) return 0;
+      const atk = foe.getStat ? foe.getStat('atk', false, true) : foe.storedStats.atk;
+      const amt = itemId(user) === 'bigroot' ? atk * 1.3 : atk;
+      return abilityId(foe) === 'liquidooze' ? -amt : amt;
+    }
+    default:
+      if (move.heal) return max * move.heal[0] / move.heal[1];
+      return max * 0.5;
+  }
+}
+
+/**
+ * Foe hits on `target` (in `slot`) this turn, split by whether they land
+ * before or after `user`'s `moveId`; speed ties go to `tie`. `atkCut` scales
+ * physical hits that land after the move (Strength Sap's Attack drop).
+ */
+function incomingSplit(battle, side, slot, target, user, moveId, a, atkCut = 1) {
+  let before = 0, after = 0, tie = 0, tieCut = 0;
+  for (const pr of a.predicted) {
+    if (pr.slot !== slot || !pr.moveId) continue;
+    const d = capSash(battle, pr.foe, target, pr.moveId, simDamage(battle, pr.foe, target, pr.moveId, false));
+    const cut = atkCut !== 1 && battle.dex.moves.get(pr.moveId).category === 'Physical' ? atkCut : 1;
+    const tied = effectivePriority(battle, user, moveId) === effectivePriority(battle, pr.foe, pr.moveId) &&
+      speedOf(user) === speedOf(pr.foe);
+    if (tied) { tie += d; tieCut += d * cut; } else if (movesFirst(battle, user, moveId, pr.foe, pr.moveId)) after += d * cut;
+    else before += d;
+  }
+  return { before, after, tie, tieCut, res: residualDelta(battle, target) };
+}
+
+/** healExchange averaged over a speed tie (half the time we move first). */
+function healExchangeTied(target, amount, inc, delayed) {
+  if (!inc.tie) return healExchange(target, amount, inc, delayed);
+  return 0.5 * healExchange(target, amount, { before: inc.before + inc.tie, after: inc.after, res: inc.res }, delayed) +
+    0.5 * healExchange(target, amount, { before: inc.before, after: inc.after + inc.tieCut, res: inc.res }, delayed);
+}
+
+/**
+ * Value of healing `target` by `amount` this turn, in move-score units
+ * (~100 per max-HP): the HP we end the turn with versus not healing, a big
+ * bonus when that's the difference between fainting and surviving, a bonus
+ * for out-healing the foe's damage, and nothing (or worse) if the heal
+ * would come too late or not be enough.
+ */
+function healExchange(target, amount, inc, delayed) {
+  const max = target.maxhp, hp = target.hp, res = inc.res || 0;
+  if (hp - inc.before <= 0) return -50; // KO'd before the heal goes off
+  // End of turn (burn, Toxic, sand, Leftovers...) lands after all the hits.
+  const endOfTurn = x => (x <= 0 ? x : Math.min(max, x + res));
+  const noHeal = endOfTurn(hp - inc.before - inc.after);
+  // Healing after the early hits wastes nothing; the late hits land on the healed HP.
+  const withHeal = delayed ? noHeal : endOfTurn(Math.min(max, hp - inc.before + amount) - inc.after);
+  if (withHeal <= 0) return delayed ? -40 : -35; // healing doesn't save it
+  const gained = (delayed ? Math.min(amount, max - Math.max(0, noHeal)) * 0.6 : withHeal - Math.max(0, noHeal));
+  let v = 85 * gained / max;
+  const perTurn = inc.before + inc.after + Math.max(0, -res);
+  // The heal is what keeps it alive: for good if it out-heals the hits,
+  // otherwise it only buys a turn.
+  if (noHeal <= 0) v += amount >= perTurn ? 45 : 15;
+  if (amount > perTurn * 1.15 && hp < max * 0.55) v += 15; // out-heals what the foe can do
+  if (hp >= max * 0.85) v -= 30;
+  return v;
+}
+
+function healValue(battle, side, mon, opt, ctx) {
+  const move = opt.move, a = ctx.a;
+  if (mon.volatiles && mon.volatiles['healblock']) return -60;
+  const slot = opt.slot;
+  const foeTarget = opt.target && opt.target.side !== side ? opt.target : null;
+
+  // Heal an ally: Heal Pulse / Floral Healing aimed at the partner.
+  if (opt.target && opt.target.side === side && opt.target !== mon) {
+    const ally = opt.target;
+    const inc = incomingSplit(battle, side, ally.position, ally, mon, move.id, a);
+    return healExchangeTied(ally, healAmount(battle, mon, ally, move, null), inc, false);
+  }
+
+  if (move.id === 'wish') {
+    if (side.slotConditions && side.slotConditions[slot] && side.slotConditions[slot]['wish']) return -40;
+    const inc = incomingSplit(battle, side, slot, mon, mon, move.id, a);
+    return healExchangeTied(mon, mon.maxhp * 0.5, inc, true);
+  }
+
+  if (move.id === 'rest') {
+    if (mon.hp >= mon.maxhp || mon.status === 'slp' || ['insomnia', 'vitalspirit', 'comatose', 'purifyingsalt'].includes(abilityId(mon))) return -60;
+    if (isGrounded(mon) && ['electricterrain', 'mistyterrain'].includes(battle.field.terrain)) return -60;
+  }
+
+  const atkCut = move.id === 'strengthsap' && foeTarget && (foeTarget.boosts.atk || 0) > -6 ? 2 / 3 : 1;
+  const amount = healAmount(battle, mon, mon, move, foeTarget);
+  if (amount <= 0) return amount < 0 ? -60 : -40; // Liquid Ooze, or Strength Sap into -6 Attack
+  const inc = incomingSplit(battle, side, slot, mon, mon, move.id, a, atkCut);
+  let v = healExchangeTied(mon, amount, inc, false);
+  if (v <= -35) return v;
+
+  if (move.id === 'strengthsap' && foeTarget && atkCut !== 1 && foeTarget.storedStats.atk >= foeTarget.storedStats.spa) {
+    v += 12; // the Attack drop keeps paying off
+  }
+  if (move.id === 'rest') {
+    const wakes = itemId(mon) === 'chestoberry' || itemId(mon) === 'lumberry' || abilityId(mon) === 'shedskin';
+    const sleepTalk = mon.moveSlots.some(ms => ms.id === 'sleeptalk');
+    v -= wakes ? 0 : sleepTalk ? 10 : 35; // two turns asleep
+    if (mon.status && mon.status !== 'slp') v += 12; // also cures it
+  }
+  if (move.id === 'lifedew' || move.id === 'junglehealing') {
+    const ally = side.active.find(p => alive(p) && p !== mon);
+    if (ally) v += 0.6 * Math.max(0, Math.min(ally.maxhp - ally.hp, healAmount(battle, mon, ally, move, null))) / ally.maxhp * 85;
+  }
+  return v;
+}
+
+// ------------------------------------------------------- inflicting status
+//
+// Burn / paralysis / poison are valued by what they change on the board:
+// give the foe the status for a moment and re-run its damage against our
+// team (burn halving, Guts, Facade all come from the real damage calc) and
+// the speed checks (paralysis, Quick Feet, Trick Room), plus residual chip.
+
+const STATUS_BOOSTED = {
+  brn: ['guts', 'quickfeet', 'marvelscale', 'flareboost'],
+  par: ['guts', 'quickfeet', 'marvelscale'],
+  psn: ['guts', 'quickfeet', 'marvelscale', 'toxicboost', 'poisonheal', 'magicguard'],
+  tox: ['guts', 'quickfeet', 'marvelscale', 'toxicboost', 'poisonheal', 'magicguard'],
+};
+
+/** Value of `t` getting `status` (brn / par / psn / tox), for `side`. */
+function statusSwing(battle, side, t, status) {
+  if (!STATUS_BOOSTED[status]) return 0;
+  if (STATUS_BOOSTED[status].includes(abilityId(t))) return -40; // it wants the status
+  const ours = [
+    ...side.active.filter(alive).map(p => ({ p, w: 1 })),
+    ...benchIndices(side, new Set()).map(i => ({ p: side.pokemon[i], w: 0.4 })),
+  ];
+  const look = () => ours.map(({ p }) => ({
+    d: Math.min(1, bestMove(battle, t, p).d / Math.max(1, p.hp)),
+    fast: speedOf(p) > speedOf(t),
+  }));
+  const before = look();
+  const saved = t.status;
+  t.status = status;
+  let after;
+  try { after = look(); } finally { t.status = saved; }
+  let v = 0, worst = 0;
+  ours.forEach(({ w }, k) => {
+    v += w * 60 * (before[k].d - after[k].d); // it hits us softer (burn) / harder (Guts, Facade)
+    if (after[k].fast !== before[k].fast) v += w * (after[k].fast ? 22 : -22); // speed order flips (paralysis)
+    worst = Math.max(worst, before[k].d);
+  });
+  const chip = abilityId(t) === 'magicguard' ? 0 : status === 'brn' || status === 'psn' ? 12 : status === 'tox' ? 20 : 0;
+  v += chip;
+  if (status === 'par') v += 6 + 15 * worst; // a 25% chance it loses its turn
+  return v;
+}
+
+/**
+ * How likely the active foes stop `move` (a status move of ours) from paying
+ * off: a faster Taunt makes it fail this turn; Encore locks us into it.
+ */
+function foeDisruption(battle, side, mon, move) {
+  if (move.category !== 'Status' || PROTECT.has(move.id)) return 1;
+  if (itemId(mon) === 'mentalherb' || side.active.some(p => alive(p) && abilityId(p) === 'aromaveil')) return 1;
+  let f = 1;
+  for (const foe of foesOf(side)) {
+    const pranksterVsDark = abilityId(foe) === 'prankster' && hasType(mon, 'Dark');
+    for (const ms of foe.moveSlots) {
+      if (ms.pp <= 0 || ms.disabled || pranksterVsDark) continue;
+      if (ms.id === 'taunt' && !(mon.volatiles && mon.volatiles['taunt']) && abilityId(mon) !== 'oblivious' &&
+          movesFirst(battle, foe, 'taunt', mon, move.id)) {
+        f = Math.min(f, 0.5);
+      }
+      if (ms.id === 'encore' && move.id !== 'batonpass' && !(mon.volatiles && mon.volatiles['encore'])) {
+        // Locked into a heal while being chipped is a smaller loss than into setup.
+        f = Math.min(f, move.heal || (move.flags && move.flags.heal) ? 0.9 : 0.75);
+      }
+    }
+  }
+  return f;
 }
 
 /** Non-damage value of a status (or utility) move for this slot. */
@@ -982,29 +1586,68 @@ function statusValue(battle, side, mon, opt, st, ctx) {
     return 20;
   }
   // Setup moves (Swords Dance, Nasty Plot, Dragon Dance, Calm Mind, Bulk Up, Quiver Dance, Iron Defense, Shell Smash, Belly Drum...)
-  const selfBoosts = (move.target === 'self' && move.boosts) ||
-    (id === 'bellydrum' ? { atk: 6 } : id === 'shellsmash' ? { atk: 2, spa: 2, spe: 2 } : id === 'curse' && !hasType(mon, 'Ghost') ? { atk: 1, def: 1 } : null);
+  const selfBoosts = setupBoosts(mon, move);
   if (selfBoosts) {
     if (id === 'bellydrum' && mon.hp <= mon.maxhp * 0.6) return -60;
-    const cur = Math.max(...Object.keys(selfBoosts).map(k => mon.boosts[k] || 0));
-    if (cur >= SETUP_BOOST || st.koFirst || threat >= 0.55) return -10;
-    if (foes.some(f => abilityId(f) === 'unaware')) return 2;
-    // Check that we actually carry an attacking move that uses the boosted offensive stat.
-    const hasPhys = mon.moveSlots.some(ms => battle.dex.moves.get(ms.id).category === 'Physical');
-    const hasSpec = mon.moveSlots.some(ms => battle.dex.moves.get(ms.id).category === 'Special');
-    const hasBodyPress = mon.moveSlots.some(ms => ms.id === 'bodypress');
-    if (selfBoosts.atk && !selfBoosts.spa && !hasPhys) return -20;
-    if (selfBoosts.spa && !selfBoosts.atk && !hasSpec) return -20;
-    if (selfBoosts.def && !selfBoosts.atk && !selfBoosts.spa && !hasBodyPress) return 10;
+    const next = addBoosts(mon.boosts, selfBoosts);
+    // Nothing left to gain (every raised stat already at +6): the move fails.
+    if (!Object.keys(selfBoosts).some(k => selfBoosts[k] > 0 && next[k] > (mon.boosts[k] || 0))) return -60;
+    if (st.koFirst) return -10; // fainting before the boost lands
+    // This turn's hit leaves it in KO range: unless the boost lets it move
+    // first next turn, the boosts die with it (a passer should pass now).
+    if (threat >= 0.5) {
+      const saved = mon.boosts;
+      mon.boosts = next;
+      const outsped = foes.some(f => speedOf(f) >= speedOf(mon));
+      mon.boosts = saved;
+      if (outsped) return -45;
+    }
     // If we already OHKO the active foes and outspeed them, take the KO instead of setting up.
     if (st.bestOut >= 1.05 && !ctx.slower) return 8;
-    const gain = Math.max(selfBoosts.atk || 0, selfBoosts.spa || 0, selfBoosts.def || 0);
-    return (gain >= 2 ? 38 : 28) * (1 - threat);
+    // Own gain: what the boosts change for this Pokémon's damage, speed and bulk.
+    // A Baton Passer also sets up for whoever it will pass to.
+    let gain = foes.every(f => abilityId(f) === 'unaware') ? 0 : boostValue(battle, side, mon, next) - boostValue(battle, side, mon, mon.boosts);
+    if (canBatonPass(side, mon)) {
+      for (const i of benchIndices(side, new Set())) {
+        const cand = side.pokemon[i];
+        gain = Math.max(gain, 0.85 * (relayGain(battle, side, cand, next) - relayGain(battle, side, cand, mon.boosts)));
+      }
+    }
+    if (id === 'tidyup') gain += hazardControlValue(battle, side, id);
+    if (gain <= 0) return -15;
+    // Phazing / Haze / Clear Smog on the other side can erase the turn.
+    const undone = foes.some(f => f.moveSlots.some(ms => ANTI_SETUP.has(ms.id) &&
+      !(PHAZE_MOVES.has(ms.id) && phazeProof(battle, mon, ms.id, !!mon.volatiles['substitute']))));
+    // Behind an intact Focus Sash / Sturdy the hit leaves it at 1 HP: the
+    // setup still pays if the boost lets it move first next turn (checked above).
+    const sashed = mon.hp === mon.maxhp && (itemId(mon) === 'focussash' || abilityId(mon) === 'sturdy') &&
+      foes.every(f => { const b = bestMove(battle, f, mon); return !b.id || sashHolds(battle, f, mon, b.id); });
+    const exposure = sashed && threat >= 0.5 ? 0.5 : Math.max(0, 1 - threat);
+    let v = gain * exposure;
+    // Last action: after this turn's hit it's in KO range of a foe that
+    // outspeeds it, so attacking now is the last thing it does. A boost that
+    // flips the speed order (checked above: not outsped after it) buys a
+    // boosted attack next turn instead: value that attack.
+    if (threat >= 0.5 && foes.some(f => speedOf(f) >= speedOf(mon))) {
+      const saved = mon.boosts;
+      mon.boosts = next;
+      let nextTurn = 0;
+      try {
+        for (const f of foes) {
+          const d = bestMove(battle, mon, f).d;
+          nextTurn = Math.max(nextTurn, 100 * Math.min(d, f.hp) / f.maxhp + (d >= f.hp ? 75 : 0));
+        }
+      } finally {
+        mon.boosts = saved;
+      }
+      v = Math.max(v, 0.85 * nextTurn);
+    }
+    return v * (undone ? 0.6 : 1);
   }
-  if (move.heal || (move.flags && move.flags.heal)) {
-    if (mon.hp >= mon.maxhp * 0.85) return -30;
-    return threat < 0.65 ? (1 - mon.hp / mon.maxhp) * 72 : 8;
+  if ((id === 'roar' || id === 'whirlwind') && foes.some(f => posBoosts(f.boosts) >= 2)) {
+    return 30 + 8 * Math.max(...foes.map(f => posBoosts(f.boosts)));
   }
+  if (move.heal || (move.flags && move.flags.heal)) return healValue(battle, side, mon, opt, ctx);
   if (id === 'substitute') {
     if (mon.volatiles['substitute'] || mon.hp <= mon.maxhp * 0.55 || threat >= 0.5) return -30;
     return 28;
@@ -1024,9 +1667,7 @@ function statusValue(battle, side, mon, opt, st, ctx) {
     const t = opt.target;
     if (!canInflictStatus(battle, mon, t, move, move.status)) return -40;
     if (move.status === 'slp') return foes.some(f => f.status === 'slp') ? -15 : 46;
-    if (move.status === 'brn') return t.storedStats.atk > t.storedStats.spa * 1.1 ? 38 : 10;
-    if (move.status === 'par') return speedOf(t) > speedOf(mon) ? 34 : 12;
-    if (move.status === 'tox' || move.status === 'psn') return 26;
+    if (STATUS_BOOSTED[move.status]) return statusSwing(battle, side, t, move.status);
     return 20;
   }
   if (id === 'encore' && opt.target && opt.target.side !== side) {
@@ -1037,6 +1678,8 @@ function statusValue(battle, side, mon, opt, st, ctx) {
     if (last.category === 'Status' || PROTECT.has(last.id) || last.id === 'fakeout' || blockedByAbilityOrItem(battle, t, mon, last)) {
       return 54;
     }
+    // Locked into an attack that barely scratches us.
+    if (simDamage(battle, t, mon, last.id, false) < 0.2 * mon.hp) return 40;
     return -10;
   }
   if (id === 'taunt' && opt.target && opt.target.side !== side) {
@@ -1052,6 +1695,10 @@ function statusValue(battle, side, mon, opt, st, ctx) {
   if (id === 'haze' || id === 'clearsmog') {
     const foeBoosts = foes.reduce((acc, f) => acc + Object.values(f.boosts).reduce((x, b) => x + Math.max(0, b), 0), 0);
     return foeBoosts >= 2 ? 52 : -25;
+  }
+  if (id === 'defog' || id === 'courtchange') {
+    const v = hazardControlValue(battle, side, id);
+    return v > 5 ? v : -15;
   }
   if (id === 'stealthrock' || id === 'spikes' || id === 'toxicspikes' || id === 'stickyweb') {
     if (doubles) return -25;
@@ -1112,6 +1759,18 @@ function scoreSlot(battle, side, slot, opts, a, ctx) {
     const w = acts ? 1 : (doubles ? 0.5 : 0.15);
     let base = 0;
 
+    if (o.id === 'batonpass') {
+      // Only worth it with boosts to hand over and a recipient that's safe to bring in.
+      if (!canBatonPass(side, mon) || !posBoosts(mon.boosts)) { o.base = -60; continue; }
+      if (!acts) { o.base = -20; continue; }
+      // Slower than every foe aiming at this slot: the passer takes those hits
+      // itself and the recipient comes in free.
+      const aimed = a.predicted.filter(p => p.slot === slot);
+      const free = aimed.length > 0 && aimed.every(p => !movesFirst(battle, mon, 'batonpass', p.foe, p.moveId));
+      const best = bestPass(battle, side, slot, mon, a, free);
+      o.base = best.i < 0 ? -60 : best.score;
+      continue;
+    }
     if (o.move.selfSwitch && bestSwitch > -Infinity && acts) {
       base += 0.65 * Math.max(0, bestSwitch + 32); // the switch, minus the lost-turn cost
     }
@@ -1161,12 +1820,20 @@ function scoreSlot(battle, side, slot, opts, a, ctx) {
           const pred = a.byFoe.get(t);
           const sash = !o.move.multihit && abilityId(mon) !== 'parentalbond' &&
             (itemId(t) === 'focussash' || (!MOLD_BREAKERS.has(abilityId(mon)) && abilityId(t) === 'sturdy'));
-          o.hits.push({
-            t, d, w,
+          const hit = {
+            t, d, w, res: residualDelta(battle, t),
             first: movesFirst(battle, mon, o.id, t, pred && pred.moveId),
             sash,
             foeThreat: pred ? pred.frac : 0,
-          });
+          };
+          // Multi-hit: KO odds come from the hit-count distribution, not the average.
+          const dist = hitDist(mon, o.move);
+          if (dist) {
+            const acc = o.move.accuracy === true ? 1 : Math.min(1, o.move.accuracy / 100);
+            const mean = dist.reduce((x, [k, p]) => x + k * p, 0);
+            Object.assign(hit, { dist, acc, per: d / (mean * acc) });
+          }
+          o.hits.push(hit);
         }
       }
       // Track friendly-fire move flag so the joint combo scorer can check if the
@@ -1218,15 +1885,28 @@ function scoreSlot(battle, side, slot, opts, a, ctx) {
         const it = battle.dex.items.get(o.target.item);
         if (!it.megaStone) base += 8;
       }
-      if ((o.id === 'rapidspin' || o.id === 'mortalspin') && (side.sideConditions['stealthrock'] || side.sideConditions['spikes'] || side.sideConditions['stickyweb'])) {
-        base += 18;
+      if (o.id === 'rapidspin' || o.id === 'mortalspin') base += hazardControlValue(battle, side, o.id);
+      // Status side effects (Scald, Nuzzle, Body Slam...), chance-weighted.
+      const sec = o.move.secondaries || (o.move.secondary ? [o.move.secondary] : []);
+      if (abilityId(mon) !== 'sheerforce') {
+        for (const sc of sec) {
+          if (!sc.status || !STATUS_BOOSTED[sc.status]) continue;
+          const chance = Math.min(100, (sc.chance || 100) * (abilityId(mon) === 'serenegrace' ? 2 : 1)) / 100;
+          for (const h of o.hits) {
+            const t = h.t;
+            if (h.d >= t.hp || itemId(t) === 'covertcloak' || abilityId(t) === 'shielddust') continue;
+            if (!canInflictStatus(battle, mon, t, o.move, sc.status)) continue;
+            base += 0.8 * chance * statusSwing(battle, side, t, sc.status);
+          }
+        }
       }
       if (o.move.secondary && o.move.secondary.boosts && o.move.secondary.chance === 100) {
         if (o.move.secondary.boosts.spe < 0) base += ctx.slower ? 12 : 4;
         if (o.move.secondary.boosts.spa < 0 || o.move.secondary.boosts.atk < 0) base += 6;
       }
     } else {
-      const sv = statusValue(battle, side, mon, o, st, ctx);
+      let sv = statusValue(battle, side, mon, o, st, ctx);
+      if (sv > 0) sv *= foeDisruption(battle, side, mon, o.move);
       base += PROTECT.has(o.id) || o.id === 'wideguard' ? sv : sv * w;
     }
     o.base = base;
@@ -1248,8 +1928,18 @@ function applyHits(hpLeft, hits, mult = 1, wOverride = null) {
     }
     const dealt = Math.min(d, left);
     v += w * 100 * dealt / h.t.maxhp;
-    if (d >= left) {
-      v += w * (h.first ? 75 + 20 * Math.min(1, h.foeThreat || 0) : 40);
+    // Chance this hit KOs: certain/never for a single hit; for a multi-hit
+    // move, the odds of enough hits landing (Focus Sash can't stop 2+ hits).
+    let koP = d >= left ? 1 : 0;
+    if (h.dist) {
+      koP = 0;
+      for (const [k, p] of h.dist) if (k * h.per * mult >= left) koP += p;
+      koP *= h.acc;
+    }
+    if (koP > 0) {
+      v += w * koP * (h.first ? 75 + 20 * Math.min(1, h.foeThreat || 0) : 40);
+    } else if (h.res < 0 && left - dealt + h.res <= 0) {
+      v += w * 30; // the end-of-turn damage finishes it
     }
     if (w >= 0.5) hpLeft.set(key, left - dealt);
   }
@@ -1269,6 +1959,7 @@ function heuristicTurn(battle, side, req, rng) {
       slower: effAvg(mine) < effAvg(foes),
       naturallyFaster: rawAvg(mine) > rawAvg(foes),
       allyThreat: 0,
+      a,
     };
 
     const perSlot = [];
@@ -1447,4 +2138,6 @@ function choose(policy, battle, side, rng, view) {
 
 const POLICIES = ['random', 'greedy', 'heuristic'];
 
-module.exports = { choose, POLICIES, INFO_MODES, applyView, simDamage, formulaDamage };
+module.exports = { choose, POLICIES, INFO_MODES, applyView, simDamage, formulaDamage,
+  // internals, for the self-test only
+  _test: { foeDisruption, statusSwing, residualDelta, switchEval, assess, sashHolds } };
