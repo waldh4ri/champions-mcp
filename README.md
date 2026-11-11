@@ -35,7 +35,7 @@ docker compose down
 
 Once connected, ask your assistant:
 
-- “Build me a Pokémon Champions VGC team around Garchomp.”
+- “Build me an offmeta bulky offense team for VGC around Mega Slowbro.”
 - “Check whether this Champions BSS team is legal: …”
 - “What are the most-used Pokémon in Champions singles?”
 
