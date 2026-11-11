@@ -799,6 +799,8 @@ damage numbers, and it:
   or an Encore;
 - accounts for Focus Sash / Sturdy on both sides, multi-hit KO odds, entry
   hazards (Defog / Rapid Spin when they pay) and end-of-turn damage;
+- handles Protean / Libero: STAB on any first move after switching in, and a
+  faster foe's type change applied before our hit lands;
 - values pivot moves;
 - picks brings and leads by matchup, judging Mega Stone holders as their Mega.
 
