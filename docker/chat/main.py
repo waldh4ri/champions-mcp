@@ -595,6 +595,17 @@ async def _init_mcp() -> None:
 app = FastAPI()
 
 
+@app.middleware("http")
+async def _revalidate_ui(request, call_next):
+    """The page and its static files: always revalidate (ETag -> cheap 304).
+    Without Cache-Control, browsers guess a freshness window from
+    Last-Modified and keep showing the old UI after an upgrade."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # Per-model context window, filled from OpenRouter's model list at startup
 # (llama-server's comes from LLAMA_CTX_SIZE) — drives the UI's context meter.
 model_context: dict[str, int] = {}
