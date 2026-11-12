@@ -11,8 +11,34 @@ import asyncio
 import json
 import sqlite3
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
+
+#: Process-wide lookups per key namespace ("pokechamp", "pokeapi", ...):
+#: ``(namespace, "hit" | "miss")`` -> count. The pull diffs snapshots of it to
+#: report, per stage, how much came from the cache vs. the network.
+STATS: Counter[tuple[str, str]] = Counter()
+
+
+def stats_snapshot() -> Counter[tuple[str, str]]:
+    """A copy of :data:`STATS`, to diff against later with :func:`stats_since`."""
+    return Counter(STATS)
+
+
+def stats_since(snapshot: Counter[tuple[str, str]]) -> dict[str, Any]:
+    """Cache hits/misses since ``snapshot``: totals plus a per-namespace
+    ``hit/total`` breakdown, ready to pass as log fields."""
+    delta = STATS - snapshot
+    hits = sum(n for (_, kind), n in delta.items() if kind == "hit")
+    misses = sum(n for (_, kind), n in delta.items() if kind == "miss")
+    out: dict[str, Any] = {"cached": hits, "fetched": misses}
+    namespaces = sorted({ns for ns, _ in delta})
+    if len(namespaces) > 1:
+        out["by_source"] = {
+            ns: f"{delta[(ns, 'hit')]}/{delta[(ns, 'hit')] + delta[(ns, 'miss')]}" for ns in namespaces
+        }
+    return out
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache (
@@ -78,7 +104,9 @@ class Cache:
             expired past its ttl).
         """
         async with self._lock:
-            return await asyncio.to_thread(self._get_sync, key)
+            value = await asyncio.to_thread(self._get_sync, key)
+        STATS[(key.split(":", 1)[0], "miss" if value is None else "hit")] += 1
+        return value
 
     async def set(self, key: str, value: Any, ttl: float | None = None) -> None:
         """Store a value under ``key``, replacing any existing entry.

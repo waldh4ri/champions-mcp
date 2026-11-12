@@ -3,6 +3,10 @@
 # SQLite mirror and start the MCP server.
 FROM python:3.12-slim
 
+# Unbuffered stdout/stderr: log lines reach `docker logs` as they happen,
+# not in blocks when a buffer fills.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 # Project metadata first, separately from source: pyproject.toml/README.md
@@ -26,8 +30,10 @@ RUN pip install --no-cache-dir -e .
 # champions.sqlite mirror on first run (or when forced), then execs the
 # server. Copied after the pip install so entrypoint edits don't bust the
 # dependency-install layer cache.
+COPY docker/common/log.sh /usr/local/lib/champions-log.sh
 COPY docker/mcp/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Strip CRs in case the checkout converted line endings (Windows + autocrlf).
+RUN sed -i 's/\r$//' /entrypoint.sh /usr/local/lib/champions-log.sh && chmod +x /entrypoint.sh
 
 # MCP streamable-HTTP port (see FASTMCP_PORT in docker-compose.yml).
 EXPOSE 8000

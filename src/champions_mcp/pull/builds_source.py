@@ -29,8 +29,11 @@ from typing import Any
 
 import httpx
 
+from .. import log as logmod
 from ..cache import Cache
 from ..config import Settings
+
+log = logmod.get("limitless")
 
 # Unauthenticated Limitless allows 50 requests / 5 min. Pace below that rather
 # than sprinting into a 429 — a backfill is a background chore, not a race.
@@ -87,6 +90,7 @@ class LimitlessClient:
         # Serialize *and* pace: concurrency here would only burn the quota
         # faster, and the whole job is bounded by the rate limit anyway.
         async with self._lock:
+            log.debug("GET", path=path, pacing=f"{self._delay}s")
             try:
                 resp = await self._http.get(path)
                 resp.raise_for_status()
@@ -94,6 +98,9 @@ class LimitlessClient:
                 if exc.response.status_code == 404:
                     await self._cache.set(key, {}, ttl=ttl)
                     return None
+                status = exc.response.status_code
+                log.error("Limitless request failed", path=path, status=status,
+                          hint="rate limited; set CHAMPIONS_MCP_LIMITLESS_KEY" if status == 429 else None)
                 raise
             finally:
                 await asyncio.sleep(self._delay)

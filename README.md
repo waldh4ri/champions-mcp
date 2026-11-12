@@ -15,6 +15,13 @@ Requires Docker with Docker Compose. From the repository root:
 docker compose up -d --build
 ```
 
+To also start a web chat at http://localhost:3000 (models and API keys are set up
+in its **⚙ Configure** view):
+
+```sh
+docker compose --profile webchat up -d --build
+```
+
 This starts the MCP server and its damage-calculator and battle-simulator services.
 The first start downloads the data and can take several minutes. Check readiness:
 

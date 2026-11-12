@@ -6,12 +6,9 @@ Fires an identical prompt at each backend that is reachable and reports prompt
 own timing fields — so the numbers are the engines' measurement, not wall-clock
 guesswork. Run them one at a time (a big MoE won't fit twice in a small GPU):
 
-    # terminal: docker compose --profile ai up -d        # Ollama
+    docker compose --profile webchat up -d --build       # llama.cpp (needs the GPU override)
     python docker/bench/bench.py
-    # then swap engines on the GPU:
-    docker compose --profile ai down
-    docker compose --profile llama up -d --build         # llama.cpp
-    python docker/bench/bench.py
+    docker compose --profile webchat down                # free the GPU before another engine
 
 Stdlib only — no pip install. Override endpoints/params via the flags below.
 """

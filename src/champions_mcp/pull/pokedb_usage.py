@@ -37,6 +37,10 @@ from typing import Any
 
 import httpx
 
+from .. import log as logmod
+
+log = logmod.get("pokedb")
+
 from ..cache import Cache
 from ..config import Settings
 from ..db import Db
@@ -246,7 +250,12 @@ class PokedbUsageClient:
                 except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                     status = getattr(getattr(exc, "response", None), "status_code", None)
                     if attempt == 3 or (status is not None and status < 500 and status != 429):
+                        log.error("pokedb page failed", path=path, status=status,
+                                  error=str(exc) or type(exc).__name__)
                         raise
+                    log.warning("pokedb page failed, retrying", path=path, status=status,
+                                error=str(exc) or type(exc).__name__, attempt=f"{attempt + 1}/3",
+                                backoff=f"{2 ** attempt}s")
                     await asyncio.sleep(2 ** attempt)
                 finally:
                     await asyncio.sleep(0.25)  # stay polite across the batch
@@ -413,6 +422,13 @@ async def ingest_usage(
                 "regulation": chosen["seasons"].get(str(season)),
                 "updated": chosen["updated"], "ranked": len(chosen["ranking"]),
             }
+            if chosen is not current:
+                log.warning("current season has too little ladder data; using the previous one",
+                            format=fmt, current=f"M-{current['season']}",
+                            current_ranked=len(current["ranking"]), using=f"M-{season}")
+            log.info("ladder season picked", format=fmt, season=f"M-{season}",
+                     regulation=sources[fmt]["regulation"], ranked=len(chosen["ranking"]),
+                     updated=chosen["updated"])
 
             entries: list[tuple[str, tuple[int, int]]] = []
             for dex, form in chosen["ranking"]:
@@ -425,8 +441,15 @@ async def ingest_usage(
                 ranks[fmt][slug] = len(ranks[fmt]) + 1
                 entries.append((slug, (dex, form)))
 
-            pages = await asyncio.gather(*(
-                client.pokemon(season, rule, dex, form) for _slug, (dex, form) in entries))
+            progress = logmod.Progress(log, f"{fmt} usage pages", total=len(entries))
+
+            async def _fetch(dex: int, form: int, season: int = season, rule: int = rule,
+                             progress: logmod.Progress = progress) -> dict[str, Any]:
+                data = await client.pokemon(season, rule, dex, form)
+                progress.tick()
+                return data
+
+            pages = await asyncio.gather(*(_fetch(dex, form) for _slug, (dex, form) in entries))
             for (slug, _key), data in zip(entries, pages):
                 rows_rank.append((fmt, ranks[fmt][slug], slug))
                 rows_usage += _usage_rows(slug, fmt, data, refs, skipped, stones)

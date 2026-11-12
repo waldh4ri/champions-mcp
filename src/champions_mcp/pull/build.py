@@ -23,10 +23,13 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from ..cache import Cache
+from .. import log as logmod
+from ..cache import Cache, stats_since, stats_snapshot
 from ..config import Settings
 from ..db import Db
 from ..normalize import slugify
@@ -89,6 +92,22 @@ SHOWDOWN_OVERRIDES: dict[str, str] = {
     "toxtricity-low-key": "Toxtricity-Low-Key",
     "wash-rotom": "Rotom-Wash",
 }
+
+log = logmod.get("pull")
+_STAGES = 7
+
+
+@contextmanager
+def _stage(n: int, what: str, **fields: Any) -> Iterator[dict[str, Any]]:
+    """One numbered pull stage: start/finish lines with timing, whatever the
+    block reports, and how much it read from the cache vs. the network."""
+    snap = stats_snapshot()
+    with logmod.timed(log, f"[{n}/{_STAGES}] {what}", **fields) as out:
+        yield out
+        cache = stats_since(snap)
+        if cache["cached"] or cache["fetched"]:  # stages without HTTP-cache traffic stay quiet
+            out.update(cache)
+
 
 def _stat_dict(bs: dict[str, Any]) -> dict[str, int]:
     """Map pokechamp's ``{hp,atk,def,spatk,spdef,spe}`` to the schema's stat keys."""
@@ -485,13 +504,15 @@ async def build(db: Db, settings: Settings, *, with_builds: bool = True) -> dict
         Row counts per table, also written to the `meta` table.
     """
     db.reset_build_tables()
-    cache = Cache(settings.cache_db)
-    client = PokechampClient(settings, cache)
-    try:
-        parsed = await parse_pokechamp(db, client)
-    finally:
-        await client.aclose()
-        cache.close()
+    with _stage(1, "roster + moves/abilities/items", source=settings.pokechamp_base) as out:
+        cache = Cache(settings.cache_db)
+        client = PokechampClient(settings, cache)
+        try:
+            parsed = await parse_pokechamp(db, client)
+        finally:
+            await client.aclose()
+            cache.close()
+        out.update({k: v for k, v in parsed.items() if not k.startswith("_")})
 
     mega_entries = parsed.pop("_mega_entries")
     by_no = parsed.pop("_by_no")
@@ -504,35 +525,38 @@ async def build(db: Db, settings: Settings, *, with_builds: bool = True) -> dict
         ]
         base = min(non_mega_siblings, key=lambda s: s["formNo"], default=None)
         e["_species_name"] = base["displayName"] if base else e["displayName"]
-    build_mega_forms(db, mega_entries, items_listing, ability_by_id)
+    with _stage(2, "mega forms") as out:
+        out["mega_forms"] = build_mega_forms(db, mega_entries, items_listing, ability_by_id)
+        unresolved = [r["form_name"] for r in db.query(
+            "SELECT form_name FROM mega_forms WHERE mega_stone IS NULL")]
+        if unresolved:
+            log.warning("mega forms without a resolved Mega Stone", forms=unresolved)
 
     # after the Megas: stones pokedb numbers differently resolve through them
-    usage_stats = await pokedb_usage.ingest_usage(
-        db, settings, roster=parsed.pop("_roster_keys"), refs=parsed.pop("_usage_refs"))
+    with _stage(3, "ladder usage", source=settings.pokedb_base) as out:
+        usage_stats = await pokedb_usage.ingest_usage(
+            db, settings, roster=parsed.pop("_roster_keys"), refs=parsed.pop("_usage_refs"))
+        out.update({k: v for k, v in usage_stats.items() if k != "sources"})
     db.set_meta("usage", usage_stats)
 
-    species = sorted({
-        slugify(_PAREN_SUFFIX_RE.sub("", r["base_name"]))
-        for r in db.query("SELECT base_name FROM pokemon")
-    })
-    await enrich(db, settings, {"species": species})
+    with _stage(4, "type chart + localized names", source=settings.pokeapi_base) as out:
+        species = sorted({
+            slugify(_PAREN_SUFFIX_RE.sub("", r["base_name"]))
+            for r in db.query("SELECT base_name FROM pokemon")
+        })
+        await enrich(db, settings, {"species": species})
+        out.update(type_chart=db.count("type_chart"), species=len(species))
 
-    smogon_stats = await ingest_smogon_sets(db, settings)
+    with _stage(5, "historical Smogon sets") as out:
+        smogon_stats = await ingest_smogon_sets(db, settings)
+        out.update(smogon_stats)
     db.set_meta("smogon", smogon_stats)
 
     if with_builds:
-        stats = await builds_mod.ingest_builds(db, settings)
-        db.set_meta("builds", stats)
-
-        # Complete BSS teams (moves/ability/nature/spread) from players'
-        # published team reports; synchronous scraper, so off the event loop.
-        if not settings.reports_skip:
-            import asyncio
-
-            from .reports import pull_reports
-            db.set_meta("full_teams", await asyncio.to_thread(
-                pull_reports, db, settings.data_dir / "reports-cache", settings.builds_regulations,
-                None, settings.builds_half_life_days))
+        await ingest_corpus(db, settings)
+    else:
+        log.info("[6/7] observed-team corpus skipped (--skip-builds / CHAMPIONS_MCP_BUILDS_SKIP=1)")
+        log.info("[7/7] team reports skipped (--skip-builds)")
 
     current_reg = next((r for r in regulations if r.get("endDate") is None), None)
     db.set_meta("season", current_reg["title"] if current_reg else "Current")
@@ -541,10 +565,52 @@ async def build(db: Db, settings: Settings, *, with_builds: bool = True) -> dict
     from ..db import DATA_FORMAT
     db.set_meta("data_format", DATA_FORMAT)
     db.set_meta("source", "pokechamp.gg (roster, reference) + champs.pokedb.tokyo (usage)")
-    counts = {t: db.count(t) for t in (
-        "pokemon", "learnable_moves", "usage", "moves", "abilities",
-        "items", "mega_forms", "type_chart", "teammates",
-        "build_teams", "build_members", "smogon_sets", "full_teams",
-    )}
+    return record_counts(db)
+
+
+COUNT_TABLES = (
+    "pokemon", "learnable_moves", "usage", "moves", "abilities",
+    "items", "mega_forms", "type_chart", "teammates",
+    "build_teams", "build_members", "smogon_sets", "full_teams",
+)
+
+
+def record_counts(db: Db) -> dict[str, int]:
+    """Row counts per table, written to the `meta` table and returned."""
+    counts = {t: db.count(t) for t in COUNT_TABLES}
     db.set_meta("counts", counts)
     return counts
+
+
+async def ingest_corpus(db: Db, settings: Settings) -> dict[str, int]:
+    """The observed-team corpus: Limitless VGC teamlists + pokedb ladder
+    exports (stage 6), then complete BSS teams from published team reports
+    (stage 7). The slow part of a pull (Limitless rate-limits unauthenticated
+    clients), so the container runs it in the background on a first start
+    (``champions-mcp-pull --corpus-only``) while the server already serves.
+
+    Returns:
+        The observed-build stats (also written to the `meta` table).
+    """
+    with _stage(6, "observed-team corpus", regulations=settings.builds_regulations,
+                limitless_key="set" if settings.limitless_key else "none") as out:
+        stats = await builds_mod.ingest_builds(db, settings)
+        out.update(stats)
+    db.set_meta("builds", stats)
+
+    # Complete BSS teams (moves/ability/nature/spread) from players'
+    # published team reports; synchronous scraper, so off the event loop.
+    if settings.reports_skip:
+        log.info("[7/7] team reports skipped (CHAMPIONS_MCP_REPORTS_SKIP=1)")
+    else:
+        import asyncio
+
+        from .reports import pull_reports
+        with _stage(7, "published team reports", regulations=settings.builds_regulations) as out:
+            report_stats = await asyncio.to_thread(
+                pull_reports, db, settings.data_dir / "reports-cache", settings.builds_regulations,
+                None, settings.builds_half_life_days)
+            out.update({k: v for k, v in report_stats.items()
+                        if isinstance(v, (int, float, str)) and v})
+        db.set_meta("full_teams", report_stats)
+    return stats

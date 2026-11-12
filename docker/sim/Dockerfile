@@ -28,6 +28,7 @@ COPY --from=build /ps/package.json /ps/package.json
 COPY --from=build /ps/config /ps/config
 WORKDIR /app
 COPY docker/sim/*.js docker/sim/selftest-teams.json /app/
+COPY docker/common/log.js /app/log.js
 # Gate the image on the self-test (legality, robustness, determinism,
 # policy ladder, tactical scenarios).
 RUN node /app/selftest.js --quick

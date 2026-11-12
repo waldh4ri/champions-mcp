@@ -626,8 +626,11 @@ async def ingest_builds(db: Db, settings: Any) -> dict[str, int]:
     Returns:
         Row counts and per-source/skip diagnostics.
     """
+    from .. import log as logmod
     from ..cache import Cache
     from .builds_source import LimitlessClient, PokedbClient
+
+    log = logmod.get("builds")
     from .pokeapi import PokeApiEnricher
 
     cache = Cache(settings.cache_db)
@@ -646,9 +649,16 @@ async def ingest_builds(db: Db, settings: Any) -> dict[str, int]:
         for regulation in settings.builds_regulations:
             events = await limitless.tournaments(
                 regulation, settings.builds_max_events)
+            eligible = sum(1 for ev in events if (ev.get("players") or 0) >= settings.builds_min_players)
+            log.info("limitless tournaments listed", regulation=regulation, events=len(events),
+                     eligible=eligible, min_players=settings.builds_min_players,
+                     pacing="authenticated" if settings.limitless_key
+                     else "unauthenticated, ~6.5s per uncached event")
+            progress = logmod.Progress(log, f"limitless {regulation} events", total=eligible)
             for ev in events:
                 if (ev.get("players") or 0) < settings.builds_min_players:
                     continue
+                progress.tick(teams=sum(v for k, v in stats.items() if k.startswith("limitless_")))
                 standings = await limitless.standings(ev["id"])
                 lists = [
                     p["decklist"] for p in standings if p.get("decklist")
@@ -672,6 +682,8 @@ async def ingest_builds(db: Db, settings: Any) -> dict[str, int]:
                 n = ingest.add_pokedb(
                     export, reg, half_life_days=settings.builds_half_life_days)
                 stats[f"pokedb_{rule}"] = stats.get(f"pokedb_{rule}", 0) + n
+                log.info("pokedb ladder teams", rule=rule, season=export.get("season"),
+                         regulation=reg, teams=n)
 
         stats.update(ingest.flush())
     finally:

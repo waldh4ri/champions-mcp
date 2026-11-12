@@ -738,6 +738,7 @@
       <span class="meter" id="mDecode" title="Token generation (decode) speed"><span class="meter-label">TG</span><span class="meter-val">--</span></span>
       <span class="meter" id="mCache" title="Prompt-cache hit rate"><span class="meter-label">CACHE</span><span class="meter-val">--</span></span>
       <span class="meter" id="mCtx" title="Context window used"><span class="meter-label">CTX</span><span class="meter-val">--</span></span>
+      <span class="meter" id="mCost" style="display:none" title="OpenRouter spend"><span class="meter-label">$</span><span class="meter-val">--</span></span>
     </div>
     <label class="viewToggle" title="Keep the view pinned to the newest message while a reply streams in">
       <input type="checkbox" id="autoscrollChk" checked>
@@ -759,6 +760,7 @@
     <button id="newBtn" class="hdrBtn" onclick="resetChat()" title="Start a new chat (the current one stays saved)">New</button>
     <button id="resetBtn" onclick="deleteSession()" title="Delete this chat from the browser">Delete</button>
     <select id="modelSelect"><option value="">Loading models…</option></select>
+    <button id="cfgBtn" class="hdrBtn" title="Models, inference and chat settings, API providers">⚙ Configure</button>
   </div>
 </header>
 
@@ -804,6 +806,10 @@
   const mPrefill   = document.querySelector('#mPrefill .meter-val');
   const mDecode    = document.querySelector('#mDecode .meter-val');
   const mCache     = document.querySelector('#mCache .meter-val');
+  const mCostBox   = document.getElementById('mCost');
+  const mCost      = document.querySelector('#mCost .meter-val');
+  let turnCost = 0;      // this turn so far (metrics events are cumulative per turn)
+  let accountUsage = null;
   const mCtx       = document.querySelector('#mCtx .meter-val');
   const autoscrollChk = document.getElementById('autoscrollChk');
   const thinkingChk   = document.getElementById('thinkingChk');
@@ -848,8 +854,31 @@
     mCache.textContent = '--';
     mCtx.textContent = ctxMax ? `0/${fmtK(ctxMax)}` : '--';
     mCtx.style.color = '';
+    turnCost = 0;
+    showCost();
     TeamPanel.reset();
   }
+
+  // ── OpenRouter spend: this chat (from each response's usage.cost) and the
+  // key's account totals (today / month / remaining), refreshed every minute.
+  const fmtUSD = v => v == null ? '--' : v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
+  function showCost() {
+    const chat = (current.cost || 0) + turnCost;
+    const on = accountUsage?.enabled || chat > 0;
+    mCostBox.style.display = on ? '' : 'none';
+    if (!on) return;
+    mCost.textContent = fmtUSD(chat).slice(1);
+    const a = accountUsage || {};
+    mCostBox.title = [`OpenRouter spend. This chat: ${fmtUSD(chat)}`,
+      a.today != null ? `today: ${fmtUSD(a.today)}` : '', a.month != null ? `this month: ${fmtUSD(a.month)}` : '',
+      a.remaining != null ? `remaining limit: ${fmtUSD(a.remaining)}` : ''].filter(Boolean).join(' · ');
+  }
+  async function refreshAccountUsage() {
+    try { accountUsage = await (await fetch('/api/openrouter/usage')).json(); } catch { /* keep the last */ }
+    showCost();
+  }
+  refreshAccountUsage();
+  setInterval(refreshAccountUsage, 60000);
   function resetChat() {
     if (sendBtn.disabled) return;  // a reply is still streaming into the current chat
     current = newSession();
@@ -966,7 +995,8 @@
     for (const event of current.events) replay(event);
     autoscroll = wasAuto;
     messagesScrollEl.scrollTop = messagesScrollEl.scrollHeight;
-    if (current.model && [...modelSel.options].some(o => o.value === current.model)) modelSel.value = current.model;
+    const savedModel = pickValue(current.model);
+    if (savedModel && [...modelSel.options].some(o => o.value === savedModel && !o.disabled)) modelSel.value = savedModel;
     refreshSessionList();
   }
 
@@ -980,21 +1010,85 @@
   }
 
   sessionSel.addEventListener('change', () => openSession(sessionSel.value));
-  modelSel.addEventListener('change', () => { if (current.events.length) saveSoon(); });
-
   // ── model loader ─────────────────────────────────────────────────────────────
-  fetch('/api/models')
-    .then(r => r.json())
-    .then(data => {
-      const models = (data.models || []).map(m => m.name);
-      modelSel.innerHTML = models.length
-        ? models.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')
-        : '<option value="">No models found</option>';
-      ctxMax = data.context_size || 0;
-      if (ctxMax) mCtx.textContent = `0/${fmtK(ctxMax)}`;
-      if (current.model && models.includes(current.model)) modelSel.value = current.model;
-    })
-    .catch(() => { modelSel.innerHTML = '<option value="">backend unavailable</option>'; });
+  // Models come grouped by backend (local llama.cpp / OpenRouter); with both
+  // available the user picks per chat. A local model that is still loading is
+  // listed but disabled, and the list is re-polled until it is ready.
+  // Picker values are provider-qualified ("local::…", "openrouter::…",
+  // "ep:<id>::…"); a chat saved before that stored the bare model name.
+  let modelInfo = {};
+  let modelPoll = null;
+  let modelPollMs = 0;
+
+  function pickValue(saved) {
+    if (!saved) return '';
+    if (modelInfo[saved]) return saved;
+    const byName = Object.values(modelInfo).find(m => m.name === saved);
+    return byName ? byName.value : '';
+  }
+
+  function applyCtxFor(value) {
+    const info = modelInfo[value];
+    if (info && info.context_size) {
+      ctxMax = info.context_size;
+      if (!current.events.length) mCtx.textContent = `0/${fmtK(ctxMax)}`;
+    }
+  }
+
+  // Local models a chat can use: loaded, or unloaded (loads on first use).
+  const LOCAL_LABEL = {
+    loaded: '', unloaded: ' (loads on first use)', sleeping: ' (asleep)', loading: ' (loading…)',
+    downloading: ' (downloading…)', incomplete: ' (download paused)', failed: ' (failed to load)',
+  };
+  const isUsable = m => !m.provider || m.provider !== 'local' || ['loaded', 'unloaded', 'sleeping', 'loading'].includes(m.status);
+
+  function setModelPoll(ms) {
+    if (ms === modelPollMs) return;
+    if (modelPoll) clearInterval(modelPoll);
+    modelPoll = ms ? setInterval(loadModels, ms) : null;
+    modelPollMs = ms;
+  }
+
+  function loadModels() {
+    return fetch('/api/models')
+      .then(r => r.ok ? r.json() : r.json().then(e => Promise.reject(new Error(e.detail || r.status))))
+      .then(data => {
+        const models = data.models || [];
+        const previous = modelSel.value;
+        modelInfo = Object.fromEntries(models.map(m => [m.value, m]));
+        const groups = {};
+        for (const m of models) (groups[m.group] = groups[m.group] || []).push(m);
+        const option = m => {
+          let label = m.name + (m.provider === 'local' ? (LOCAL_LABEL[m.status] || '') : '');
+          if (m.status === 'downloading' && m.progress != null) label = `${m.name} (downloading ${Math.round(m.progress * 100)}%)`;
+          return `<option value="${esc(m.value)}"${isUsable(m) ? '' : ' disabled'}>${esc(label)}</option>`;
+        };
+        const keys = Object.keys(groups);
+        modelSel.innerHTML = !models.length
+          ? '<option value="">No models: open ⚙ Configure</option>'
+          : keys.length === 1
+            ? groups[keys[0]].map(option).join('')
+            : keys.map(g => `<optgroup label="${esc(g)}">${groups[g].map(option).join('')}</optgroup>`).join('');
+        const usable = v => v && modelInfo[v] && isUsable(modelInfo[v]);
+        modelSel.value = [previous, pickValue(current.model), data.default].find(usable)
+          || (models.find(isUsable) || {}).value || '';
+        applyCtxFor(modelSel.value);
+        // Refresh fast while a local model downloads/loads, slowly while the
+        // local server isn't reachable (it may still be starting).
+        const busy = models.some(m => ['downloading', 'loading'].includes(m.status));
+        setModelPoll(busy ? 3000 : (data.providers || {}).llama === 'off' ? 20000 : 0);
+        window.dispatchEvent(new CustomEvent('models-updated', { detail: data }));
+      })
+      .catch(err => {
+        modelSel.innerHTML = `<option value="">${esc(String(err.message || 'backend unavailable'))}</option>`;
+      });
+  }
+
+  modelSel.addEventListener('change', () => {
+    applyCtxFor(modelSel.value);
+    if (current.events.length) saveSoon();
+  });
+  loadModels();
 
   // ── meters (prefill/decode t/s, cache hit %, context usage) ────────────────────
   function fmtK(n) {
@@ -1006,6 +1100,7 @@
     mPrefill.textContent = m.prefill_tps ? `${m.prefill_tps.toFixed(1)} t/s` : '--';
     mDecode.textContent  = m.decode_tps  ? `${m.decode_tps.toFixed(1)} t/s`  : '--';
     mCache.textContent   = `${Math.round(m.cache_hit_pct ?? 0)}%`;
+    if (m.cost != null) { turnCost = m.cost; showCost(); }
 
     const max = m.context_max || ctxMax;
     const used = m.context_tokens || 0;
@@ -1309,6 +1404,12 @@
           finalTurnMessages = evt.turn_messages;
           toolEvents = evt.tool_events ?? toolEvents;
           updateMeters(evt.metrics);
+          if (evt.metrics?.cost != null) {
+            current.cost = (current.cost || 0) + evt.metrics.cost;  // saved with the chat
+            turnCost = 0;
+            showCost();
+            refreshAccountUsage();
+          }
         } else {
           handleEvent(evt);
         }
@@ -1829,5 +1930,6 @@
     else refreshSessionList();
   });
 </script>
+<script src="/static/config.js"></script>
 </body>
 </html>

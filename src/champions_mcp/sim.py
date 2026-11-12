@@ -18,8 +18,10 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any
 
+from . import log as logmod
 from .config import Settings
 from .db import Db
 from .formats import game_type, resolve_format
@@ -34,6 +36,8 @@ _STAT_COLS = {
 INFO_MODES = ("open_sheets", "closed", "omniscient")
 # "Nick (Species) (M) @ Item" / "Species @ Item" / "Species"
 _SPECIES_LINE = re.compile(r"^(?:.*?\((?P<sp>[^()]{2,})\)|(?P<plain>[^@(]+?))\s*(?:\((?:M|F)\))?\s*(?:@.*)?$")
+
+log = logmod.get("sim")
 
 # When a species has no recorded spread at all: bulk + the better attack.
 _FALLBACK_SPREAD = {"hp": 32, "attack": 32, "speed": 2}
@@ -140,6 +144,7 @@ class BattleSimulator:
         """
         fmt_key = game_type(fmt)
         notes: list[str] = []
+        t0 = time.perf_counter()
         teams = self._full_teams(fmt_key, limit)
         if teams:
             notes.append(f"{len(teams)} opponents are complete teams (moves, ability, nature and "
@@ -158,8 +163,18 @@ class BattleSimulator:
                              f"added {len(extra)} VGC tournament teams (played as bring-3)")
             teams += extra
         if not teams:
+            from . import refresh
+
+            if refresh.running():
+                raise SimError("the observed-team corpus is still being fetched in the background "
+                               "(first start: about 15 minutes); retry later, or simulate against "
+                               "a specific team with simulate_matchup meanwhile")
             raise SimError("the observed-team corpus is empty; run champions-mcp-pull to build it")
         modal = sum(1 for t in teams if not t["id"].startswith("report:"))
+        log.info("meta opponents assembled", format=fmt, opponents=len(teams),
+                 complete_report_teams=len(teams) - modal, corpus_teams=modal,
+                 sets_from_usage=sum(1 for t in teams if t.get("sets_from_usage")) or None,
+                 took=logmod.fmt_duration(time.perf_counter() - t0))
         if modal:
             notes.append(f"{modal} opponent team(s) from tournament/ladder data use each species' most "
                          "common Stat Point spread (that data records items/abilities/moves, not spreads)")
@@ -376,17 +391,40 @@ class BattleSimulator:
 
     async def call(self, op: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Send one request to the sidecar (HTTP if configured, else docker run)."""
+        opponents = payload.get("opponents") or []
+        variants = len(payload.get("variants") or []) + 1 if op == "compare" else 1
+        gpo = payload.get("games_per_opponent")
+        log.info(f"→ sidecar {op}", format=payload.get("format"),
+                 battles=gpo * len(opponents) * variants if gpo else None,
+                 opponents=len(opponents) or None, games_per_opponent=gpo,
+                 variants=variants if op == "compare" else None,
+                 policy=payload.get("policy"), information=payload.get("information"),
+                 via="http" if self._s.sim_http else "docker run")
+        t0 = time.perf_counter()
         if self._s.sim_http:
-            return await self._call_http(op, payload)
-        return await self._call_docker(op, payload)
+            res = await self._call_http(op, payload)
+        else:
+            res = await self._call_docker(op, payload)
+        took = logmod.fmt_duration(time.perf_counter() - t0)
+        if not res.get("ok"):
+            log.warning(f"← sidecar {op} failed", took=took, error=res.get("error"),
+                        problems=len(res["problems"]) if isinstance(res.get("problems"), list) else None,
+                        dropped=len(res["dropped"]) if isinstance(res.get("dropped"), list) else None)
+        else:
+            log.info(f"← sidecar {op}", took=took, games=res.get("games"),
+                     battles_per_sec=res.get("battles_per_sec"),
+                     dropped_opponents=len(res["opponents_dropped"]) if res.get("opponents_dropped") else None,
+                     policy_fallbacks=res.get("policy_fallbacks") or None)
+        return res
 
     async def _call_http(self, op: str, payload: dict[str, Any]) -> dict[str, Any]:
         import httpx
 
         url = self._s.sim_http.rstrip("/") + "/" + op
         try:
+            rid = logmod.request_id.get()
             async with httpx.AsyncClient(timeout=self._s.sim_timeout) as client:
-                resp = await client.post(url, json=payload)
+                resp = await client.post(url, json=payload, headers={"X-Request-Id": rid} if rid else None)
                 resp.raise_for_status()
                 return resp.json()
         except httpx.TimeoutException:

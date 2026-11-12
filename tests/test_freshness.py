@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from champions_mcp.db import DATA_FORMAT
-from champions_mcp.pull.freshness import check
+from champions_mcp.pull.freshness import check, corpus_missing
 
 
 def _db(tmp_path, **meta):
@@ -60,3 +60,19 @@ def test_the_real_pull_writes_the_current_format(db):
         import pytest
         pytest.skip("local database predates data_format (re-run champions-mcp-pull)")
     assert int(db.meta("data_format")) == DATA_FORMAT
+
+
+def test_corpus_missing_detects_an_interrupted_background_fetch(tmp_path):
+    """A first start serves after the core pull and fetches the corpus in the
+    background; a restart before it finished leaves fresh data with no
+    observed teams, which the next start must notice and resume."""
+    path = tmp_path / "x.sqlite"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE build_teams (team_id TEXT)")
+    con.commit()
+    assert corpus_missing(path)
+    con.execute("INSERT INTO build_teams VALUES ('t1')")
+    con.commit()
+    con.close()
+    assert not corpus_missing(path)
+    assert corpus_missing(tmp_path / "nope.sqlite")
