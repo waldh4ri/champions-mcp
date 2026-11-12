@@ -32,6 +32,20 @@ docker compose logs -f champions-mcp
 When the server reports **ready**, connect your MCP-compatible AI client to
 **http://localhost:8000/mcp** using Streamable HTTP.
 
+```sh
+# Claude Code
+claude mcp add --transport http champions http://localhost:8000/mcp
+
+# Codex CLI
+codex mcp add champions --url http://localhost:8000/mcp
+```
+
+OpenCode: run `opencode mcp add`, or add to `opencode.json`:
+
+```json
+{ "mcp": { "champions": { "type": "remote", "url": "http://localhost:8000/mcp", "enabled": true } } }
+```
+
 To stop the stack without deleting its data:
 
 ```sh
