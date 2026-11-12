@@ -188,21 +188,24 @@ See [configuration](configuration.md#calculation-and-simulation).
 One profile serves a chat UI at **http://localhost:3000** on top of the core MCP
 stack. You do not need a separate MCP client for this interface.
 
-Enable it in `.env`, then start the stack as usual:
+Either pass the profile to each command:
+
+```sh
+docker compose --profile webchat up -d --build
+docker compose --profile webchat down
+```
+
+or enable it once in `.env`, so plain `docker compose up -d --build`, `down`,
+`logs` and `ps` include the web chat:
 
 ```dotenv
 COMPOSE_PROFILES=webchat
 ```
 
-```sh
-docker compose up -d --build
-```
-
-With the profile set in `.env`, every `docker compose` command (`up`, `down`,
-`logs`, `ps`) includes the web chat. Passing `--profile webchat` on the command
-line instead works for `up`, but then a plain `docker compose down` skips the
-chat containers and fails with *network … still in use*; stop such a stack with
-`docker compose --profile "*" down`.
+Compose only acts on the profiles active for each command: a chat started with
+`--profile webchat` is skipped by a plain `docker compose down`, which then fails
+with *network … still in use*. Stop it with `--profile webchat` (or
+`--profile "*"`, every profile).
 
 Then open **⚙ Configure** (top right). Everything below is set up there, no
 restart needed; the model picker groups what is available by backend:

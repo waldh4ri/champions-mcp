@@ -149,7 +149,7 @@
     if (state !== 'ready') {
       return html + `<p class="cfgNote">The local model server isn't reachable. It needs an NVIDIA GPU: add
         <code>COMPOSE_FILE=docker-compose.yml;docker-compose.gpu.yml</code> to <code>.env</code> (":" instead of ";"
-        on Linux/macOS), then <code>docker compose up -d</code>.
+        on Linux/macOS), then <code>docker compose --profile webchat up -d</code>.
         <code>docker compose logs llama-server</code> says why it is idle.</p>`;
     }
     html += `<p class="cfgNote">Paste a Hugging Face link (a repo, or a specific .gguf file) or <code>user/repo:quant</code>.

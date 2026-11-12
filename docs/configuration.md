@@ -101,8 +101,8 @@ the number of games; no fixed completion time is guaranteed.
 
 ## Web chat
 
-`COMPOSE_PROFILES=webchat` in `.env` (then `docker compose up -d --build`)
-serves the chat at **http://localhost:3000**. Most of its settings live in its **⚙ Configure**
+`docker compose --profile webchat up -d --build` (or `COMPOSE_PROFILES=webchat`
+in `.env`) serves the chat at **http://localhost:3000**. Most of its settings live in its **⚙ Configure**
 view and apply without a restart; the environment variables below set their
 defaults, and what you change in the view is saved in the `chat-data` volume
 (API keys included, server-side only) and wins over them.
