@@ -5,20 +5,21 @@
 (() => {
   const css = `
   #cfgOverlay { position: fixed; inset: 0; background: rgba(2,6,23,.72); display: none; z-index: 50;
-    align-items: center; justify-content: center; }
+    align-items: flex-start; justify-content: center; padding-top: 16px; }
   #cfgOverlay.open { display: flex; }
-  #cfgPanel { background: #1e293b; border: 1px solid #334155; border-radius: 12px; width: min(980px, 96vw);
-    height: min(780px, 92vh); display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  #cfgPanel { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+    width: min(1680px, calc(100vw - 32px)); max-height: calc(100dvh - 32px);  /* height follows the content */
+    display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
   #cfgHead { display: flex; align-items: center; gap: 6px; padding: 12px 16px; border-bottom: 1px solid #334155; }
   #cfgHead h2 { font-size: 1rem; font-weight: 600; margin-right: 12px; }
   .cfgTab { background: none; border: 1px solid transparent; color: #94a3b8; padding: 6px 12px; border-radius: 6px;
     cursor: pointer; font: inherit; font-size: .85rem; }
   .cfgTab.active { background: #0f172a; border-color: #334155; color: #e2e8f0; }
   #cfgClose { margin-left: auto; }
-  #cfgBody { padding: 16px 20px; overflow: auto; flex: 1; font-size: .87rem; }
+  #cfgBody { padding: 20px 28px; overflow: auto; flex: 0 1 auto; min-height: 0; font-size: .87rem; }
   #cfgBody h3 { font-size: .9rem; font-weight: 600; margin: 18px 0 8px; color: #cbd5e1; }
   #cfgBody h3:first-child { margin-top: 0; }
-  .cfgNote { color: #94a3b8; font-size: .8rem; margin: 4px 0 10px; line-height: 1.45; }
+  .cfgNote { color: #94a3b8; font-size: .8rem; margin: 4px 0 10px; line-height: 1.45; max-width: 120ch; }
   .cfgErr { color: #fca5a5; font-size: .82rem; margin: 6px 0; min-height: 1em; }
   .cfgOk { color: #86efac; }
   .cfgRow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -30,9 +31,9 @@
   .cfgBtn:disabled { opacity: .5; cursor: default; }
   .cfgBtn.ghost { background: #0f172a; color: #cbd5e1; border: 1px solid #334155; }
   .cfgBtn.danger { background: #0f172a; color: #fca5a5; border: 1px solid #7f1d1d; }
-  .cfgList { border: 1px solid #334155; border-radius: 8px; overflow: hidden; }
-  .cfgItem { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; padding: 10px 12px; border-top: 1px solid #334155; }
-  .cfgItem:first-child { border-top: none; }
+  .cfgList { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr)); gap: 10px; }
+  .cfgItem { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; padding: 10px 12px;
+    border: 1px solid #334155; border-radius: 8px; background: rgba(15,23,42,.35); align-content: start; }
   .cfgItem .name { font-weight: 600; word-break: break-all; }
   .cfgItem .meta { color: #94a3b8; font-size: .78rem; grid-column: 1; }
   .cfgItem .acts { grid-row: 1 / span 2; grid-column: 2; display: flex; gap: 6px; align-items: center; }
@@ -44,11 +45,15 @@
   .badge.mtp { color: #a5b4fc; border-color: #3730a3; }
   .bar { height: 5px; background: #0f172a; border-radius: 3px; overflow: hidden; margin-top: 6px; grid-column: 1; }
   .bar > i { display: block; height: 100%; background: #6366f1; transition: width .4s; }
-  .cfgGrid { display: grid; grid-template-columns: minmax(210px, 260px) 1fr; gap: 10px 16px; align-items: start; }
-  .cfgGrid label { padding-top: 6px; color: #cbd5e1; }
-  .cfgGrid .help { color: #94a3b8; font-size: .76rem; margin-top: 4px; line-height: 1.4; }
+  .cfgGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 18px 40px; }
+  .cfgPair, .cfgForm { display: grid; grid-template-columns: minmax(150px, 200px) 1fr; gap: 10px 14px; align-items: start; }
+  .cfgPair label, .cfgForm label { padding-top: 6px; color: #cbd5e1; }
+  .cfgPair .help, .cfgForm .help { color: #94a3b8; font-size: .76rem; margin-top: 4px; line-height: 1.4; }
+  .cfgForm .cfgInput { width: 100%; max-width: 560px; }
   .cfgField { display: flex; gap: 6px; align-items: center; }
   .cfgField .cfgInput, .cfgField .cfgSelect { width: 200px; }
+  /* wide screens: independent sections side by side */
+  .cfgCols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 640px), 1fr)); gap: 0 48px; align-items: start; }
   .chip { background: #0f172a; border: 1px dashed #475569; color: #cbd5e1; border-radius: 6px; padding: 5px 9px;
     cursor: pointer; font: inherit; font-size: .8rem; text-align: left; }
   .chip:hover { border-color: #6366f1; }
@@ -203,7 +208,7 @@
     } else {
       input = `<input id="${id}" class="cfgInput" data-key="${k.key}" data-keep="no" type="number" step="any" value="${h(v)}" placeholder="${h(placeholder)}">`;
     }
-    return `<label for="${id}">${h(k.label)}</label><div><div class="cfgField">${input}</div>${k.help ? `<div class="help">${h(k.help)}</div>` : ''}</div>`;
+    return `<div class="cfgPair"><label for="${id}">${h(k.label)}</label><div><div class="cfgField">${input}</div>${k.help ? `<div class="help">${h(k.help)}</div>` : ''}</div></div>`;
   }
   const show = (v, k) => v === null || v === undefined || v === '' ? (k.key === 'ctx' ? 'auto (fit to GPU)' : k.type === 'int' || k.type === 'float' ? 'auto' : 'default')
     : k.type === 'bool' ? (v ? 'on' : 'off') : String(v);
@@ -226,7 +231,7 @@
       const inherited = m ? inf.effective[k.key] : k.default;
       const ph = m ? `inherit: ${show(inherited, k)}` : `default: ${show(inherited, k)}`;
       if (k.key === 'speculative' && m && !m.draft) {
-        html += `<label>${h(k.label)}</label><div class="help" style="padding-top:6px">This model has no draft head (MTP/DFlash/EAGLE3): nothing to enable. Repos with an <code>-MTP</code> variant ship one.</div>`;
+        html += `<div class="cfgPair"><label>${h(k.label)}</label><div class="help" style="padding-top:6px">This model has no draft head (MTP/DFlash/EAGLE3): nothing to enable. Repos with an <code>-MTP</code> variant ship one.</div></div>`;
         continue;
       }
       html += field(k, saved, ph, 'inf');
@@ -252,7 +257,7 @@
   function renderProviders() {
     const prov = models?.providers || {};
     const eps = models?.endpoints || [];
-    let html = renderOpenRouter(prov) + `
+    let html = `<div class="cfgCols"><section>` + renderOpenRouter(prov) + `</section><section>
       <h3>OpenAI-compatible APIs</h3>
       <p class="cfgNote">Any server speaking the OpenAI chat API with tool calling: vLLM, LM Studio, Ollama
       (<code>http://host.docker.internal:11434/v1</code>), a hosted provider… Keys stay on the chat server.
@@ -263,17 +268,17 @@
         <div class="acts">${e.from_env ? '' : `<button class="cfgBtn danger" data-ep="${h(e.id)}">Remove</button>`}</div>
         <div class="meta">${h(e.base_url)} · key ${e.api_key ? h(e.api_key) : 'none'} · ${e.available.length} model(s): ${h(e.available.slice(0, 6).join(', '))}${e.available.length > 6 ? '…' : ''}</div></div>`).join('') + `</div>`;
     }
-    html += `<div class="cfgGrid">
-      <label for="epName">Name</label><div><input id="epName" class="cfgInput" placeholder="e.g. LM Studio" style="width:320px"></div>
-      <label for="epUrl">Base URL</label><div><input id="epUrl" class="cfgInput" placeholder="http://host.docker.internal:1234/v1" style="width:420px">
+    html += `<div class="cfgForm">
+      <label for="epName">Name</label><div><input id="epName" class="cfgInput" placeholder="e.g. LM Studio"></div>
+      <label for="epUrl">Base URL</label><div><input id="epUrl" class="cfgInput" placeholder="http://host.docker.internal:1234/v1">
         <div class="help">The URL ending in /v1 (the chat appends /chat/completions and /models). From the containers, your host is host.docker.internal.</div></div>
-      <label for="epKey">API key</label><div><input id="epKey" class="cfgInput" type="password" autocomplete="off" placeholder="optional" style="width:320px"></div>
-      <label for="epModels">Models</label><div><input id="epModels" class="cfgInput" placeholder="optional, comma-separated" style="width:420px">
+      <label for="epKey">API key</label><div><input id="epKey" class="cfgInput" type="password" autocomplete="off" placeholder="optional"></div>
+      <label for="epModels">Models</label><div><input id="epModels" class="cfgInput" placeholder="optional, comma-separated">
         <div class="help">Empty = every model the API's /models lists.</div></div>
-      <label for="epCtx">Context size</label><div><input id="epCtx" class="cfgInput" type="number" placeholder="131072" style="width:160px">
+      <label for="epCtx">Context size</label><div><input id="epCtx" class="cfgInput" type="number" placeholder="131072" style="max-width:160px">
         <div class="help">Used for the context meter and tool-result budgets.</div></div>
       </div><div class="cfgRow" style="margin-top:12px"><button id="epAdd" class="cfgBtn">Add endpoint</button></div>
-      <div class="cfgErr" id="epErr"></div>`;
+      <div class="cfgErr" id="epErr"></div></section></div>`;
     return html;
   }
 
@@ -285,8 +290,8 @@
     html += `<p class="cfgNote">${orInfo.enabled ? '<span class="cfgOk">Active.</span>' : 'Not configured yet.'}
       Hundreds of hosted models with one key (<a href="https://openrouter.ai/keys" target="_blank" rel="noopener" style="color:#a5b4fc">openrouter.ai/keys</a>).
       Prompts and tool results go to the model's provider and are billed to the key.</p>
-      <div class="cfgGrid"><label for="orKey">API key</label><div><div class="cfgField">
-        <input id="orKey" class="cfgInput" type="password" autocomplete="off" style="width:320px"
+      <div class="cfgForm"><label for="orKey">API key</label><div><div class="cfgField">
+        <input id="orKey" class="cfgInput" type="password" autocomplete="off" style="width:min(100%, 360px)"
           placeholder="${k.source ? `set (${k.source === 'env' ? 'from .env' : 'saved here'} ${h(k.hint)}): paste to replace` : 'sk-or-…'}">
         <button id="orKeySave" class="cfgBtn">Save key</button>
         ${k.source === 'ui' ? '<button id="orKeyDel" class="cfgBtn ghost">Remove</button>' : ''}</div>
@@ -302,7 +307,7 @@
     }
     // settings
     const st = orInfo.settings;
-    html += `<div class="cfgGrid" style="margin-top:10px">`;
+    html += `<div class="cfgGrid" style="margin-top:10px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr))">`;
     for (const kn of st.knobs) html += field(kn, st.saved[kn.key], `default: ${show(kn.default, kn)}`, 'or');
     html += `</div><div class="cfgRow" style="margin-top:10px"><button id="orSave" class="cfgBtn">Save settings</button></div>`;
     // models
