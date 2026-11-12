@@ -5,10 +5,10 @@
 (() => {
   const css = `
   #cfgOverlay { position: fixed; inset: 0; background: rgba(2,6,23,.72); display: none; z-index: 50;
-    align-items: center; justify-content: center; }
+    align-items: flex-start; justify-content: center; padding-top: 16px; }
   #cfgOverlay.open { display: flex; }
   #cfgPanel { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
-    width: min(1680px, calc(100vw - 32px)); height: calc(100dvh - 32px);
+    width: min(1680px, calc(100vw - 32px)); max-height: calc(100dvh - 32px);  /* height follows the content */
     display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
   #cfgHead { display: flex; align-items: center; gap: 6px; padding: 12px 16px; border-bottom: 1px solid #334155; }
   #cfgHead h2 { font-size: 1rem; font-weight: 600; margin-right: 12px; }
@@ -16,7 +16,7 @@
     cursor: pointer; font: inherit; font-size: .85rem; }
   .cfgTab.active { background: #0f172a; border-color: #334155; color: #e2e8f0; }
   #cfgClose { margin-left: auto; }
-  #cfgBody { padding: 20px 28px; overflow: auto; flex: 1; font-size: .87rem; }
+  #cfgBody { padding: 20px 28px; overflow: auto; flex: 0 1 auto; min-height: 0; font-size: .87rem; }
   #cfgBody h3 { font-size: .9rem; font-weight: 600; margin: 18px 0 8px; color: #cbd5e1; }
   #cfgBody h3:first-child { margin-top: 0; }
   .cfgNote { color: #94a3b8; font-size: .8rem; margin: 4px 0 10px; line-height: 1.45; max-width: 120ch; }
