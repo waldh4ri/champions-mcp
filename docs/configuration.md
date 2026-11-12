@@ -102,7 +102,9 @@ the number of games; no fixed completion time is guaranteed.
 ## Web chat
 
 `docker compose --profile webchat up -d --build` serves the chat at
-**http://localhost:3000**. Most of its settings live in its **⚙ Configure**
+**http://localhost:3000**, with local models on CPU + RAM; `--profile
+webchat-gpu` runs them on an NVIDIA GPU instead (either can be set as
+`COMPOSE_PROFILES` in `.env`). Most of its settings live in its **⚙ Configure**
 view and apply without a restart; the environment variables below set their
 defaults, and what you change in the view is saved in the `chat-data` volume
 (API keys included, server-side only) and wins over them.
@@ -214,10 +216,12 @@ come from:
   its full context fits a 12 GB GPU).
 - `.gguf` files you put in `models/` (multi-file models in a subdirectory).
 
-It needs an NVIDIA GPU, enabled by adding `docker-compose.gpu.yml` to
-`COMPOSE_FILE` in `.env` (`docker-compose.yml;docker-compose.gpu.yml` on
-Windows, `:`-separated elsewhere). Without one, `llama-server` logs why and
-idles; the chat still offers the API providers.
+`--profile webchat` runs it on CPU + system RAM (`llama-server`, llama.cpp's CPU
+build): any machine, a few tokens/s, small models fit best. `--profile
+webchat-gpu` runs it on an NVIDIA GPU (`llama-server-gpu`, CUDA build), which
+reserves the GPU: on a machine without the NVIDIA container runtime that `up`
+fails. Both share the downloaded models and these settings; GPU-only ones (GPU
+layers, MoE offload) have no effect on the CPU.
 
 **Inference settings** are edited in **⚙ Configure → Inference**, for all
 models or per model. The chat writes them to llama.cpp's preset file
@@ -252,5 +256,5 @@ Server-wide settings stay on the `llama-server` service:
 | `LLAMA_EXTRA_ARGS` | Empty | Additional llama-server flags for every model. They override the Configure view's settings. |
 
 If a model fails to load (it shows *failed* in the Local models tab),
-`docker compose logs llama-server` has llama.cpp's reason: usually memory —
+`docker compose logs llama-server` (or `llama-server-gpu`) has llama.cpp's reason: usually memory —
 pin a smaller context, use a q4_0 KV cache, or offload MoE experts to the CPU.

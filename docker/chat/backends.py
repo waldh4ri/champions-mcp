@@ -198,16 +198,25 @@ class LocalModels:
         # builds report a file `path` instead.
         path = m.get("path") or ""
         src = m.get("source") or ("cache" if path and not path.startswith("/models/") else "dir" if path else "")
-        on_disk = value != "downloading" and src not in ("", "preset")
+        # A model named by a preset section (we write one per model with
+        # overrides or a draft head) reports source "preset" even when its
+        # files are on disk; only a real file yields GGUF metadata such as
+        # context_length, which tells the two apart.
+        has_file = bool(path) or bool(m.get("context_length"))
+        on_disk = value != "downloading" and (src not in ("", "preset") or has_file)
         out["on_disk"] = on_disk
-        out["source"] = "cache" if src == "cache" else "file" if on_disk else src
-        out["removable"] = bool(m.get("can_remove", src == "cache"))
+        out["source"] = "file" if src not in ("cache", "preset", "") else "cache"
+        # llama.cpp won't delete a model a preset names; main.py drops our
+        # section first, so a preset-backed cached model is deletable too.
+        out["removable"] = bool(m.get("can_remove")) or (src == "preset" and has_file)
+        out["preset_backed"] = src == "preset"
         # While downloading, the router echoes the sidecars *requested*; only
         # trust them once the files are on disk.
         out["sidecars"] = list(m.get("sidecars") or []) if on_disk else []
-        # A preset-only entry that isn't being fetched comes from a stale
-        # section we wrote (a deleted model): never show or re-render it.
-        out["phantom"] = src == "preset" and value not in ("downloading", "incomplete", "loading", "loaded")
+        # A preset-only entry with no file that isn't being fetched comes from
+        # a stale section we wrote (a deleted model): never show or re-render it.
+        out["phantom"] = src == "preset" and not has_file and value not in (
+            "downloading", "incomplete", "loading", "loaded")
         return out
 
     async def _track(self, client: httpx.AsyncClient, m: dict[str, Any]) -> None:
@@ -255,8 +264,8 @@ class LocalModels:
         if self.status != "ready":
             await self.probe(client, force=True)
         if self.status != "ready":
-            raise RuntimeError("the local model server (llama-server) is not running: start the "
-                               "webchat profile with the GPU override (see the README)")
+            raise RuntimeError("the local model server (llama-server) is not running: see "
+                               "docker compose logs llama-server (or llama-server-gpu)")
         resp = await client.request(method, f"{self.url}{path}", timeout=30.0, **kw)
         try:
             body = resp.json()
