@@ -915,8 +915,10 @@ def _or_effective_price(mid: str, endpoints: list[dict]) -> dict:
     else:
         g = SETTINGS.openrouter("max_price")
         cap_in = cap_out = g or None
+    # price ordering requests :floor, which makes flex endpoints eligible too
+    skip = ("/priority",) if SETTINGS.openrouter("provider_sort") == "price" else _OR_SPECIAL_TIERS
     eligible = [e for e in endpoints
-                if (e["tag"] in only if only else not e["tag"].endswith(_OR_SPECIAL_TIERS))
+                if (e["tag"] in only if only else not e["tag"].endswith(skip))
                 and e["tag"] not in ignore
                 and (cap_in is None or e["prompt_per_m"] <= cap_in)
                 and (cap_out is None or e["completion_per_m"] <= cap_out)]
@@ -1094,8 +1096,11 @@ class TurnMetrics:
             self.predicted_ms_sum += elapsed_ms
         if resp_json.get("model"):
             self.model = resp_json["model"]
+        self.last_provider = resp_json.get("provider")
+        self.last_cost = None
         if usage.get("cost") is not None:
-            self.cost += float(usage["cost"] or 0)
+            self.last_cost = float(usage["cost"] or 0)
+            self.cost += self.last_cost
             self.has_cost = True
         cached = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0) or 0
         self.cached_tokens_sum += cached
@@ -1242,7 +1247,14 @@ async def _openrouter_chat(model: str, messages: list[dict], use_tools: bool,
     # Several providers serve most models at different prices: try them
     # cheapest first by default (Configuration view: Provider choice).
     sort = SETTINGS.openrouter("provider_sort")
-    if sort and sort != "default" and not ({"sort", "order", "only"} & provider.keys()):
+    pinned = bool({"sort", "order", "only"} & provider.keys())
+    if sort == "price" and not tier and not pinned and ":" not in model:
+        # :floor = price-sorted *including* flex service-tier endpoints, which
+        # plain sort=price skips (Gemini's flex is half price; OpenRouter falls
+        # back to standard endpoints when flex is busy). Not for the Auto
+        # Router itself; its pick is pinned for the turn's later rounds.
+        payload["model"] = f"{model}:floor"
+    elif sort and sort != "default" and not pinned:
         provider["sort"] = sort
     if provider:
         payload["provider"] = provider
@@ -1505,7 +1517,9 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
             log.info(f"round {_round + 1}/{budget}", took=cmlog.fmt_duration(time.perf_counter() - t_round),
                      calls=calls or "none (answering)",
                      thinking=f"{len(msg['reasoning_content'])} chars" if msg.get("reasoning_content") else None,
-                     context=metrics.last_context_tokens or None)
+                     context=metrics.last_context_tokens or None,
+                     served_by=getattr(metrics, "last_provider", None),
+                     cost=f"${metrics.last_cost:.5f}" if getattr(metrics, "last_cost", None) is not None else None)
             if _auto_tier(bk.split(model)[1]) and metrics.model and not metrics.model.startswith(AUTO_ROUTER):
                 # The Auto Router classifies each request on its own: left alone it
                 # could switch model between this turn's tool rounds, breaking the
@@ -1541,6 +1555,7 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
                 assistant_msg["reasoning_content"] = msg["reasoning_content"]
             if msg.get("reasoning_details"):  # OpenRouter: replayed so reasoning survives tool rounds
                 assistant_msg["reasoning_details"] = msg["reasoning_details"]
+            round_start = len(messages)
             messages.append(assistant_msg)
 
             # Progress is judged per round, not per call: a round that fetched
@@ -1614,6 +1629,9 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
                     "researching: finish with the calls that complete the deliverable (validate_team, "
                     "create_pokepaste), then write the final answer.]"
                 )
+            # This round's chain (tool calls + results), so a turn stopped or
+            # failed later keeps what it already gathered, for any model.
+            yield _ndjson({"type": "round", "messages": messages[round_start:]})
         else:
             log.warning("tool-round budget exhausted; forcing the final answer", rounds=budget)
 
@@ -1652,6 +1670,12 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
             "tool_events": tool_events, "metrics": metrics.summary(),
             "turn_messages": _turn_messages(messages, turn_start, nudge_index, msg),
         })
+    except asyncio.CancelledError:
+        # Stop button (or a closed tab): the client disconnected, so Starlette
+        # cancels the stream, which also aborts the in-flight model request.
+        log.info("■ chat turn stopped by the user", took=cmlog.fmt_duration(time.perf_counter() - t_turn),
+                 rounds=rounds, tool_calls=tool_calls_made)
+        raise
     except Exception as exc:
         log.error("✗ chat turn crashed", took=cmlog.fmt_duration(time.perf_counter() - t_turn), exc_info=True)
         yield _ndjson({"type": "error", "detail": str(exc)})
