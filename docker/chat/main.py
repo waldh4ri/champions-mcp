@@ -856,6 +856,77 @@ def _or_model_info(mid: str) -> dict:
             "tools": "tools" in (m.get("supported_parameters") or []) if m else None}
 
 
+# Per-model provider endpoints (GET /models/{id}/endpoints), cached: the
+# catalogue's `pricing` is the model's standard price, not what a request pays
+# once routed (a pinned flex endpoint is half price; a price cap can rule
+# every provider out).
+_OR_ENDPOINTS: dict[str, tuple[float, list[dict]]] = {}
+_OR_ENDPOINTS_TTL = 3600.0
+# Service tiers OpenRouter only routes to when asked: `only` pins them (or the
+# :floor / :nitro variants); default routing and `sort` use standard endpoints.
+_OR_SPECIAL_TIERS = ("/flex", "/priority")
+
+
+async def _or_endpoints(mid: str) -> list[dict]:
+    cached = _OR_ENDPOINTS.get(mid)
+    if cached and time.monotonic() - cached[0] < _OR_ENDPOINTS_TTL:
+        return cached[1]
+    try:
+        r = await http_client.get(f"{OPENROUTER_URL}/models/{mid}/endpoints",
+                                  headers={"Authorization": f"Bearer {_or_key()}"}, timeout=10.0)
+        r.raise_for_status()
+        eps = []
+        for e in (r.json().get("data") or {}).get("endpoints") or []:
+            p = e.get("pricing") or {}
+            try:
+                eps.append({"tag": e.get("tag") or e.get("provider_name") or "?",
+                            "prompt_per_m": round(float(p.get("prompt")) * 1e6, 3),
+                            "completion_per_m": round(float(p.get("completion")) * 1e6, 3)})
+            except (TypeError, ValueError):
+                continue
+    except (httpx.HTTPError, ValueError):
+        eps = cached[1] if cached else []
+    _OR_ENDPOINTS[mid] = (time.monotonic(), eps)
+    return eps
+
+
+def _or_effective_price(mid: str, endpoints: list[dict]) -> dict:
+    """What the chat's routing pays for `mid`: the model's route (`only` /
+    `ignore` / its own cap) or standard endpoints under the global price cap,
+    then the cheapest under "price" ordering (a range otherwise)."""
+    if not endpoints:
+        return {}
+    route = OPENROUTER_MODEL_ROUTES.get(mid) or {}
+    only, ignore = route.get("only"), set(route.get("ignore") or [])
+    if route:
+        cap = route.get("max_price") or {}
+        cap_in, cap_out = cap.get("prompt"), cap.get("completion")
+    else:
+        g = SETTINGS.openrouter("max_price")
+        cap_in = cap_out = g or None
+    eligible = [e for e in endpoints
+                if (e["tag"] in only if only else not e["tag"].endswith(_OR_SPECIAL_TIERS))
+                and e["tag"] not in ignore
+                and (cap_in is None or e["prompt_per_m"] <= cap_in)
+                and (cap_out is None or e["completion_per_m"] <= cap_out)]
+    if not eligible:
+        return {"blocked": True, "cap": cap_in if cap_in == cap_out else [cap_in, cap_out]}
+    cheapest = min(eligible, key=lambda e: (e["prompt_per_m"], e["completion_per_m"]))
+    out = {"prompt_per_m": cheapest["prompt_per_m"], "completion_per_m": cheapest["completion_per_m"],
+           "via": cheapest["tag"], "providers": len(eligible), "pinned": bool(only)}
+    if SETTINGS.openrouter("provider_sort") != "price" and not only and len(eligible) > 1:
+        out["max_prompt_per_m"] = max(e["prompt_per_m"] for e in eligible)
+        out["max_completion_per_m"] = max(e["completion_per_m"] for e in eligible)
+        out.pop("via")
+    return out
+
+
+async def _or_models_with_prices() -> list[dict]:
+    ids = SETTINGS.openrouter_models(_ENV_OPENROUTER_MODELS)
+    endpoints = await asyncio.gather(*(_or_endpoints(m) for m in ids)) if _or_key() else [[] for _ in ids]
+    return [{**_or_model_info(m), "effective": _or_effective_price(m, eps)} for m, eps in zip(ids, endpoints)]
+
+
 @app.get("/api/openrouter")
 async def get_openrouter():
     """OpenRouter as the Configuration view edits it: key source, settings,
@@ -868,7 +939,7 @@ async def get_openrouter():
         "key": {"source": source, "hint": f"…{key[-4:]}" if len(key) > 8 else ""},
         "settings": SETTINGS.openrouter_view(),
         "auto_tiers": _AUTO_ENTRIES,
-        "models": [_or_model_info(m) for m in SETTINGS.openrouter_models(_ENV_OPENROUTER_MODELS)],
+        "models": await _or_models_with_prices(),
         "models_from": "ui" if SETTINGS.data["openrouter"].get("models") is not None else "env",
         "catalogue_size": len(OPENROUTER_CATALOGUE),
     }
