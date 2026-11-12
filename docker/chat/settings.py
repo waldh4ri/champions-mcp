@@ -322,6 +322,10 @@ class Settings:
             kind = "mtp"
         return kind
 
+    #: models being deleted: their sections are left out (llama.cpp refuses to
+    #: delete a model a preset section names)
+    exclude: set[str] = set()
+
     def render_presets(self, local_models: list[dict[str, Any]]) -> str:
         """llama.cpp preset INI: global defaults in [*], then each model's
         overrides and its speculative-decoding type."""
@@ -338,8 +342,8 @@ class Settings:
 
         lines += arg_lines({k["key"]: self.inference(k["key"]) for k in INFERENCE_KNOBS})
         for m in local_models:
-            if not m.get("on_disk", True):  # downloading: its section comes once the files are there
-                continue
+            if not m.get("on_disk", True) or m["id"] in self.exclude:
+                continue  # downloading (section comes once the files are there) / being deleted
             section = arg_lines(self.data["inference"]["models"].get(m["id"], {}))
             kind = self.draft_kind(m)
             if kind and self.inference("speculative", m["id"]) == "auto":

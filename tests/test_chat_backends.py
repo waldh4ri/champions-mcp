@@ -88,3 +88,22 @@ def test_presets_render_overrides_and_mtp(tmp_path):
     assert "draft-mtp" not in s.render_presets(models)
     assert s.write_presets(models) is True
     assert s.write_presets(models) is False                          # unchanged: no rewrite
+
+
+def test_router_entries_preset_backed_vs_phantom():
+    """A model named by one of our preset sections reports source "preset"
+    even with its files on disk (only those carry GGUF metadata such as
+    context_length); a section with no file behind it is a phantom."""
+    lm = bk.LocalModels("http://llama:8080", True, 131072)
+    real = lm._entry({"id": "u/M-MTP-GGUF:Q4_K_XL", "status": {"value": "unloaded"}, "source": "preset",
+                      "can_remove": False, "context_length": 262144, "sidecars": ["mmproj"]})
+    assert real["on_disk"] and not real["phantom"] and real["removable"] and real["preset_backed"]
+    assert real["sidecars"] == ["mmproj"]
+    ghost = lm._entry({"id": "u/Gone-GGUF:Q4", "status": {"value": "unloaded"}, "source": "preset"})
+    assert ghost["phantom"] and not ghost["on_disk"]
+    cached = lm._entry({"id": "u/C-GGUF:Q4", "status": {"value": "unloaded"}, "source": "cache",
+                        "can_remove": True})
+    assert cached["on_disk"] and cached["removable"] and not cached["phantom"]
+    downloading = lm._entry({"id": "u/D-GGUF:Q4", "status": {"value": "downloading"}, "source": "cache",
+                             "sidecars": ["mtp", "dflash"]})
+    assert not downloading["on_disk"] and downloading["sidecars"] == [] and not downloading["phantom"]

@@ -6,7 +6,7 @@ Fires an identical prompt at each backend that is reachable and reports prompt
 own timing fields — so the numbers are the engines' measurement, not wall-clock
 guesswork. Run them one at a time (a big MoE won't fit twice in a small GPU):
 
-    docker compose --profile webchat up -d --build       # llama.cpp (needs the GPU override)
+    docker compose --profile webchat-gpu up -d --build   # llama.cpp on the GPU
     python docker/bench/bench.py
     docker compose --profile webchat down                # free the GPU before another engine
 

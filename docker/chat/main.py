@@ -8,7 +8,8 @@ per chat; see backends.py for how a choice is encoded):
 
   local       llama.cpp's llama-server in router mode: every model in ./models
               or downloaded from Hugging Face in the Models panel, loaded on
-              demand. Needs a GPU (docker-compose.gpu.yml).
+              demand: on CPU + RAM (--profile webchat) or an NVIDIA GPU
+              (--profile webchat-gpu).
   openrouter  any tool-calling model on OpenRouter (OPENROUTER_API_KEY,
               OPENROUTER_MODEL, plus the Auto Router at each cost tier), no GPU
               needed. Available whenever the key is set.
@@ -677,7 +678,7 @@ async def startup() -> None:
     await _sync_presets(force=True)
     if not default:
         log.warning("no chat model available yet: add one in the web UI's Models panel (a Hugging Face "
-                    "model, with the GPU override) or set OPENROUTER_API_KEY / an OpenAI-compatible API")
+                    "model) or set OPENROUTER_API_KEY / an OpenAI-compatible API")
     await _init_mcp()
 
 
@@ -796,11 +797,20 @@ async def manage_local_model(action: str, req: LocalModelRequest):
     if not fn:
         raise HTTPException(status_code=404, detail=f"unknown action {action!r}")
     try:
+        entry = LOCAL.get(req.model) or {}
+        if action == "delete" and entry.get("preset_backed"):
+            # llama.cpp won't delete a model its presets name: drop our
+            # section and have it reload first.
+            SETTINGS.exclude.add(req.model)
+            await _sync_presets(force=True)
         await fn(http_client, req.model)
         return {"ok": True}
     except Exception as exc:  # noqa: BLE001
         log.warning(f"could not {action} local model", model=req.model, error=str(exc))
         raise _api_error(exc)
+    finally:
+        if action == "delete":
+            SETTINGS.exclude.discard(req.model)
 
 
 @app.get("/api/config")
@@ -1370,7 +1380,7 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
             fallback = await _default_model()
             if not fallback:
                 raise RuntimeError("No chat model is available: add one in the Models panel "
-                                   "(a Hugging Face model, needs the GPU override) or configure "
+                                   "(a Hugging Face model) or configure "
                                    "OpenRouter / an OpenAI-compatible API.")
             log.warning("selected model is unavailable; using the default",
                         requested=model, using=fallback)

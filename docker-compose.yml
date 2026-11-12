@@ -6,22 +6,21 @@
 #   champions-sim  - Pokémon Showdown battle simulator sidecar (Node 22, champions mod)
 #   champions-mcp  - MCP server (Python 3.12, streamable-HTTP transport)
 #
-# These three form the core stack and are always started. The optional
-# --profile webchat adds a web chat UI on top of it:
-#   champions-chat - web chat UI (:3000) + MCP tool-calling bridge to champions-mcp
-#   llama-server   - llama.cpp local model, used only when a GGUF is in ./models
-#                    (or LLAMA_MODEL_HF is set); otherwise it idles
-# The chat offers the local model and/or OpenRouter (when OPENROUTER_API_KEY is
-# set), whichever is available. See the "Web chat" block further down.
+# These three form the core stack and are always started. Two optional
+# profiles add a web chat UI on top of it:
+#   webchat      champions-chat - web chat UI (:3000) + MCP tool-calling bridge,
+#                with local models on CPU + RAM (llama-server) and API providers
+#   webchat-gpu  the same, with local models on an NVIDIA GPU (llama-server-gpu)
+# See the "Web chat" block further down.
 #
 # Quick start
 # -----------
-#   docker compose up -d --build                    # core stack only
-#   docker compose --profile webchat up -d --build  # core stack + web chat
-#
-# NVIDIA GPU for the local model: add to .env (Windows separator shown; use ":"
-# on Linux/macOS, or set COMPOSE_PATH_SEPARATOR):
-#   COMPOSE_FILE=docker-compose.yml;docker-compose.gpu.yml
+#   docker compose up -d --build                        # core stack only
+#   docker compose --profile webchat up -d --build      # + web chat (local models on CPU)
+#   docker compose --profile webchat-gpu up -d --build  # + web chat (local models on the GPU)
+#   docker compose --profile "*" down                   # stop, whichever was started
+# A profile set as COMPOSE_PROFILES in .env applies to every command instead
+# (a plain `down` skips profiles that aren't active: "network still in use").
 #
 # On first start champions-mcp runs `champions-mcp-pull --skip-builds` to build
 # the local champions.sqlite from pokechamp.gg (+ PokeAPI for the type chart and
@@ -48,6 +47,56 @@ x-logging: &default-logging
   options:
     max-size: "10m"
     max-file: "3"
+
+# llama.cpp server for the web chat, shared by llama-server (CPU, profile
+# webchat) and llama-server-gpu (NVIDIA GPU, profile webchat-gpu); see the
+# "Web chat" block below.
+x-llama-env: &llama-env
+  LOG_LEVEL: "${LOG_LEVEL:-INFO}"  # DEBUG | INFO | WARNING | ERROR (all services share it)
+  LOG_COLOR: "${LOG_COLOR:-1}"  # ANSI colors in `docker compose logs`; 0 = plain text
+  LLAMA_PORT: "8080"  # container-side listen port passed to llama-server; must match the "ports:" mapping
+  # Per-model settings (context, KV cache, GPU layers, MoE offload, reasoning
+  # budget, MTP) live in the web chat's Configuration view, which writes them
+  # to /config/presets.ini; their defaults are on champions-chat.
+  LLAMA_MODELS_MAX: "${LLAMA_MODELS_MAX:-1}"  # models loaded at once (picking another unloads it)
+  LLAMA_PARALLEL: "${LLAMA_PARALLEL:-1}"  # one user: no parallel slots
+  # Keep the model's thinking across the conversation (the chat replays
+  # reasoning_content for prior turns too — see docker/chat/main.py).
+  LLAMA_REASONING_PRESERVE: "${LLAMA_REASONING_PRESERVE:-1}"
+  LLAMA_NO_MMAP: "${LLAMA_NO_MMAP:-1}"  # read weights into RAM up front: steadier decode, exact load progress
+  LLAMA_MLOCK: "${LLAMA_MLOCK:-0}"  # pin weights in RAM (needs the IPC_LOCK cap + RAM)
+  HF_TOKEN: "${HF_TOKEN:-}"  # only for gated/private Hugging Face repos
+  # Free-form escape hatch for llama-server flags the Configuration view
+  # doesn't cover (applies to every model, overrides its settings).
+  LLAMA_EXTRA_ARGS: "${LLAMA_EXTRA_ARGS:-}"
+
+x-llama: &llama
+  build:
+    context: .
+    dockerfile: docker/llama/Dockerfile
+  ports:
+    - "${LLAMA_PORT:-8080}:8080"  # host:container — LLAMA_PORT changes the host side
+  cap_add:
+    - IPC_LOCK    # Required for --mlock
+  volumes:
+    # Downloaded models. llama.cpp writes to ~/.cache/huggingface (and older
+    # builds to ~/.cache/llama.cpp): mount the whole cache dir so they persist.
+    - llama_models:/root/.cache
+    - ./models:/models:ro                   # your own .gguf files
+    - chat-data:/config                     # presets.ini written by champions-chat's Configuration view
+  restart: unless-stopped
+  logging: *default-logging
+  healthcheck:
+    # Healthy when the router answers, or when deliberately idle (GPU variant
+    # without a visible GPU: the entrypoint logs why).
+    test: ["CMD-SHELL", "test -f /tmp/llama-disabled || curl -sf http://127.0.0.1:8080/health || exit 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    start_period: 30s
+  networks:
+    mcp-internal:
+      aliases: [llama]  # the chat reaches either variant as http://llama:8080
 
 services:
 
@@ -165,69 +214,56 @@ services:
       - mcp-internal
 
   # ==========================================================================
-  # Web chat (--profile webchat)
-  #   docker compose --profile webchat up -d --build
+  # Web chat
+  #   docker compose --profile webchat up -d --build       chat + local models on CPU/RAM
+  #   docker compose --profile webchat-gpu up -d --build   chat + local models on an NVIDIA GPU
+  #   (down: same flag, or --profile "*"; or set COMPOSE_PROFILES in .env)
   #
-  #   champions-chat - light web UI + MCP tool-calling bridge at :3000. Offers
-  #                    every backend that is available — local models,
-  #                    OpenRouter (OPENROUTER_API_KEY), any OpenAI-compatible
-  #                    API — and manages local models (Models panel).
-  #   llama-server   - llama.cpp in router mode: starts with no model loaded,
-  #                    serves every .gguf in ./models, downloads models added
-  #                    from the chat (a Hugging Face link) into the
-  #                    llama_models volume, and loads whichever model a chat
-  #                    picks. Needs an NVIDIA GPU (docker-compose.gpu.yml);
-  #                    without one it logs why and idles.
+  #   champions-chat   - light web UI + MCP tool-calling bridge at :3000. Offers
+  #                      every backend that is available — local models,
+  #                      OpenRouter (OPENROUTER_API_KEY), any OpenAI-compatible
+  #                      API — and manages local models (⚙ Configure).
+  #   llama-server     - llama.cpp in router mode (webchat): CPU + system RAM.
+  #   llama-server-gpu - the same on the NVIDIA GPU (webchat-gpu). Docker can't
+  #                      make a GPU request optional — without the NVIDIA
+  #                      runtime, creating the container fails — hence a profile
+  #                      of its own.
+  # Both start with no model loaded, serve every .gguf in ./models, download
+  # models added from the chat (a Hugging Face link) into the llama_models
+  # volume (shared: a model downloaded once serves both), load whichever model a
+  # chat picks, and answer the chat as http://llama:8080.
   # ==========================================================================
   llama-server:
+    <<: *llama
     build:
       context: .
       dockerfile: docker/llama/Dockerfile
-    image: ${LLAMA_IMAGE:-champions-llama:latest}
+      args:
+        BASE_IMAGE: ghcr.io/ggml-org/llama.cpp:server  # llama.cpp's CPU build
+    image: ${LLAMA_CPU_IMAGE:-champions-llama-cpu:latest}
     container_name: champions-llama
-    profiles: ["webchat"]  # only built/started with `docker compose --profile webchat ...`
-    ports:
-      - "${LLAMA_PORT:-8080}:8080"  # host:container — override LLAMA_PORT to change the host side; container always listens on 8080 (LLAMA_PORT env below)
+    profiles: ["webchat"]
     environment:
-      LOG_LEVEL: "${LOG_LEVEL:-INFO}"  # DEBUG | INFO | WARNING | ERROR (all services share it)
-      LOG_COLOR: "${LOG_COLOR:-1}"  # ANSI colors in `docker compose logs`; 0 = plain text
-      LLAMA_PORT: "8080"  # container-side listen port passed to llama-server; must match the "ports:" mapping above
-      # Per-model settings (context, KV cache, GPU layers, MoE offload,
-      # reasoning budget, MTP) live in the web chat's Configuration view, which
-      # writes them to /config/presets.ini; their defaults are on champions-chat.
-      LLAMA_MODELS_MAX: "${LLAMA_MODELS_MAX:-1}"  # models loaded at once (one GPU: 1; picking another unloads it)
-      LLAMA_PARALLEL: "${LLAMA_PARALLEL:-1}"  # one user: no parallel slots
-      # Keep the model's thinking across the conversation (the chat replays
-      # reasoning_content for prior turns too — see docker/chat/main.py).
-      LLAMA_REASONING_PRESERVE: "${LLAMA_REASONING_PRESERVE:-1}"
-      LLAMA_NO_MMAP: "${LLAMA_NO_MMAP:-1}"  # read weights into RAM up front: steadier decode, exact load progress
-      LLAMA_MLOCK: "${LLAMA_MLOCK:-0}"  # pin weights in RAM (needs the IPC_LOCK cap below + RAM)
-      HF_TOKEN: "${HF_TOKEN:-}"  # only for gated/private Hugging Face repos
-      # Free-form escape hatch for llama-server flags the Configuration view
-      # doesn't cover (applies to every model, overrides its settings).
-      LLAMA_EXTRA_ARGS: "${LLAMA_EXTRA_ARGS:-}"
-    cap_add:
-      - IPC_LOCK    # Required for --mlock
-    volumes:
-      # Downloaded models. llama.cpp writes to ~/.cache/huggingface (and older
-      # builds to ~/.cache/llama.cpp): mount the whole cache dir so they persist.
-      - llama_models:/root/.cache
-      - ./models:/models:ro                   # your own .gguf files
-      - chat-data:/config                     # presets.ini written by champions-chat's Configuration view
-    restart: unless-stopped
-    logging: *default-logging
-    healthcheck:
-      # Healthy when the router answers, or when deliberately idle (no GPU:
-      # the entrypoint logs why) so the idle state isn't reported as a failure.
-      test: ["CMD-SHELL", "test -f /tmp/llama-disabled || curl -sf http://127.0.0.1:8080/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 30s
-    # NVIDIA GPU passthrough lives in docker-compose.gpu.yml (opt-in), so this
-    # profile also starts on machines without the NVIDIA container runtime.
-    networks:
-      - mcp-internal
+      <<: *llama-env
+      LLAMA_DEVICE: "cpu"
+
+  llama-server-gpu:
+    <<: *llama
+    image: ${LLAMA_IMAGE:-champions-llama:latest}
+    container_name: champions-llama-gpu
+    profiles: ["webchat-gpu"]
+    environment:
+      <<: *llama-env
+      LLAMA_DEVICE: "gpu"
+    # NVIDIA GPU passthrough (nvidia-container-toolkit on Linux; WSL2 GPU support
+    # with Docker Desktop).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   champions-chat:
     build:
@@ -235,14 +271,14 @@ services:
       dockerfile: docker/chat/Dockerfile
     container_name: champions-chat
     # Offers every available backend in the UI's model picker: local models
-    # (llama-server), OpenRouter (OPENROUTER_API_KEY) and OpenAI-compatible APIs.
-    profiles: ["webchat"]
+    # (llama-server on CPU, or llama-server-gpu), OpenRouter and OpenAI-compatible APIs.
+    profiles: ["webchat", "webchat-gpu"]
     ports:
       - "${WEBUI_PORT:-3000}:3000"  # host:container — override WEBUI_PORT to change the host side; container always listens on 3000 (fixed by the Dockerfile's uvicorn CMD)
     environment:
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"  # DEBUG | INFO | WARNING | ERROR (all services share it)
       LOG_COLOR: "${LOG_COLOR:-1}"  # ANSI colors in `docker compose logs`; 0 = plain text
-      LLAMA_BASE_URL: "http://llama-server:8080"  # llama-server's address on the internal network (Docker DNS resolves the service name)
+      LLAMA_BASE_URL: "http://llama:8080"  # llama-server's address on the internal network (Docker DNS resolves the service name)
       MCP_URL: "http://champions-mcp:8000/mcp"  # champions-mcp's MCP endpoint on the internal network
       # Endpoints and settings added in the UI's Models panel persist here.
       CHAT_DATA_DIR: "/data"
@@ -320,9 +356,12 @@ services:
     volumes:
       - chat-data:/data  # endpoints added in the UI (API keys stay server-side)
     depends_on:
+      # Started, not healthy: the chat is usable at once and lists local models
+      # as they become available. Only one of the two runs, per profile.
       llama-server:
-        # Started, not healthy: the chat is usable at once (OpenRouter) and
-        # lists the local model as "loading" until llama-server serves it.
+        condition: service_started
+        required: false
+      llama-server-gpu:
         condition: service_started
         required: false
       champions-mcp:

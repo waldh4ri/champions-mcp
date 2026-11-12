@@ -147,10 +147,9 @@
     let html = `<h3>Local models (llama.cpp)</h3>`;
     if (state === 'disabled') return html + `<p class="cfgNote">Disabled by CHAT_PROVIDER.</p>`;
     if (state !== 'ready') {
-      return html + `<p class="cfgNote">The local model server isn't reachable. It needs an NVIDIA GPU: add
-        <code>COMPOSE_FILE=docker-compose.yml;docker-compose.gpu.yml</code> to <code>.env</code> (":" instead of ";"
-        on Linux/macOS), then <code>docker compose --profile webchat up -d</code>.
-        <code>docker compose logs llama-server</code> says why it is idle.</p>`;
+      return html + `<p class="cfgNote">The local model server isn't reachable yet. It starts with the stack
+        (<code>--profile webchat</code>: CPU + RAM, <code>--profile webchat-gpu</code>: NVIDIA GPU);
+        <code>docker compose logs llama-server</code> (or <code>llama-server-gpu</code>) says what it is doing.</p>`;
     }
     html += `<p class="cfgNote">Paste a Hugging Face link (a repo, or a specific .gguf file) or <code>user/repo:quant</code>.
       It downloads in the background (with its MTP draft head when the repo has one) and loads when a chat uses it.
@@ -176,7 +175,7 @@
         : st === 'loading' ? `loading${pct != null ? ` ${pct}%` : '…'}`
         : st === 'loaded' ? `loaded · context ${m.context_size?.toLocaleString?.() ?? '?'} tokens`
         : st === 'incomplete' ? 'download paused or interrupted: Resume continues it'
-        : st === 'failed' ? `failed to load (exit ${h(m.exit_code)}): see docker compose logs llama-server`
+        : st === 'failed' ? `failed to load (exit ${h(m.exit_code)}): see docker compose logs llama-server(-gpu)`
         : 'not loaded: loads when a chat uses it';
       meta += m.source === 'file' ? ' · from ./models' : '';
       const acts = [];
