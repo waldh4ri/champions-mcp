@@ -288,6 +288,9 @@ function formulaDamage(dex, att, def, moveId) {
   const move = dex.moves.get(moveId);
   if (!move.exists || move.category === 'Status') return 0;
   let bp = move.basePower || VAR_BP_FALLBACK[move.id] || 0;
+  if ((move.id === 'storedpower' || move.id === 'powertrip') && att.boosts) {
+    bp = 20 + 20 * Object.values(att.boosts).reduce((x, b) => x + Math.max(0, b), 0);
+  }
   if (!bp) return 0;
   const attAb = abilityId(att), defAb = abilityId(def);
   let moveType = move.type;
@@ -1138,9 +1141,16 @@ function previewPassGain(dex, r, boosts, theirs) {
   const mult = k => (2 + (boosts[k] || 0)) / 2;
   const boosted = Object.create(r);
   const st = r.storedStats;
-  boosted.storedStats = { ...st, atk: st.atk * mult('atk'), spa: st.spa * mult('spa'), spe: st.spe * mult('spe') };
+  boosted.storedStats = {
+    ...st, atk: st.atk * mult('atk'), spa: st.spa * mult('spa'), spe: st.spe * mult('spe'),
+    def: st.def * mult('def'), spd: st.spd * mult('spd'),
+  };
+  boosted.boosts = { ...NO_BOOSTS, ...boosts }; // Stored Power / Power Trip
   let g = 0;
-  for (const q of theirs) g += previewOff(dex, boosted, q) - previewOff(dex, r, q);
+  for (const q of theirs) {
+    g += previewOff(dex, boosted, q) - previewOff(dex, r, q); // hits harder / faster
+    g += 0.7 * (previewOff(dex, q, r) - previewOff(dex, q, boosted)); // takes less
+  }
   return g / theirs.length;
 }
 
@@ -1171,13 +1181,13 @@ function previewScores(battle, side, lead) {
     const sMega = memberPreviewScore(battle, megaForm, theirs, doubles, lead);
     const sBase = isMegaHolder ? memberPreviewScore(battle, p, theirs, doubles, lead) - 0.45 : sMega;
     const passer = isPasserSet(battle.dex, p);
-    return { i, s: sMega, sMega, sBase, isMegaHolder, form: megaForm, passer, attacker: !passer && isAttackerSet(battle.dex, p) };
+    return { i, s: sMega, sMega, sBase, isMegaHolder, form: megaForm, passer, attacker: isAttackerSet(battle.dex, p) };
   });
   // A Baton Passer is worth what its boosts add to each possible recipient.
   for (const x of info) {
     if (!x.passer) continue;
     const boosts = passerBoosts(battle.dex, side.pokemon[x.i]);
-    x.passGain = info.map(r => (r.attacker ? previewPassGain(battle.dex, r.form, boosts, theirs) : 0));
+    x.passGain = info.map((r, j) => (r.attacker && j !== x.i ? previewPassGain(battle.dex, r.form, boosts, theirs) : 0));
   }
   return info;
 }
