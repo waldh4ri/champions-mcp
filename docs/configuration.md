@@ -147,9 +147,15 @@ once per turn, then the chat keeps it for the turn's tool rounds. Add fixed
 models from the Configure view (search the catalogue: tool-capable models only,
 cheapest first, with prices and context) or with `OPENROUTER_MODEL`.
 
-When several providers serve a model, requests go to the **cheapest first**
-(OpenRouter's `provider.sort = "price"`); the Configure view switches this to
-throughput, latency or OpenRouter's default load balancing.
+When several providers serve a model, requests go to the **cheapest first,
+flex service tiers included** (the model's `:floor` variant; plain
+`provider.sort = "price"` would skip flex endpoints, which are often half price
+— Gemini, OpenAI). OpenRouter falls back to standard endpoints when flex is
+busy. The Auto Router's own first request can't target flex; the model it picks
+is pinned for the turn's later rounds, which do. The Configure view switches the
+ordering to throughput, latency or OpenRouter's default load balancing. Each
+model's card shows the price a request actually pays and through which endpoint;
+the `champions-chat` log shows the provider and cost of every round.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -159,10 +165,11 @@ throughput, latency or OpenRouter's default load balancing.
 | `OPENROUTER_AUTO_MODELS` | `deepseek/deepseek-v4.1-flash,openai/gpt-6-luna` | Low-tier candidate pool; exact IDs or wildcards such as `deepseek/*`. |
 | `OPENROUTER_AUTO_MODELS_MEDIUM` | Empty | Medium-tier pool; empty uses the router's ranking for that band. |
 | `OPENROUTER_AUTO_MODELS_HIGH` | Empty | High-tier pool; empty uses the router's ranking for that band. |
-| `OPENROUTER_MAX_PRICE` | `1` | Default price cap, USD per million input **and** output tokens, for fixed models and the low tier; `0` = no cap. |
-| `OPENROUTER_MAX_PRICE_MEDIUM` | Empty | Medium-tier price cap; empty means no cap. |
+| `OPENROUTER_MAX_PRICE` | `1` | Default max **input** price, USD per million tokens, for fixed models and the low tier; `0` = no cap. |
+| `OPENROUTER_MAX_PRICE_OUTPUT` | `5` | Default max **output** price, same scope; `0` = no cap. |
+| `OPENROUTER_MAX_PRICE_MEDIUM` | Empty | Medium-tier price cap (input and output); empty means no cap. |
 | `OPENROUTER_MAX_PRICE_HIGH` | Empty | High-tier price cap; empty means no cap. |
-| `OPENROUTER_MODEL_ROUTES` | Built-in Gemini route | JSON mapping of model IDs to OpenRouter provider-routing objects; a matching route replaces the price cap and provider sort. |
+| `OPENROUTER_MODEL_ROUTES` | Built-in Gemini route | JSON mapping of model IDs to OpenRouter provider-routing objects; a matching route replaces the price caps and provider sort. |
 | `OPENROUTER_REASONING_EFFORT` | Unset | Default `low`, `medium`, or `high`; unset leaves the model default. |
 | `OPENROUTER_TEMPERATURE` | Unset | Default sampling override; unset leaves the model default. |
 

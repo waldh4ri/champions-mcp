@@ -116,10 +116,15 @@ OPENROUTER_KNOBS: list[dict[str, Any]] = [
      "help": "When several providers serve a model: price = cheapest first (default), throughput = "
              "fastest generation, latency = quickest first token, default = OpenRouter's load balancing.",
      "default": _env("OPENROUTER_PROVIDER_SORT", "price") or "price"},
-    {"key": "max_price", "type": "float", "label": "Price cap (USD per 1M tokens)",
-     "help": "Providers charging more (input or output) are skipped, for the fixed models and the "
-             "Auto Router's low tier. 0 = no cap. A per-model route (OPENROUTER_MODEL_ROUTES) replaces it.",
+    {"key": "max_price", "type": "float", "label": "Max input price (USD per 1M tokens)",
+     "help": "Providers charging more per input token are skipped (fixed models and the Auto Router's "
+             "low tier). 0 = no cap. A per-model route (OPENROUTER_MODEL_ROUTES) replaces both caps.",
      "default": _env_float("OPENROUTER_MAX_PRICE") if _env("OPENROUTER_MAX_PRICE") else 1.0, "min": 0},
+    {"key": "max_price_output", "type": "float", "label": "Max output price (USD per 1M tokens)",
+     "help": "The same for output tokens, which typically cost 4-5x input (Gemini flex: $1 in / $5 out). "
+             "0 = no cap.",
+     "default": _env_float("OPENROUTER_MAX_PRICE_OUTPUT") if _env("OPENROUTER_MAX_PRICE_OUTPUT") else 5.0,
+     "min": 0},
     {"key": "reasoning_effort", "type": "choice", "choices": ["low", "medium", "high"],
      "label": "Reasoning effort", "help": "For reasoning models; empty = each model's default.",
      "default": _env("OPENROUTER_REASONING_EFFORT").lower() or None},

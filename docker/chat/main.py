@@ -913,8 +913,7 @@ def _or_effective_price(mid: str, endpoints: list[dict]) -> dict:
         cap = route.get("max_price") or {}
         cap_in, cap_out = cap.get("prompt"), cap.get("completion")
     else:
-        g = SETTINGS.openrouter("max_price")
-        cap_in = cap_out = g or None
+        cap_in, cap_out = _or_caps(None)
     # price ordering requests :floor, which makes flex endpoints eligible too
     skip = ("/priority",) if SETTINGS.openrouter("provider_sort") == "price" else _OR_SPECIAL_TIERS
     eligible = [e for e in endpoints
@@ -923,7 +922,7 @@ def _or_effective_price(mid: str, endpoints: list[dict]) -> dict:
                 and (cap_in is None or e["prompt_per_m"] <= cap_in)
                 and (cap_out is None or e["completion_per_m"] <= cap_out)]
     if not eligible:
-        return {"blocked": True, "cap": cap_in if cap_in == cap_out else [cap_in, cap_out]}
+        return {"blocked": True, "cap_in": cap_in, "cap_out": cap_out}
     cheapest = min(eligible, key=lambda e: (e["prompt_per_m"], e["completion_per_m"]))
     out = {"prompt_per_m": cheapest["prompt_per_m"], "completion_per_m": cheapest["completion_per_m"],
            "via": cheapest["tag"], "providers": len(eligible), "pinned": bool(only)}
@@ -1194,6 +1193,18 @@ async def _endpoint_chat(eid: str, model: str, messages: list[dict], use_tools: 
     return msg
 
 
+def _or_caps(tier: str | None) -> tuple[float | None, float | None]:
+    """(input, output) price caps in USD per 1M tokens; None = no cap. The
+    medium/high Auto Router tiers use their env cap (both sides); the low tier
+    and fixed models the Configuration view's separate input/output caps."""
+    if tier in OPENROUTER_MAX_PRICES:
+        v = OPENROUTER_MAX_PRICES[tier]
+        cap = float(v) if v else None
+        return cap, cap
+    cin, cout = SETTINGS.openrouter("max_price"), SETTINGS.openrouter("max_price_output")
+    return (float(cin) if cin else None), (float(cout) if cout else None)
+
+
 async def _openrouter_chat(model: str, messages: list[dict], use_tools: bool,
                            metrics: TurnMetrics | None, session_id: str | None = None,
                            route_tier: str | None = None) -> dict:
@@ -1231,19 +1242,15 @@ async def _openrouter_chat(model: str, messages: list[dict], use_tools: bool,
         # Sticky routing (and caching) across this conversation's turns.
         payload["session_id"] = session_id
     # a model pinned after routing keeps its tier's price rule (route_tier)
-    price_tier = tier or route_tier
-    cap_setting = SETTINGS.openrouter("max_price")
-    max_price = (OPENROUTER_MAX_PRICES[price_tier] if price_tier in OPENROUTER_MAX_PRICES
-                 else (cap_setting or ""))
+    cap_in, cap_out = _or_caps(tier or route_tier)
     route = OPENROUTER_MODEL_ROUTES.get(model)
     provider: dict = {}
     if route:
         # this model's own endpoint pinning + price cap (also when the Auto
         # Router picked it and it was pinned for the rest of the turn)
         provider = dict(route)
-    elif max_price:
-        cap = float(max_price)
-        provider = {"max_price": {"prompt": cap, "completion": cap}}
+    elif cap_in or cap_out:
+        provider = {"max_price": {k: v for k, v in (("prompt", cap_in), ("completion", cap_out)) if v}}
     # Several providers serve most models at different prices: try them
     # cheapest first by default (Configuration view: Provider choice).
     sort = SETTINGS.openrouter("provider_sort")
