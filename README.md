@@ -19,10 +19,10 @@ To also start a web chat at http://localhost:3000 (models and API keys are set u
 in its **⚙ Configure** view):
 
 ```sh
-docker compose --profile webchat up -d --build   # stop with: docker compose --profile webchat down
+docker compose --profile webchat up -d --build       # local models run on CPU + RAM
+docker compose --profile webchat-gpu up -d --build   # local models run on an NVIDIA GPU
+docker compose --profile "*" down                    # stop
 ```
-
-Or put `COMPOSE_PROFILES=webchat` in `.env` so plain `docker compose` commands include it.
 
 This starts the MCP server and its damage-calculator and battle-simulator services.
 The first start downloads the data and can take several minutes. Check readiness:

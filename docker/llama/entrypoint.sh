@@ -26,12 +26,16 @@ fi
 
 PRESETS=/config/presets.ini
 
-# The image is CUDA-only: without a GPU it can't serve usefully, so idle (and
-# say why) instead of crash-looping. nvidia-smi works on native Linux and on
-# Docker Desktop/WSL2 (where the GPU is /dev/dxg, not /dev/nvidia*).
-if ! nvidia-smi -L >/dev/null 2>&1 && [ ! -e /dev/nvidia0 ] && [ ! -e /dev/dxg ]; then
+# LLAMA_DEVICE=cpu (the webchat profile's CPU image): inference on CPU + RAM.
+# Otherwise (webchat-gpu, CUDA image) the GPU must be visible: without it the
+# container would only crawl on the CPU build of CUDA, so idle and say why.
+# nvidia-smi works on native Linux and on Docker Desktop/WSL2 (where the GPU
+# is /dev/dxg, not /dev/nvidia*).
+if [ "${LLAMA_DEVICE:-gpu}" = "cpu" ]; then
+  :
+elif ! nvidia-smi -L >/dev/null 2>&1 && [ ! -e /dev/nvidia0 ] && [ ! -e /dev/dxg ]; then
   log_info "no NVIDIA GPU visible: local models disabled; idling (the web chat still offers OpenRouter / OpenAI-compatible APIs)" \
-    "hint=add docker-compose.gpu.yml to COMPOSE_FILE in .env"
+    "hint=Docker passes no GPU to this container: check the NVIDIA container runtime / WSL2 GPU support"
   touch /tmp/llama-disabled
   trap 'exit 0' TERM INT
   while :; do sleep 3600 & wait $!; done
@@ -68,7 +72,12 @@ fi
 # shellcheck disable=SC2086
 [ -n "${LLAMA_EXTRA_ARGS:-}" ] && set -- "$@" ${LLAMA_EXTRA_ARGS}
 
-GPU=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -n 1 || true)
+if [ "${LLAMA_DEVICE:-gpu}" = "cpu" ]; then
+  RAM_GB=$(awk '/MemTotal/ {printf "%.0f", $2 / 1048576}' /proc/meminfo 2>/dev/null || echo "?")
+  GPU="none: CPU inference on $(nproc 2>/dev/null || echo '?') cores, ${RAM_GB} GB RAM (expect a few tokens/s; small models fit best)"
+else
+  GPU=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -n 1 || true)
+fi
 LOCAL=$(ls /models/*.gguf 2>/dev/null | wc -l | tr -d ' ')
 log_info "starting llama-server (router mode: no model loaded until one is picked)" "gpu=${GPU:-unknown}" \
   "local_gguf_files=${LOCAL}" "models_max=${LLAMA_MODELS_MAX:-1}" "presets=${PRESETS}"
