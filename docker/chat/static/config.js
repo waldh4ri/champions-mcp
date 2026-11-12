@@ -308,12 +308,24 @@
     // models
     const price = m => m.prompt_per_m == null ? 'price unknown'
       : `$${m.prompt_per_m} in / $${m.completion_per_m} out per 1M`;
+    // What a request pays once routed (pinned endpoint, price cap, cheapest
+    // provider), vs. the catalogue's list price.
+    const paid = m => {
+      const e = m.effective || {};
+      if (e.blocked) return `<span style="color:#fca5a5">no provider under the price cap ($${h(e.cap)}/1M): requests fail; raise the cap or remove it</span> · list ${price(m)}`;
+      if (e.prompt_per_m == null) return price(m);
+      const pays = e.max_prompt_per_m != null
+        ? `$${e.prompt_per_m}–${e.max_prompt_per_m} in / $${e.completion_per_m}–${e.max_completion_per_m} out per 1M (${e.providers} providers, load-balanced)`
+        : `$${e.prompt_per_m} in / $${e.completion_per_m} out per 1M via ${h(e.via)}${e.pinned ? ' (pinned)' : e.providers > 1 ? `, cheapest of ${e.providers}` : ''}`;
+      const differs = e.prompt_per_m !== m.prompt_per_m || e.completion_per_m !== m.completion_per_m;
+      return `<b>${pays}</b>${differs ? ` · list ${price(m)}` : ''}`;
+    };
     html += `<h3>OpenRouter models in the picker</h3><p class="cfgNote">Always offered: ${orInfo.auto_tiers.map(h).join(', ')}
       (OpenRouter picks a model in that cost band). Add any other tool-capable model below${orInfo.models_from === 'env' ? '; the list currently comes from OPENROUTER_MODEL in .env' : ''}.</p>`;
     html += `<div class="cfgList" style="margin-bottom:10px">` + (orInfo.models.map(m => `<div class="cfgItem">
         <div class="name">${h(m.id)}${m.known ? '' : '<span class="badge failed" title="not in OpenRouter\'s catalogue">unknown</span>'}${m.tools === false ? '<span class="badge failed">no tool calling</span>' : ''}</div>
         <div class="acts"><button class="cfgBtn danger" data-ordel="${h(m.id)}">Remove</button></div>
-        <div class="meta">${h(m.name)} · ${price(m)}${m.context ? ` · ${Number(m.context).toLocaleString()} tokens` : ''}</div></div>`).join('')
+        <div class="meta">${h(m.name)} · ${paid(m)}${m.context ? ` · ${Number(m.context).toLocaleString()} tokens` : ''}</div></div>`).join('')
       || '<div class="cfgItem"><div class="meta">No fixed models: only the Auto Router tiers.</div></div>') + `</div>`;
     html += `<div class="cfgRow"><input id="orQuery" class="cfgInput" style="flex:1;min-width:300px" value="${h(orSearch.q)}"
         placeholder="Search ${orInfo.catalogue_size || ''} models: name or vendor (e.g. deepseek, qwen, claude)"></div>
