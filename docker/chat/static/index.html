@@ -770,11 +770,14 @@
 
 <div id="quickPrompts">
   <span class="qp-label">Try:</span>
-  <button class="qp" data-k="easy"   title="Send the easy test prompt"><span class="qp-tier">Easy</span> · stats lookup</button>
-  <button class="qp" data-k="medium" title="Send the medium test prompt"><span class="qp-tier">Medium</span> · speed calc</button>
-  <button class="qp" data-k="hard"   title="Send the hard test prompt"><span class="qp-tier">Hard</span> · full team build</button>
-  <button class="qp" data-k="underdogs" title="Send the underdogs test prompt"><span class="qp-tier">Underdogs</span> · BSS off-meta team</button>
-  <button class="qp" data-k="hyperOffense" title="Send the hyper-offense test prompt: a BSS team from outside the top-50 usage, optimised with calcs and battle simulations"><span class="qp-tier">Hyper offense</span> · BSS non-top-50, sim-tested</button>
+  <button class="qp" data-k="lookup"   title="Pokédex: a Mega form's typing, ability, stats, weaknesses and common set"><span class="qp-tier">Lookup</span> · Mega form</button>
+  <button class="qp" data-k="meta"     title="Meta: top threats, usage, sets, speed tiers, cores and recent tournament teams"><span class="qp-tier">Meta</span> · VGC threats</button>
+  <button class="qp" data-k="speed"    title="Speed tiers and Stat Point thresholds for a Choice Scarf attacker"><span class="qp-tier">Speed</span> · Scarf math</button>
+  <button class="qp" data-k="damage"   title="Damage calcs with Intimidate and crits, and the Stat Points needed to survive"><span class="qp-tier">Damage</span> · calc + spread</button>
+  <button class="qp" data-k="check"    title="Paste your team: legality, weaknesses, a meta simulation and fixes"><span class="qp-tier">Check</span> · my team</button>
+  <button class="qp" data-k="matchup"  title="Simulate two real tournament teams against each other and read a battle log"><span class="qp-tier">Simulate</span> · head-to-head</button>
+  <button class="qp" data-k="buildVgc" title="A complete VGC doubles team with calcs, a meta simulation and a Poképaste"><span class="qp-tier">Build</span> · VGC team</button>
+  <button class="qp" data-k="buildBss" title="A BSS hyper-offense team outside the top-50 usage, optimised with calcs and battle simulations"><span class="qp-tier">Build</span> · BSS, sim-tested</button>
 </div>
 
 <footer>
@@ -1462,23 +1465,45 @@
     }
   }
 
-  // Toggle the send button + quick-prompt chips together while a request runs.
+  // Disable sending while a request runs (quick prompts only fill the box, so
+  // they stay usable: the next message can be prepared meanwhile).
   function setBusy(busy) {
     sendBtn.disabled = busy;
-    qpButtons.forEach(b => { b.disabled = busy; });
   }
 
-  // ── quick test prompts (mirror docker/bench/bench.py easy/medium/hard) ──────────
+  // ── quick prompts: examples covering the MCP's tool groups. A click puts
+  // the text in the message box (edit it, then Send); nothing is sent. ─────────
+  const TEAM_PLACEHOLDER = '<paste your team here: Showdown / Poképaste format>';
   const QUICK_PROMPTS = {
-    easy: "What are Garchomp's base stats in Pokémon Champions? List HP, Attack, " +
-      "Defense, Special Attack, Special Defense and Speed.",
-    medium: "I'm building a Choice Scarf attacker with a Jolly nature for Champions " +
+    lookup: "Show me Mega Garchomp Z in Pokémon Champions: its typing, ability and " +
+      "Lv 50 stats compared with regular Garchomp, its weaknesses and resistances, " +
+      "the Mega Stone it needs, and the set players actually run with it.",
+    meta: "What does the current Pokémon Champions VGC meta look like? Give me the " +
+      "top threats with their usage, typical items and moves, and Speed tiers; the " +
+      "most common cores and partners; and two strong teams from recent tournaments " +
+      "with the players and placings they came from.",
+    speed: "I'm building a Choice Scarf attacker with a Jolly nature for Champions " +
       "singles (BSS). I want it to outspeed the entire top-32 Speed tier of the " +
       "current meta, assuming those threats run a Jolly nature with no Speed Stat " +
       "Points. Walk through the speed math: what final Speed do I need to beat, what " +
       "base Speed clears it with a Scarf, and how many Speed Stat Points (1 SP = +1 " +
       "stat, max 32 per stat) does each candidate need?",
-    hard: "Build me a complete, legal 6-Pokémon VGC doubles team for the current " +
+    damage: "My Incineroar runs a Careful nature with 32 HP / 2 Defense / 32 Special " +
+      "Defense Stat Points. In doubles, what does Sneasler's Close Combat do to it: " +
+      "with Sneasler's usual spread, after Incineroar's Intimidate (-1 Attack), and on " +
+      "a critical hit? How many Defense Stat Points would Incineroar need to survive " +
+      "the uncrit hit at full HP, and what would moving them out of Special Defense " +
+      "cost against the common special attackers?",
+    check: "Check my team for Pokémon Champions VGC: is it legal, what are its " +
+      "weaknesses and dead slots, and how does it do against the current meta? " +
+      "Simulate it against the top tournament teams, show me the worst matchups " +
+      "and why, and suggest fixes, proven with a comparison simulation. End with " +
+      "the fixed team as a Poképaste.\n\n" + TEAM_PLACEHOLDER,
+    matchup: "Take the two most successful VGC teams from recent Champions " +
+      "tournaments and simulate them against each other: who wins, how often, and " +
+      "with which leads? Then play one battle log and walk me through the turns " +
+      "that decide it.",
+    buildVgc: "Build me a complete, legal 6-Pokémon VGC doubles team for the current " +
       "Pokémon Champions season. Requirements: a Trick Room mode setter and a " +
       "fast-mode backup plan in the same team so it works in both speed modes; " +
       "balanced offensive typing with answers to the top-5 meta threats; at least " +
@@ -1486,21 +1511,10 @@
       "Pokémon sharing a weakness to the same common attacking type. For each of the " +
       "six, give the species, item, ability, four moves, nature, and a full 66-point " +
       "Stat Point spread (≤32 per stat), and justify every choice with damage " +
-      "benchmarks and the meta usage it's built to handle. Then summarise the team's " +
-      "win conditions and its two hardest matchups.",
-    underdogs: "Build me an off-meta team for Pokémon Champions BSS (singles). " +
-      "Every member should be a genuinely low-usage pick — verify that against " +
-      "the real usage data rather than assuming what's underrated. " +
-      "Two things I care about. BSS is bring-6-pick-3, so think in overlapping " +
-      "3-cores that answer different matchups, not one team of six. And I want " +
-      "two different Mega Stones on the team as alternative win conditions, " +
-      "since only one can Mega Evolve per battle. " +
-      "Show me where the data says there's actually room to deviate, and where " +
-      "deviating would cost me. Back the load-bearing claims with calcs — quote " +
-      "%HP ranges or KO chances, not 'it survives'. " +
-      "Finish with which three you'd bring against the current #1 threat, and " +
-      "the matchup you're least happy about.",
-    hyperOffense: "Build me a hyper-offense team for Pokémon Champions BSS (singles, " +
+      "benchmarks and the meta usage it's built to handle. Validate it, simulate it " +
+      "against the meta, then summarise the team's win conditions, its two hardest " +
+      "matchups and the simulated win rate, and give me the Poképaste.",
+    buildBss: "Build me a hyper-offense team for Pokémon Champions BSS (singles, " +
       "bring 6 pick 3) where every member sits outside the top 50 of BSS usage. " +
       "Check each pick's usage rank with the tools before you commit to it. " +
       "Hyper offense means every bring wins by out-speeding or out-damaging: " +
@@ -1527,9 +1541,15 @@
   };
   const qpButtons = Array.from(document.querySelectorAll('.qp'));
   qpButtons.forEach(btn => btn.addEventListener('click', () => {
-    if (sendBtn.disabled) return;
-    inputEl.value = QUICK_PROMPTS[btn.dataset.k];
-    send();
+    const text = QUICK_PROMPTS[btn.dataset.k];
+    inputEl.value = text;
+    inputEl.dispatchEvent(new Event('input'));  // auto-resize
+    inputEl.focus();
+    // a template: select the placeholder so pasting replaces it
+    const at = text.indexOf(TEAM_PLACEHOLDER);
+    if (at >= 0) inputEl.setSelectionRange(at, at + TEAM_PLACEHOLDER.length);
+    else inputEl.setSelectionRange(text.length, text.length);
+    inputEl.scrollTop = inputEl.scrollHeight;
   }));
 
   // ── team panel ────────────────────────────────────────────────────────────────
