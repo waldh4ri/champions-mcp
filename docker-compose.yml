@@ -17,7 +17,9 @@
 # Quick start
 # -----------
 #   docker compose up -d --build                    # core stack only
-#   docker compose --profile webchat up -d --build  # core stack + web chat
+#   COMPOSE_PROFILES=webchat in .env, then the same  # core stack + web chat
+#   (in .env, every command includes it: a plain `down` then stops the chat
+#   too, which `--profile webchat` on the command line alone would not)
 #
 # NVIDIA GPU for the local model: add to .env (Windows separator shown; use ":"
 # on Linux/macOS, or set COMPOSE_PATH_SEPARATOR):
@@ -166,7 +168,7 @@ services:
 
   # ==========================================================================
   # Web chat (--profile webchat)
-  #   docker compose --profile webchat up -d --build
+  #   COMPOSE_PROFILES=webchat in .env, then docker compose up -d --build
   #
   #   champions-chat - light web UI + MCP tool-calling bridge at :3000. Offers
   #                    every backend that is available — local models,
@@ -185,7 +187,7 @@ services:
       dockerfile: docker/llama/Dockerfile
     image: ${LLAMA_IMAGE:-champions-llama:latest}
     container_name: champions-llama
-    profiles: ["webchat"]  # only built/started with `docker compose --profile webchat ...`
+    profiles: ["webchat"]  # only built/started when the webchat profile is active (COMPOSE_PROFILES=webchat)
     ports:
       - "${LLAMA_PORT:-8080}:8080"  # host:container — override LLAMA_PORT to change the host side; container always listens on 8080 (LLAMA_PORT env below)
     environment:

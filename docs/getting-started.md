@@ -188,9 +188,21 @@ See [configuration](configuration.md#calculation-and-simulation).
 One profile serves a chat UI at **http://localhost:3000** on top of the core MCP
 stack. You do not need a separate MCP client for this interface.
 
-```sh
-docker compose --profile webchat up -d --build
+Enable it in `.env`, then start the stack as usual:
+
+```dotenv
+COMPOSE_PROFILES=webchat
 ```
+
+```sh
+docker compose up -d --build
+```
+
+With the profile set in `.env`, every `docker compose` command (`up`, `down`,
+`logs`, `ps`) includes the web chat. Passing `--profile webchat` on the command
+line instead works for `up`, but then a plain `docker compose down` skips the
+chat containers and fails with *network … still in use*; stop such a stack with
+`docker compose --profile "*" down`.
 
 Then open **⚙ Configure** (top right). Everything below is set up there, no
 restart needed; the model picker groups what is available by backend:
@@ -234,7 +246,7 @@ and cost.
 | Update to new code | `git pull && docker compose up -d --build` | kept; re-pulled automatically only if the new code needs a newer data format |
 | Refresh game data now | `docker compose exec champions-mcp champions-mcp-pull && docker compose restart champions-mcp` | rebuilt from a warm cache (~5 min) while the server keeps serving; the restart picks it up |
 | Rebuild images from scratch | `docker compose build --no-cache && docker compose up -d` | kept |
-| Full reset | `docker compose down -v && docker compose up -d --build` | **deleted** (also the pull cache and `llama_models`); serving again after the core pull (~2 min), corpus in the background |
+| Full reset | `docker compose --profile "*" down -v && docker compose up -d --build` | **deleted** (also the pull cache and `llama_models`); serving again after the core pull (~2 min), corpus in the background |
 
 On start, data older than 7 days (`CHAMPIONS_MCP_MAX_DATA_AGE_DAYS`) or a
 `CHAMPIONS_MCP_PULL=1` setting refreshes **in the background**: the current data
@@ -277,6 +289,7 @@ plain text, in `.env`.
 | A local model shows *failed* | `docker compose logs llama-server` has llama.cpp's reason, usually memory: in *Inference*, pin a smaller context, use q4_0 KV cache, or offload MoE experts to the CPU. |
 | Local model fails to load / runs out of memory | Check `docker compose logs llama-server`; verify the GGUF, GPU access and memory; reduce context or increase CPU MoE offload. |
 | Chat cannot reach a provider | Check `docker compose logs champions-chat`, the API key, and `CHAT_PROVIDER`. |
+| `down` fails with *network … still in use* | The web chat was started with `--profile webchat` but stopped without it. Run `docker compose --profile "*" down`, and set `COMPOSE_PROFILES=webchat` in `.env` so plain commands include it. |
 | Host port already in use | Set `MCP_PORT`, `WEBUI_PORT` or `LLAMA_PORT` in `.env`, then run Compose `up -d` again. |
 
 These services do not configure authentication. Compose publishes ports on host
