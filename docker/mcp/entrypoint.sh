@@ -1,12 +1,25 @@
 #!/bin/sh
 set -e
 
+# Logging helpers (log_info/log_warn/log_error), same line format as the
+# Python and Node services. Fall back to plain echo if run outside the image.
+LOG_NAME=entrypoint
+if [ -f /usr/local/lib/champions-log.sh ]; then
+  . /usr/local/lib/champions-log.sh
+else
+  log_info() { echo "[champions-mcp] $*" >&2; }
+  log_warn() { echo "[champions-mcp] WARNING: $*" >&2; }
+  log_error() { echo "[champions-mcp] ERROR: $*" >&2; }
+fi
+
 # Read the same env vars docker-compose.yml sets (with sane standalone
 # defaults) so this script also works when the image is run directly.
-PORT="${MCP_PORT:-8000}"
 TRANSPORT="${MCP_TRANSPORT:-streamable-http}"
 DATA_DIR="${CHAMPIONS_MCP_DATA_DIR:-/data}"
 DB_PATH="${CHAMPIONS_MCP_DB:-${DATA_DIR}/champions.sqlite}"
+
+log_info "container starting" "version=$(python -c 'import importlib.metadata as m; print(m.version("champions-mcp"))' 2>/dev/null || echo '?')" \
+  "transport=${TRANSPORT}" "db=${DB_PATH}" "max_data_age_days=${CHAMPIONS_MCP_MAX_DATA_AGE_DAYS:-7}"
 
 # Seed bundled static data (formats.json + any prebuilt champions.sqlite) into
 # the persistent volume. -n keeps existing files (never clobber a built DB).
@@ -17,54 +30,74 @@ fi
 
 # Leftovers of a pull that was interrupted (container stopped mid-build) are
 # never valid; a new pull starts from scratch anyway.
-rm -f "${DB_PATH%.sqlite}.sqlite.tmp" "${DB_PATH%.sqlite}.sqlite.buildsrefresh.tmp"
-
-# Build the local mirror on first start, when CHAMPIONS_MCP_PULL=1 forces a
-# refresh, or when the existing data is stale: built by older code (it lacks
-# what this version reads) or older than CHAMPIONS_MCP_MAX_DATA_AGE_DAYS
-# (default 7; 0 disables). Between pulls the server is fully offline.
-NEEDS_PULL=0
-if [ ! -f "${DB_PATH}" ] || [ "${CHAMPIONS_MCP_PULL:-0}" = "1" ]; then
-  NEEDS_PULL=1
-elif ! REASON=$(python -m champions_mcp.pull.freshness "${DB_PATH}"); then
-  echo "[champions-mcp] Existing data is stale (${REASON}); refreshing."
-  NEEDS_PULL=1
-fi
-if [ "${NEEDS_PULL}" = "1" ]; then
-  echo "[champions-mcp] Building local data with champions-mcp-pull ..."
-  # The observed-team stage fetches tournament teamlists from an API that rate
-  # limits unauthenticated callers to 50 requests / 5 min, so a first build
-  # takes several minutes rather than seconds. Later starts reuse the pull
-  # cache and only fetch events that are genuinely new. Set
-  # CHAMPIONS_MCP_BUILDS_SKIP=1 to skip the stage entirely.
-  echo "[champions-mcp] (first build also ingests observed teams; this can take several minutes)"
-  BUILD_FLAGS=""
-  if [ "${CHAMPIONS_MCP_BUILDS_SKIP:-0}" = "1" ]; then
-    BUILD_FLAGS="--skip-builds"
+for leftover in "${DB_PATH%.sqlite}.sqlite.tmp" "${DB_PATH%.sqlite}.sqlite.buildsrefresh.tmp"; do
+  if [ -f "$leftover" ]; then
+    log_warn "removing leftovers of an interrupted pull" "file=${leftover}"
+    rm -f "$leftover"
   fi
-  # A failed pull isn't fatal by itself: on a forced refresh
-  # (CHAMPIONS_MCP_PULL=1) champions-mcp-pull leaves an already-good
-  # existing DB untouched when validation fails, so only bail if that left
-  # us with no usable DB at all (e.g. the very first run).
-  champions-mcp-pull ${BUILD_FLAGS} || echo "[champions-mcp] WARNING: data pull/refresh failed; falling back to existing data if any." >&2
+done
+
+# Decide what data work is needed. Only what the server cannot start without
+# runs here, blocking; the slow rest runs in the background while it serves
+# (CHAMPIONS_MCP_BACKGROUND_PULL, see champions_mcp/refresh.py):
+#   no / unreadable database   core pull now (~2 min), corpus in the background
+#   built by older code        same: the old data may lack what this code reads
+#   older than MAX_DATA_AGE    serve it; full refresh in the background
+#   CHAMPIONS_MCP_PULL=1       serve it; full refresh in the background
+# The observed-team corpus is the slow part: Limitless rate-limits
+# unauthenticated clients to 50 requests / 5 min (~15 min cold; later pulls
+# reuse the pull cache). CHAMPIONS_MCP_BUILDS_SKIP=1 skips it entirely.
+BACKGROUND=""
+CORE_PULL=0
+if [ ! -f "${DB_PATH}" ]; then
+  log_info "no database yet (first start): building the core data before serving"
+  CORE_PULL=1
+elif [ "${CHAMPIONS_MCP_PULL:-0}" = "1" ]; then
+  log_info "refresh forced by CHAMPIONS_MCP_PULL=1: serving the current data, full refresh in the background"
+  BACKGROUND=full
+elif ! REASON=$(python -m champions_mcp.pull.freshness "${DB_PATH}"); then
+  case "${REASON}" in
+    "data format"*|"unreadable"*)
+      log_warn "data was built by older code; rebuilding the core data before serving" "reason=${REASON}"
+      CORE_PULL=1 ;;
+    *)
+      log_info "data is stale: serving it, full refresh in the background" "reason=${REASON}"
+      BACKGROUND=full ;;
+  esac
+else
+  log_info "data is fresh; no pull needed" "status=${REASON}"
+  # A first start fetches the corpus in the background; if a restart cut that
+  # short, the data looks fresh but has no observed teams: resume it.
+  if [ "${CHAMPIONS_MCP_BUILDS_SKIP:-0}" != "1" ] && ! python -m champions_mcp.pull.freshness --corpus "${DB_PATH}" >/dev/null; then
+    log_warn "the observed-team corpus is missing (an earlier background fetch was interrupted); fetching it in the background"
+    BACKGROUND=corpus
+  fi
+fi
+
+if [ "${CORE_PULL}" = "1" ]; then
+  if [ -f "${DATA_DIR}/pull-cache.sqlite" ]; then CACHE_STATE="warm"; else CACHE_STATE="cold"; fi
+  log_info "running champions-mcp-pull --skip-builds (core data)" "cache=${CACHE_STATE}"
+  # A failed pull leaves any existing database untouched; only bail when that
+  # leaves no database at all (e.g. the very first run).
+  if ! champions-mcp-pull --skip-builds; then
+    log_warn "core data pull failed; falling back to the existing data"
+  fi
   if [ ! -f "${DB_PATH}" ]; then
-    echo "[champions-mcp] ERROR: data pull failed and no database is present." >&2
+    log_error "data pull failed and no database is present; exiting" "db=${DB_PATH}"
     exit 1
   fi
+  if [ "${CHAMPIONS_MCP_BUILDS_SKIP:-0}" != "1" ]; then
+    BACKGROUND=corpus
+  fi
 fi
+if [ "${CHAMPIONS_MCP_BUILDS_SKIP:-0}" = "1" ] && [ "${BACKGROUND}" = "corpus" ]; then
+  BACKGROUND=""
+fi
+export CHAMPIONS_MCP_BACKGROUND_PULL="${BACKGROUND}"
 
-# PUBLISHED_PORT (set in docker-compose.yml) carries the *host*-side port so
-# the banner below prints a URL that actually works even when MCP_PORT
-# remaps the host port away from the container's internal PORT.
-EXTERNAL_PORT="${PUBLISHED_PORT:-${PORT}}"
-echo ""
-echo "================================================================="
-echo " champions-mcp v2 ready"
-echo " Transport : ${TRANSPORT}"
-echo " MCP URL   : http://localhost:${EXTERNAL_PORT}/mcp"
-echo " Data      : ${DB_PATH}"
-echo "================================================================="
-echo ""
+# The server logs its own "ready" line (with the published MCP URL) once
+# it is actually listening; see champions_mcp/server_log.py.
+log_info "starting MCP server" "background_refresh=${BACKGROUND:-none}"
 
 # exec replaces this shell with the server process (PID 1), so it receives
 # signals (e.g. SIGTERM on `docker stop`) directly instead of via a wrapper.

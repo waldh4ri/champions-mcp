@@ -18,6 +18,8 @@ RUN npm ci --ignore-scripts && npx tsc -p .
 # smogon/damage-calc may lag regulation updates; this is the local fix until upstream merges.
 COPY docker/calc/patch-champions-mb.js /patch-champions-mb.js
 RUN node /patch-champions-mb.js /repo/calc/dist/data/species.js
+# Record which damage-calc commit was built (logged at startup, served on /health).
+RUN git -C /repo rev-parse --short HEAD > /repo/calc/dist/.commit
 
 # --- runtime stage: slim image without git/npm/tsc, just the compiled output ---
 FROM node:20-alpine
@@ -26,6 +28,7 @@ WORKDIR /app
 COPY --from=build /repo/calc/dist /app/calc/dist
 COPY docker/calc/bridge.js /app/bridge.js
 COPY docker/calc/server.js /app/server.js
+COPY docker/common/log.js /app/log.js
 # Default: one-shot stdin→stdout bridge (standalone use).
 # Override CMD to /app/server.js for the docker-compose HTTP sidecar.
 ENTRYPOINT ["node"]

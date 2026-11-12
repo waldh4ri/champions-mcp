@@ -43,11 +43,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from .. import log as logmod
 from ..champions_stats import validate_spread
 from ..db import Db
 from ..names import try_resolve
 from . import reports_extract as extract
 from .builds import POKEDB_SEASON_REGULATION, _set_hash, _team_hash, observation_weight
+
+_log = logmod.get("reports")
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
@@ -73,6 +76,8 @@ class Fetcher:
         self._slots: dict[str, threading.Semaphore] = {}
         self._lock = threading.Lock()
         self.errors: Counter = Counter()
+        self.fetched = 0
+        self._progress = logmod.Progress(_log, "team-report pages fetched", every=15.0)
 
     def _slot(self, host: str) -> threading.Semaphore:
         with self._lock:
@@ -97,13 +102,20 @@ class Fetcher:
                         path.write_bytes(b"")  # remember misses so later pulls stay fast
                         return None
                     self.errors[f"HTTP {e.code}"] += 1
+                    _log.warning("team-report page failed", url=url, status=e.code,
+                                 fallback="cached copy" if path.exists() else "none")
                     return self._stale(path, encoding)
                 except Exception as e:  # network hiccup: keep going with the other pages
                     self.errors[type(e).__name__] += 1
+                    _log.warning("team-report page failed", url=url, error=f"{type(e).__name__}: {e}",
+                                 fallback="cached copy" if path.exists() else "none")
                     return self._stale(path, encoding)
                 finally:
                     time.sleep(HOST_DELAY)
             path.write_bytes(data)
+            with self._lock:
+                self.fetched += 1
+                self._progress.tick(last_host=host)
         return self._decode(data, encoding)
 
     def _stale(self, path: Path, encoding: str | None) -> str | None:
@@ -554,7 +566,10 @@ def scrape(cache_dir: Path, regulations: tuple[str, ...],
         except Exception as e:  # one broken source must not kill the pull
             got = []
             stats[f"{name}_error"] = type(e).__name__
+            _log.warning("team-report source failed; continuing without it", source=name,
+                         error=f"{type(e).__name__}: {e}")
         stats[f"listed_{name}"] = len(got)
+        _log.info("team-report source listed", source=name, reports=len(got), seasons=seasons)
         raw += got
     teams = [t for t in merge(raw)
              if t.get("season") in seasons and sum(1 for r, _ in t["mons"] if r) >= 4]
@@ -565,6 +580,7 @@ def scrape(cache_dir: Path, regulations: tuple[str, ...],
         sets = t.get("sets") or []
         t["members"] = [(rec, item, sets[i] if i < len(sets) else None) for i, (rec, item) in enumerate(t["mons"])]
     stats.update({f"fetch_{k}": v for k, v in f.errors.items()})
+    stats["pages_fetched"] = getattr(f, "fetched", 0)
     return teams, {"lexicon": lex, **stats}
 
 

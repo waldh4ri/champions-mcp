@@ -101,66 +101,74 @@ the number of games; no fixed completion time is guaranteed.
 
 ## Web chat
 
+`docker compose --profile webchat up -d --build` serves the chat at
+**http://localhost:3000**. Most of its settings live in its **⚙ Configure**
+view and apply without a restart; the environment variables below set their
+defaults, and what you change in the view is saved in the `chat-data` volume
+(API keys included, server-side only) and wins over them.
+
+| Configure tab | What it controls |
+|---|---|
+| **Local models** | Download a model from Hugging Face (paste a link or `user/repo:quant`), watch download/load progress, load, unload, pause/resume, delete. |
+| **Inference** | llama.cpp settings, for all models or one model: context size, KV cache types, GPU layers, MoE CPU offload, flash attention, reasoning budget, speculative decoding (MTP). |
+| **Chat** | Thinking, sampling, tool-round and tool-result budgets. |
+| **API providers** | OpenRouter (key, provider choice, price cap, reasoning effort, the model list with catalogue search and prices, account spend) and OpenAI-compatible APIs. |
+
 | Variable | Default | Purpose |
 |---|---|---|
-| `CHAT_PROVIDER` | `auto` | `auto`, `llama`, or `openrouter`. Auto probes local llama-server first, then uses OpenRouter if a key exists. |
+| `CHAT_PROVIDER` | `auto` | `auto` offers every available backend; `llama` or `openrouter` restricts the chat to that one. |
 | `MCP_URL` | `http://champions-mcp:8000/mcp` | MCP endpoint reached by the chat service. |
-| `LLAMA_BASE_URL` | `http://llama-server:8080` | Local OpenAI-compatible model API. |
-| `MAX_TOOL_ROUNDS` | Context-dependent | 40 rounds normally, 80 for models with at least 500k context; explicit value overrides both. |
-| `MAX_TOOL_RESULT_CHARS` | Context-dependent | Normally 16,000 characters per tool result, 60,000 for large-context models. |
+| `LLAMA_BASE_URL` | `http://llama-server:8080` | The local llama-server (router). |
+| `CHAT_DATA_DIR` | `/data` | Where the Configure view's settings, endpoints and llama presets are stored (`chat-data` volume). |
+| `MAX_TOOL_ROUNDS` | Context-dependent | Default for *Tool rounds per turn*: 40, or 80 for models with at least 500k context. |
+| `MAX_TOOL_RESULT_CHARS` | Context-dependent | Default for *Max characters per tool result*: 16,000, or 60,000 for large-context models. |
 | `MAX_REASONING_HISTORY_TURNS` | `3` | Number of previous turns whose reasoning is replayed. |
 | `MAX_REASONING_CHARS` | `4000` | Character cap on each replayed reasoning block. |
 | `HISTORY_CONTEXT_SHARE` | `0.5` | Context share available for history before older tool chains are shortened/dropped. |
+| `DEFAULT_CONTEXT_SIZE` | `131072` | Context assumed for a model that doesn't report one (a local model before its first load, an endpoint without a configured size). |
 
-The tool-round/result limits scale automatically when unset. Avoid hard-coding
-the local-model limits for a much larger-context OpenRouter model. A round can
-contain multiple tool calls. The chat keeps earlier answers while trimming older
-tool details as a conversation grows.
-
-`MCP_URL` and `LLAMA_BASE_URL` are fixed internal URLs in the supplied Compose
-file. `HISTORY_CONTEXT_SHARE` is a chat-process setting but is not forwarded by
-the supplied Compose file; use a service environment override to change it there.
+The model picker groups models by backend; a chat remembers its model. Each
+chat turn's id (`[3f9c1a]` in `docker compose logs`) also tags the MCP, calc
+and sim lines it caused.
 
 ## OpenRouter
 
-Start with `docker compose --profile openrouter up -d --build`. This runs the chat
-without llama-server and requires `OPENROUTER_API_KEY`.
+Offered whenever an API key is set: in **⚙ Configure → API providers**, or as
+`OPENROUTER_API_KEY` in `.env`. No GPU needed. Prompts and tool results go to
+the model's provider and are billed to the key; the header's **$** meter shows
+the current chat's cost (from each response's `usage.cost`) and, on hover, the
+key's spend today / this month and the remaining budget.
+
+The model picker always offers OpenRouter's **Auto Router** at three cost
+tiers, `openrouter/auto (low|medium|high)`: it picks a model in that cost band
+once per turn, then the chat keeps it for the turn's tool rounds. Add fixed
+models from the Configure view (search the catalogue: tool-capable models only,
+cheapest first, with prices and context) or with `OPENROUTER_MODEL`.
+
+When several providers serve a model, requests go to the **cheapest first**
+(OpenRouter's `provider.sort = "price"`); the Configure view switches this to
+throughput, latency or OpenRouter's default load balancing.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OPENROUTER_API_KEY` | Unset | API key, kept server-side in the chat container. |
-| `OPENROUTER_MODEL` | See below | Comma-separated UI model list; first is the default. |
+| `OPENROUTER_API_KEY` | Unset | API key (a key saved in the Configure view takes precedence). |
+| `OPENROUTER_MODEL` | `deepseek/deepseek-v4.1-flash,openai/gpt-6-luna,google/gemini-4-argon` | Fixed models, until the list is edited in the Configure view. |
+| `OPENROUTER_PROVIDER_SORT` | `price` | `price`, `throughput`, `latency`, or `default` (OpenRouter's load balancing). |
 | `OPENROUTER_AUTO_MODELS` | `deepseek/deepseek-v4.1-flash,openai/gpt-6-luna` | Low-tier candidate pool; exact IDs or wildcards such as `deepseek/*`. |
 | `OPENROUTER_AUTO_MODELS_MEDIUM` | Empty | Medium-tier pool; empty uses the router's ranking for that band. |
 | `OPENROUTER_AUTO_MODELS_HIGH` | Empty | High-tier pool; empty uses the router's ranking for that band. |
-| `OPENROUTER_MAX_PRICE` | `1` | Maximum USD per million input **and** output tokens for fixed models and the low tier; empty disables the cap. |
+| `OPENROUTER_MAX_PRICE` | `1` | Default price cap, USD per million input **and** output tokens, for fixed models and the low tier; `0` = no cap. |
 | `OPENROUTER_MAX_PRICE_MEDIUM` | Empty | Medium-tier price cap; empty means no cap. |
 | `OPENROUTER_MAX_PRICE_HIGH` | Empty | High-tier price cap; empty means no cap. |
-| `OPENROUTER_MODEL_ROUTES` | Built-in Gemini route | JSON mapping of model IDs to OpenRouter provider-routing objects; a matching route replaces the general price cap. |
-| `OPENROUTER_REASONING_EFFORT` | Unset | `low`, `medium`, or `high`; unset leaves the model default. |
-| `OPENROUTER_TEMPERATURE` | Unset | Sampling override; unset leaves the model default. |
+| `OPENROUTER_MODEL_ROUTES` | Built-in Gemini route | JSON mapping of model IDs to OpenRouter provider-routing objects; a matching route replaces the price cap and provider sort. |
+| `OPENROUTER_REASONING_EFFORT` | Unset | Default `low`, `medium`, or `high`; unset leaves the model default. |
+| `OPENROUTER_TEMPERATURE` | Unset | Default sampling override; unset leaves the model default. |
 
-The default model selector contains:
-
-```text
-openrouter/auto (low)
-openrouter/auto (medium)
-openrouter/auto (high)
-deepseek/deepseek-v4.1-flash
-openai/gpt-6-luna
-google/gemini-4-argon
-```
-
-These are project defaults, not guarantees of ongoing upstream availability.
-Choose any available tool-calling OpenRouter model with `OPENROUTER_MODEL`.
-
-The Auto Router chooses once per turn; the chat pins that model for the remaining
-tool rounds. A per-conversation `session_id` helps preserve routing across turns.
-The UI metrics show the model actually used.
-
-By default `google/gemini-4-argon` is restricted to `google-ai-studio/flex`, with
-fallback disabled and route-specific prompt/completion caps of `$1`/`$5` per
-million tokens. `OPENROUTER_MODEL_ROUTES` accepts the same shape for custom routes:
+These fixed models are project defaults, not guarantees of ongoing upstream
+availability. By default `google/gemini-4-argon` is restricted to
+`google-ai-studio/flex`, with fallback disabled and route-specific
+prompt/completion caps of `$1`/`$5` per million tokens.
+`OPENROUTER_MODEL_ROUTES` accepts the same shape for custom routes:
 
 ```json
 {
@@ -172,51 +180,77 @@ million tokens. `OPENROUTER_MODEL_ROUTES` accepts the same shape for custom rout
 }
 ```
 
-Check provider pricing before use. Caps restrict eligible providers; they are
-not a total spending budget. **Medium and high tiers have no default price cap.**
+Caps restrict eligible providers; they are not a total spending budget (set a
+budget on the key at openrouter.ai). **Medium and high tiers have no default
+price cap.**
 
-## Local llama.cpp model
+## OpenAI-compatible APIs
 
-Start with `docker compose --profile ai up -d --build`. The supplied image and
-Compose service expect NVIDIA GPU access. Defaults are tuned for the bundled
-configuration's Qwen3.6-35B-A3B GGUF; other models/hardware need adjustment.
+Any server that speaks the OpenAI chat API with tool calling (vLLM, LM Studio,
+Ollama's `/v1`, a hosted provider) can back the chat: add it in **⚙ Configure →
+API providers** (name, base URL ending in `/v1`, optional key, optional model
+list, context size) or with these variables. From inside the containers, your
+host machine is `host.docker.internal`.
 
-| Variable | Compose default | Purpose |
+| Variable | Default | Purpose |
+|---|---|---|
+| `OPENAI_COMPAT_BASE_URL` | Unset | e.g. `http://host.docker.internal:1234/v1`. |
+| `OPENAI_COMPAT_API_KEY` | Unset | Sent as a bearer token. |
+| `OPENAI_COMPAT_MODELS` | Empty | Comma-separated models; empty = the API's `/models` list. |
+| `OPENAI_COMPAT_NAME` | URL host | Label of its group in the model picker. |
+
+## Local llama.cpp models
+
+`llama-server` runs in llama.cpp's **router mode**: it starts with no model
+loaded and loads whichever model a chat picks (unloading the previous one when
+`LLAMA_MODELS_MAX` are loaded), so switching models needs no restart. Models
+come from:
+
+- **⚙ Configure → Local models**: paste a Hugging Face link (a repo, or a
+  specific `.gguf` file) or `user/repo:quant`. It downloads in the background
+  into the `llama_models` volume, together with the model's draft head (MTP,
+  DFlash, EAGLE3) when the repo has one, and loads on first use. The view
+  suggests `unsloth/Qwen3.5-9B-MTP-GGUF:UD-Q4_K_XL` (6 GB: strong tool calling,
+  its full context fits a 12 GB GPU).
+- `.gguf` files you put in `models/` (multi-file models in a subdirectory).
+
+It needs an NVIDIA GPU, enabled by adding `docker-compose.gpu.yml` to
+`COMPOSE_FILE` in `.env` (`docker-compose.yml;docker-compose.gpu.yml` on
+Windows, `:`-separated elsewhere). Without one, `llama-server` logs why and
+idles; the chat still offers the API providers.
+
+**Inference settings** are edited in **⚙ Configure → Inference**, for all
+models or per model. The chat writes them to llama.cpp's preset file
+(`presets.ini` in the `chat-data` volume, read by `llama-server`) and has it
+reload: a running model whose settings changed is unloaded, and its next use
+loads it with them. Their defaults come from these `champions-chat` variables:
+
+| Variable | Default | Configure field |
+|---|---|---|
+| `LLAMA_CTX_SIZE` | Empty | Context size. Empty = llama.cpp's `--fit` picks the largest context the GPU holds, per model. |
+| `LLAMA_CACHE_TYPE_K` / `LLAMA_CACHE_TYPE_V` | `q8_0` | KV cache types (q8_0: half of f16's memory, practically the same quality). |
+| `LLAMA_N_GPU_LAYERS` | `99` | GPU layers (99 = all). |
+| `LLAMA_N_CPU_MOE` | Empty | MoE layers whose experts stay in system RAM, for MoE models bigger than VRAM (e.g. 18 for Qwen3.6-35B-A3B on 16 GB). |
+| `LLAMA_FLASH_ATTN` | `on` | Flash attention. |
+| `LLAMA_REASONING_BUDGET` | `2048` | Thinking tokens per generation; `-1` unrestricted, `0` none. |
+| `LLAMA_MTP_ENABLED` | `1` | Speculative decoding with the model's own draft head when it has one (a downloaded draft sidecar, or MTP layers built into the GGUF — repos named `*-MTP-GGUF`). |
+| `LLAMA_THINK` | `true` | Thinking (Chat tab). |
+| `LLAMA_TEMPERATURE`, `LLAMA_TOP_P`, `LLAMA_TOP_K`, `LLAMA_MIN_P` | Mode-dependent | Sampling (Chat tab): Qwen's thinking `0.6/0.95/20/0` or instruct `0.7/0.8/20/0` profile when unset. |
+| `LLAMA_PRESENCE_PENALTY` | `0.5` | Mild repetition penalty (Chat tab). |
+
+Server-wide settings stay on the `llama-server` service:
+
+| Variable | Default | Purpose |
 |---|---|---|
 | `LLAMA_IMAGE` | `champions-llama:latest` | llama.cpp image tag. |
-| `LLAMA_MODEL_FILE` | `unsloth_Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` | Filename inside the bind-mounted `models/` directory. |
-| `LLAMA_MODEL_HF` | Empty | Hugging Face model reference; overrides the filename and caches downloads in `llama_models`. |
-| `LLAMA_MODEL_NAME` | `qwen3.6-35b-a3b` | API alias and model name sent by the chat. |
-| `LLAMA_CTX_SIZE` | `131072` | Context tokens; also used by the chat's context meter. |
-| `LLAMA_N_GPU_LAYERS` | `99` | GPU-offloaded layers. |
-| `LLAMA_N_CPU_MOE` | `18` | llama.cpp `--n-cpu-moe` offload setting. |
+| `LLAMA_MODELS_MAX` | `1` | Models loaded at once. |
 | `LLAMA_PARALLEL` | `1` | Concurrent inference slots. |
-| `LLAMA_CACHE_TYPE_K` / `LLAMA_CACHE_TYPE_V` | `q8_0` | KV-cache quantization. |
-| `LLAMA_FLASH_ATTN` | `on` | Flash attention setting. |
-| `LLAMA_NO_MMAP` | `1` | Select eager loading (`--load-mode none`) when memory locking is off. |
+| `LLAMA_REASONING_PRESERVE` | `1` | Keep reasoning across turns where the template supports it. |
+| `LLAMA_NO_MMAP` | `1` | Read weights into RAM up front (`--load-mode none`): steadier decode, exact load progress. |
 | `LLAMA_MLOCK` | `0` | `1` selects `--load-mode mmap+mlock`; takes precedence over `LLAMA_NO_MMAP`. |
-| `LLAMA_THINK` | `true` | Enable the Qwen reasoning template. |
-| `LLAMA_REASONING_PRESERVE` | `1` | Preserve reasoning through llama.cpp. |
-| `LLAMA_REASONING_BUDGET` | `2048` | Thinking tokens per generation; `-1` unrestricted, `0` none, `off` omits the flag. |
-| `LLAMA_TEMPERATURE` | Mode-dependent | Thinking: `0.6`; non-thinking: `0.7`. |
-| `LLAMA_TOP_P` | Mode-dependent | Thinking: `0.95`; non-thinking: `0.8`. |
-| `LLAMA_TOP_K` | `20` | Sampling top-k. |
-| `LLAMA_MIN_P` | `0` | Sampling min-p. |
-| `LLAMA_PRESENCE_PENALTY` | `0.5` | Mild repetition penalty. |
-| `LLAMA_EXTRA_ARGS` | Empty | Additional llama-server flags, appended by the entrypoint. |
+| `HF_TOKEN` | Unset | Hugging Face token, for gated or private repos. |
+| `LLAMA_EXTRA_ARGS` | Empty | Additional llama-server flags for every model. They override the Configure view's settings. |
 
-Optional speculative decoding is off by default:
-
-| Variable | Effective default when enabled | Purpose |
-|---|---|---|
-| `LLAMA_MTP_ENABLED` | `0` (disabled) | `1` enables draft/speculative flags. |
-| `LLAMA_MTP_SPEC_TYPE` | `draft-mtp` | Speculation type. |
-| `LLAMA_MTP_MODEL_FILE` | Unset | Draft GGUF filename inside `models/`. |
-| `LLAMA_MTP_MODEL_HF` | Unset | Draft Hugging Face reference; overrides the draft filename. |
-| `LLAMA_MTP_DRAFT_MIN` / `LLAMA_MTP_DRAFT_MAX` | Unset | Optional draft-length flags. |
-| `LLAMA_MTP_P_MIN` | Unset | Optional minimum draft probability. |
-| `LLAMA_MTP_EXTRA_ARGS` | Empty | Extra speculation flags. |
-
-If the GPU runs out of memory, reduce context or increase CPU MoE offload. A
-smaller KV format can save memory at an accuracy cost. Speculative decoding is
-hardware/model-dependent and can be slower; benchmark before enabling it.
+If a model fails to load (it shows *failed* in the Local models tab),
+`docker compose logs llama-server` has llama.cpp's reason: usually memory —
+pin a smaller context, use a q4_0 KV cache, or offload MoE experts to the CPU.

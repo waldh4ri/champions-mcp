@@ -6,24 +6,48 @@
 #   champions-sim  - Pokémon Showdown battle simulator sidecar (Node 22, champions mod)
 #   champions-mcp  - MCP server (Python 3.12, streamable-HTTP transport)
 #
-# These three form the core stack and are always started. An optional
-# --profile ai stack adds a local-LLM chat UI on top of it:
-#   llama-server   - llama.cpp inference backend (GPU), OpenAI-compatible API
-#   champions-chat - web chat UI + MCP tool-calling bridge to champions-mcp
-# See the "Local-LLM stack" block comment further down for the full picture.
+# These three form the core stack and are always started. The optional
+# --profile webchat adds a web chat UI on top of it:
+#   champions-chat - web chat UI (:3000) + MCP tool-calling bridge to champions-mcp
+#   llama-server   - llama.cpp local model, used only when a GGUF is in ./models
+#                    (or LLAMA_MODEL_HF is set); otherwise it idles
+# The chat offers the local model and/or OpenRouter (when OPENROUTER_API_KEY is
+# set), whichever is available. See the "Web chat" block further down.
 #
 # Quick start
 # -----------
-#   docker compose up -d --build                # core stack only
-#   docker compose --profile ai up -d --build    # core stack + local-LLM chat UI
+#   docker compose up -d --build                    # core stack only
+#   docker compose --profile webchat up -d --build  # core stack + web chat
 #
-# On first start champions-mcp runs `champions-mcp-pull` to build the local
-# champions.sqlite from pokechamp.gg (+ PokeAPI for the type chart and
-# localized species names), persisted in the champions-data volume. After
-# that the server is fully offline.
-# Force a data refresh with CHAMPIONS_MCP_PULL=1.
+# NVIDIA GPU for the local model: add to .env (Windows separator shown; use ":"
+# on Linux/macOS, or set COMPOSE_PATH_SEPARATOR):
+#   COMPOSE_FILE=docker-compose.yml;docker-compose.gpu.yml
+#
+# On first start champions-mcp runs `champions-mcp-pull --skip-builds` to build
+# the local champions.sqlite from pokechamp.gg (+ PokeAPI for the type chart and
+# localized species names), persisted in the champions-data volume, then serves
+# while the slow observed-team corpus is fetched in the background. Stale data
+# (or CHAMPIONS_MCP_PULL=1) is refreshed in the background too, serving the old
+# data meanwhile. Between pulls the server is fully offline.
 #
 # The MCP URL is printed after startup. Default: http://localhost:8000/mcp
+#
+# Logs
+# ----
+#   docker compose logs -f                  # everything, colored, one event per line
+#   docker compose logs -f champions-mcp    # pull progress, readiness, every tool call
+# Every service logs "HH:MM:SS.mmm LEVEL component [request-id] message key=value".
+# A tool call's [request-id] also appears on the calc/sim lines it caused (and
+# a chat turn's id on everything it triggered). LOG_LEVEL=DEBUG for detail,
+# LOG_COLOR=0 for plain text (e.g. when shipping logs elsewhere).
+
+# Shared by every service: rotate the json-file logs `docker logs` reads, so
+# a long-running stack doesn't fill the disk.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
 
@@ -38,7 +62,10 @@ services:
     image: ${CALC_IMAGE:-champions-calc:latest}
     command: ["/app/server.js"]
     restart: unless-stopped
+    logging: *default-logging
     environment:
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"  # DEBUG | INFO | WARNING | ERROR (all services share it)
+      LOG_COLOR: "${LOG_COLOR:-1}"  # ANSI colors in `docker compose logs`; 0 = plain text
       PORT: "3000"  # container-side listen port; only reachable over mcp-internal, never published to the host
     healthcheck:
       # Gates champions-mcp's startup (see its depends_on below) until the
@@ -61,7 +88,10 @@ services:
       dockerfile: docker/sim/Dockerfile
     image: ${SIM_IMAGE:-champions-sim:latest}
     restart: unless-stopped
+    logging: *default-logging
     environment:
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"  # DEBUG | INFO | WARNING | ERROR (all services share it)
+      LOG_COLOR: "${LOG_COLOR:-1}"  # ANSI colors in `docker compose logs`; 0 = plain text
       PORT: "3000"  # container-side listen port; only reachable over mcp-internal, never published to the host
       SIM_WORKERS: "${SIM_WORKERS:-0}"  # 0 = cores - 1
       SIM_MAX_BATTLES: "${SIM_MAX_BATTLES:-50000}"  # hard per-request cap (the MCP side enforces its own, lower cap)
@@ -81,9 +111,12 @@ services:
       context: .
       dockerfile: docker/mcp/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "${MCP_PORT:-8000}:8000"  # host:container — override MCP_PORT to change the host side; container always listens on 8000 (FASTMCP_PORT below)
     environment:
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"  # DEBUG | INFO | WARNING | ERROR (all services share it)
+      LOG_COLOR: "${LOG_COLOR:-1}"  # ANSI colors in `docker compose logs`; 0 = plain text
       MCP_TRANSPORT: "streamable-http"  # MCP transport protocol served by the app (see entrypoint.sh / MCPServer.run)
       FASTMCP_HOST: "0.0.0.0"  # bind address inside the container; 0.0.0.0 so the published port mapping can reach it
       FASTMCP_PORT: "8000"  # container-side listen port; must match the "ports:" mapping above and EXPOSE in the Dockerfile
@@ -132,18 +165,19 @@ services:
       - mcp-internal
 
   # ==========================================================================
-  # Local-LLM stack (--profile ai)
-  #   docker compose --profile ai up -d --build
+  # Web chat (--profile webchat)
+  #   docker compose --profile webchat up -d --build
   #
-  #   llama-server   - llama.cpp inference backend (GPU), OpenAI-compatible API.
-  #                    Serves Qwen3.6-35B-A3B (MoE, 8-of-256 experts active) at
-  #                    UD-Q4_K_M with the expert FFN layers offloaded to CPU
-  #                    (LLAMA_N_CPU_MOE) and attention on the GPU - ~86 t/s on a
-  #                    16 GB RTX 4080. See README for the tuning/benchmark table.
-  #   champions-chat - light web UI + MCP tool-calling bridge at :3000.
-  #
-  # Model source: drop the GGUF in ./models and set LLAMA_MODEL_FILE (default), or
-  # set LLAMA_MODEL_HF to auto-download it (cached to the llama_models volume).
+  #   champions-chat - light web UI + MCP tool-calling bridge at :3000. Offers
+  #                    every backend that is available — local models,
+  #                    OpenRouter (OPENROUTER_API_KEY), any OpenAI-compatible
+  #                    API — and manages local models (Models panel).
+  #   llama-server   - llama.cpp in router mode: starts with no model loaded,
+  #                    serves every .gguf in ./models, downloads models added
+  #                    from the chat (a Hugging Face link) into the
+  #                    llama_models volume, and loads whichever model a chat
+  #                    picks. Needs an NVIDIA GPU (docker-compose.gpu.yml);
+  #                    without one it logs why and idles.
   # ==========================================================================
   llama-server:
     build:
@@ -151,73 +185,47 @@ services:
       dockerfile: docker/llama/Dockerfile
     image: ${LLAMA_IMAGE:-champions-llama:latest}
     container_name: champions-llama
-    profiles: ["ai"]  # only built/started with `docker compose --profile ai ...`
+    profiles: ["webchat"]  # only built/started with `docker compose --profile webchat ...`
     ports:
       - "${LLAMA_PORT:-8080}:8080"  # host:container — override LLAMA_PORT to change the host side; container always listens on 8080 (LLAMA_PORT env below)
     environment:
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"  # DEBUG | INFO | WARNING | ERROR (all services share it)
+      LOG_COLOR: "${LOG_COLOR:-1}"  # ANSI colors in `docker compose logs`; 0 = plain text
       LLAMA_PORT: "8080"  # container-side listen port passed to llama-server; must match the "ports:" mapping above
-      LLAMA_ALIAS: "${LLAMA_MODEL_NAME:-qwen3.6-35b-a3b}"  # model name reported at /v1/models; champions-chat sends this as the OpenAI "model" field (its own LLAMA_MODEL_NAME below)
-      LLAMA_MODEL_FILE: "${LLAMA_MODEL_FILE:-unsloth_Qwen3.6-35B-A3B-UD-Q4_K_M.gguf}"  # local GGUF in ./models
-      LLAMA_MODEL_HF: "${LLAMA_MODEL_HF:-}"         # e.g. unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M
-      LLAMA_CTX_SIZE: "${LLAMA_CTX_SIZE:-131072}"   # 128k; GQA (2 KV heads) keeps KV cheap
-      # q8_0 KV - fits 128k on 16 GB and keeps full KV quality 
-      LLAMA_CACHE_TYPE_K: "${LLAMA_CACHE_TYPE_K:-q8_0}"
-      LLAMA_CACHE_TYPE_V: "${LLAMA_CACHE_TYPE_V:-q8_0}"
-      # unsloth's model card recommends flash attention explicitly "on" (vs "auto")
-      LLAMA_FLASH_ATTN: "${LLAMA_FLASH_ATTN:-on}"
-      # The MoE offload knob
-      LLAMA_N_GPU_LAYERS: "${LLAMA_N_GPU_LAYERS:-99}"
-      LLAMA_N_CPU_MOE: "${LLAMA_N_CPU_MOE:-18}"     # 18 of 256 experts active on CPU
-      # Only 1 user, don't need to parallelize the inference
-      LLAMA_PARALLEL: "${LLAMA_PARALLEL:-1}"
-      # Keep the model's thinking across the whole conversation, not just a
-      # turn's tool-calling rounds (chat backend replays reasoning_content
-      # for prior turns too — see docker/chat/main.py)
+      # Per-model settings (context, KV cache, GPU layers, MoE offload,
+      # reasoning budget, MTP) live in the web chat's Configuration view, which
+      # writes them to /config/presets.ini; their defaults are on champions-chat.
+      LLAMA_MODELS_MAX: "${LLAMA_MODELS_MAX:-1}"  # models loaded at once (one GPU: 1; picking another unloads it)
+      LLAMA_PARALLEL: "${LLAMA_PARALLEL:-1}"  # one user: no parallel slots
+      # Keep the model's thinking across the conversation (the chat replays
+      # reasoning_content for prior turns too — see docker/chat/main.py).
       LLAMA_REASONING_PRESERVE: "${LLAMA_REASONING_PRESERVE:-1}"
-      # Cap thinking tokens per round. Enabled by default because LLAMA_THINK is
-      # on and a team build runs up to MAX_TOOL_ROUNDS rounds — unbounded
-      # thinking on every one of them is the difference between planning and
-      # musing. Set to "off" on llama.cpp builds that lack --reasoning-budget.
-      LLAMA_REASONING_BUDGET: "${LLAMA_REASONING_BUDGET:-2048}"
-      # Disables mmap so the full model is read into RAM upfront instead of
-      # paged from disk on demand — steadier decode throughput once loaded.
-      LLAMA_NO_MMAP: "${LLAMA_NO_MMAP:-1}"
-      # mlock pins weights so the OS can't page them out
-      # off by default - needs the IPC_LOCK cap below + RAM
-      LLAMA_MLOCK: "${LLAMA_MLOCK:-0}"
-      # Optional MTP/speculative decoding flags (wired through entrypoint.sh).
-      # Pass-through keys: only injected when defined in the host env/.env.
-      LLAMA_MTP_ENABLED:
-      LLAMA_MTP_SPEC_TYPE:
-      LLAMA_MTP_MODEL_FILE:
-      LLAMA_MTP_MODEL_HF:
-      LLAMA_MTP_DRAFT_MIN:
-      LLAMA_MTP_DRAFT_MAX:
-      LLAMA_MTP_P_MIN:
-      LLAMA_MTP_EXTRA_ARGS:
-      # Free-form escape hatch for any llama-server flag not covered by a
-      # dedicated knob above (appended as-is; see entrypoint.sh).
+      LLAMA_NO_MMAP: "${LLAMA_NO_MMAP:-1}"  # read weights into RAM up front: steadier decode, exact load progress
+      LLAMA_MLOCK: "${LLAMA_MLOCK:-0}"  # pin weights in RAM (needs the IPC_LOCK cap below + RAM)
+      HF_TOKEN: "${HF_TOKEN:-}"  # only for gated/private Hugging Face repos
+      # Free-form escape hatch for llama-server flags the Configuration view
+      # doesn't cover (applies to every model, overrides its settings).
       LLAMA_EXTRA_ARGS: "${LLAMA_EXTRA_ARGS:-}"
     cap_add:
       - IPC_LOCK    # Required for --mlock
     volumes:
-      - llama_models:/root/.cache/llama.cpp   # HF auto-downloads cached here
-      - ./models:/models:ro                   # local GGUFs (LLAMA_MODEL_FILE)
+      # Downloaded models. llama.cpp writes to ~/.cache/huggingface (and older
+      # builds to ~/.cache/llama.cpp): mount the whole cache dir so they persist.
+      - llama_models:/root/.cache
+      - ./models:/models:ro                   # your own .gguf files
+      - chat-data:/config                     # presets.ini written by champions-chat's Configuration view
     restart: unless-stopped
+    logging: *default-logging
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/health || exit 1"]
+      # Healthy when the router answers, or when deliberately idle (no GPU:
+      # the entrypoint logs why) so the idle state isn't reported as a failure.
+      test: ["CMD-SHELL", "test -f /tmp/llama-disabled || curl -sf http://127.0.0.1:8080/health || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 30          # first start loads ~22 GB from disk; allow ~5 min
+      retries: 6
       start_period: 30s
-    # NVIDIA GPU passthrough (requires nvidia-container-toolkit on the host).
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # NVIDIA GPU passthrough lives in docker-compose.gpu.yml (opt-in), so this
+    # profile also starts on machines without the NVIDIA container runtime.
     networks:
       - mcp-internal
 
@@ -226,18 +234,36 @@ services:
       context: .
       dockerfile: docker/chat/Dockerfile
     container_name: champions-chat
-    # --profile ai: with the local llama-server; --profile openrouter: alone,
-    # backed by OpenRouter (set OPENROUTER_API_KEY in .env; no GPU needed).
-    profiles: ["ai", "openrouter"]
+    # Offers every available backend in the UI's model picker: local models
+    # (llama-server), OpenRouter (OPENROUTER_API_KEY) and OpenAI-compatible APIs.
+    profiles: ["webchat"]
     ports:
       - "${WEBUI_PORT:-3000}:3000"  # host:container — override WEBUI_PORT to change the host side; container always listens on 3000 (fixed by the Dockerfile's uvicorn CMD)
     environment:
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"  # DEBUG | INFO | WARNING | ERROR (all services share it)
+      LOG_COLOR: "${LOG_COLOR:-1}"  # ANSI colors in `docker compose logs`; 0 = plain text
       LLAMA_BASE_URL: "http://llama-server:8080"  # llama-server's address on the internal network (Docker DNS resolves the service name)
       MCP_URL: "http://champions-mcp:8000/mcp"  # champions-mcp's MCP endpoint on the internal network
-      LLAMA_MODEL_NAME: "${LLAMA_MODEL_NAME:-qwen3.6-35b-a3b}"  # sent as the OpenAI "model" field in chat requests; should match llama-server's LLAMA_ALIAS above
-      # Mirrors llama-server's own ctx size so the UI's context-usage meter has
-      # a denominator (purely informational — llama-server enforces the limit).
-      LLAMA_CTX_SIZE: "${LLAMA_CTX_SIZE:-131072}"
+      # Endpoints and settings added in the UI's Models panel persist here.
+      CHAT_DATA_DIR: "/data"
+      # An OpenAI-compatible API (vLLM, LM Studio, Ollama's /v1, a hosted
+      # provider...) offered in the model picker. More can be added in the UI.
+      OPENAI_COMPAT_NAME: "${OPENAI_COMPAT_NAME:-}"  # label in the picker (default: the URL's host)
+      OPENAI_COMPAT_BASE_URL: "${OPENAI_COMPAT_BASE_URL:-}"  # e.g. http://host.docker.internal:1234/v1
+      OPENAI_COMPAT_API_KEY: "${OPENAI_COMPAT_API_KEY:-}"
+      OPENAI_COMPAT_MODELS: "${OPENAI_COMPAT_MODELS:-}"  # comma-separated; empty = the API's /models list
+      # Local-model (llama.cpp) defaults. The Configuration view overrides them
+      # (globally or per model); empty = automatic.
+      LLAMA_CTX_SIZE: "${LLAMA_CTX_SIZE:-}"  # empty = llama.cpp fits the largest context the GPU holds
+      LLAMA_CACHE_TYPE_K: "${LLAMA_CACHE_TYPE_K:-q8_0}"  # q8_0 KV: half of f16's memory at practically the same quality
+      LLAMA_CACHE_TYPE_V: "${LLAMA_CACHE_TYPE_V:-q8_0}"
+      LLAMA_N_GPU_LAYERS: "${LLAMA_N_GPU_LAYERS:-99}"  # all layers on the GPU
+      LLAMA_N_CPU_MOE: "${LLAMA_N_CPU_MOE:-}"  # MoE models bigger than VRAM: layers whose experts stay on the CPU
+      LLAMA_FLASH_ATTN: "${LLAMA_FLASH_ATTN:-on}"
+      # Cap thinking tokens per round: a team build runs dozens of tool rounds,
+      # unbounded thinking on each is the difference between planning and musing.
+      LLAMA_REASONING_BUDGET: "${LLAMA_REASONING_BUDGET:-2048}"
+      LLAMA_MTP_ENABLED: "${LLAMA_MTP_ENABLED:-1}"  # speculative decoding with a model's own draft head (MTP...) when it has one
       # Thinking on by default: this workload is multi-step tool planning over
       # 30+ tools plus SP/damage arithmetic, which is exactly where the
       # reasoning block pays for itself. Bounded by LLAMA_REASONING_BUDGET on
@@ -267,14 +293,18 @@ services:
       # so --reasoning-preserve doesn't grow context unboundedly.
       MAX_REASONING_HISTORY_TURNS: "${MAX_REASONING_HISTORY_TURNS:-3}"
       MAX_REASONING_CHARS: "${MAX_REASONING_CHARS:-4000}"
-      # Backend: auto (default) = OpenRouter when OPENROUTER_API_KEY is set,
-      # else the local llama-server; or force llama / openrouter.
+      # Backends offered: auto (default) = every one that is available (local
+      # model when loaded, OpenRouter when a key is set); llama / openrouter =
+      # only that one.
       CHAT_PROVIDER: "${CHAT_PROVIDER:-auto}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
-      # Comma-separated; the first is the default in the UI's model picker.
-      # "openrouter/auto (low|medium|high)" = OpenRouter's Auto Router at that cost tier.
-      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-openrouter/auto (low),openrouter/auto (medium),openrouter/auto (high),deepseek/deepseek-v4.1-flash,openai/gpt-6-luna,google/gemini-4-argon}"
+      # Comma-separated fixed models. The Auto Router at each cost tier,
+      # "openrouter/auto (low|medium|high)", is always offered in addition.
+      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-deepseek/deepseek-v4.1-flash,openai/gpt-6-luna,google/gemini-4-argon}"
       # Candidate pools per tier (empty = OpenRouter's whole ranking for that band).
+      # Several providers per model: price = cheapest first (default) |
+      # throughput | latency | default (OpenRouter's load balancing).
+      OPENROUTER_PROVIDER_SORT: "${OPENROUTER_PROVIDER_SORT:-price}"
       OPENROUTER_AUTO_MODELS: "${OPENROUTER_AUTO_MODELS:-deepseek/deepseek-v4.1-flash,openai/gpt-6-luna}"  # low
       OPENROUTER_AUTO_MODELS_MEDIUM: "${OPENROUTER_AUTO_MODELS_MEDIUM:-}"
       OPENROUTER_AUTO_MODELS_HIGH: "${OPENROUTER_AUTO_MODELS_HIGH:-}"
@@ -287,13 +317,13 @@ services:
       OPENROUTER_MODEL_ROUTES: "${OPENROUTER_MODEL_ROUTES:-}"
       OPENROUTER_REASONING_EFFORT: "${OPENROUTER_REASONING_EFFORT:-}"  # low | medium | high
       OPENROUTER_TEMPERATURE: "${OPENROUTER_TEMPERATURE:-}"
+    volumes:
+      - chat-data:/data  # endpoints added in the UI (API keys stay server-side)
     depends_on:
       llama-server:
-        # Wait for the model to finish loading (healthcheck passes) before
-        # accepting chat requests — otherwise the first request(s) would hit
-        # a backend that's still loading ~22 GB of weights from disk.
-        condition: service_healthy
-        # Not started under --profile openrouter: then the chat runs without it.
+        # Started, not healthy: the chat is usable at once (OpenRouter) and
+        # lists the local model as "loading" until llama-server serves it.
+        condition: service_started
         required: false
       champions-mcp:
         # Only needs to have started, not finished: champions-mcp's own
@@ -302,6 +332,7 @@ services:
         # to be ready here.
         condition: service_started
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - mcp-internal
 
@@ -317,4 +348,6 @@ volumes:
     # Persists champions.sqlite + the PokeAPI pull cache across restarts.
     # Delete it (docker compose down -v) to force a full re-pull.
   llama_models:
-    # Persists llama.cpp HF auto-downloads (-hf) across restarts.
+    # Models downloaded from Hugging Face (web chat Models panel, LLAMA_MODEL_HF).
+  chat-data:
+    # Web chat settings: OpenAI-compatible endpoints added in the UI.

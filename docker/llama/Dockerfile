@@ -15,7 +15,10 @@ FROM ghcr.io/ggml-org/llama.cpp:server-cuda
 # whose driver is new enough to not need compat anyway.
 RUN rm -rf /usr/local/cuda*/compat
 
+COPY docker/common/log.sh /usr/local/lib/champions-log.sh
 COPY docker/llama/entrypoint.sh /entrypoint.sh
+# Strip CRs in case the checkout converted line endings (Windows + autocrlf).
+RUN sed -i 's/\r$//' /entrypoint.sh /usr/local/lib/champions-log.sh
 # The upstream image may be distroless-ish; ensure the script is executable.
 # (COPY preserves mode from the host, but be explicit in case it isn't.)
 ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]

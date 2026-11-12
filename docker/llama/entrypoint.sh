@@ -1,90 +1,76 @@
 #!/bin/sh
-# llama.cpp server launcher for the benchmark stack.
+# llama.cpp server for the web chat, in *router mode*: it starts with no model
+# loaded and manages models on demand —
+#   - every .gguf in ./models (mounted at /models) is listed and loadable;
+#   - models added in the web chat (a Hugging Face link) are downloaded in the
+#     background into the llama_models volume, with their draft heads (MTP);
+#   - a chat request naming a model loads it (unloading the previous one when
+#     LLAMA_MODELS_MAX is reached), so switching models needs no restart.
+#
+# Per-model settings (context, KV cache, GPU layers, MoE offload, reasoning
+# budget, speculative decoding) are NOT command-line flags here: flags would
+# override the presets. The web chat's Configuration view owns them and writes
+# them to /config/presets.ini (the shared chat-data volume), then asks this
+# server to reload it.
 
 set -eu
 
-PORT="${LLAMA_PORT:-8080}"        # container-side listen port
-CTX="${LLAMA_CTX_SIZE:-32768}"    # context window (tokens)
-NGL="${LLAMA_N_GPU_LAYERS:-99}"   # number of layers offloaded to GPU
-# KV-cache quant.
-KV_K="${LLAMA_CACHE_TYPE_K:-q8_0}"
-KV_V="${LLAMA_CACHE_TYPE_V:-q8_0}"
-# unsloth's Qwen3.6-35B-A3B-MTP-GGUF card recommends `-fa on -np 1` explicitly
-# rather than relying on flash-attn "auto" detection; -np 1 is LLAMA_PARALLEL's
-# default below.
-FA="${LLAMA_FLASH_ATTN:-on}"
+LOG_NAME=llama
+if [ -f /usr/local/lib/champions-log.sh ]; then
+  . /usr/local/lib/champions-log.sh
+else
+  log_info() { echo "[llama] $*" >&2; }
+  log_warn() { echo "[llama] WARNING: $*" >&2; }
+  log_error() { echo "[llama] ERROR: $*" >&2; }
+fi
+
+PRESETS=/config/presets.ini
+
+# The image is CUDA-only: without a GPU it can't serve usefully, so idle (and
+# say why) instead of crash-looping. nvidia-smi works on native Linux and on
+# Docker Desktop/WSL2 (where the GPU is /dev/dxg, not /dev/nvidia*).
+if ! nvidia-smi -L >/dev/null 2>&1 && [ ! -e /dev/nvidia0 ] && [ ! -e /dev/dxg ]; then
+  log_info "no NVIDIA GPU visible: local models disabled; idling (the web chat still offers OpenRouter / OpenAI-compatible APIs)" \
+    "hint=add docker-compose.gpu.yml to COMPOSE_FILE in .env"
+  touch /tmp/llama-disabled
+  trap 'exit 0' TERM INT
+  while :; do sleep 3600 & wait $!; done
+fi
+
+# The preset file must exist at startup for llama-server to watch it; the chat
+# overwrites it with the real settings as soon as it starts.
+if [ ! -f "${PRESETS}" ]; then
+  mkdir -p "$(dirname "${PRESETS}")"
+  printf 'version = 1\n; placeholder until champions-chat writes the Configuration view settings\n\n[*]\n' > "${PRESETS}"
+fi
 
 set -- \
-  --host 0.0.0.0 --port "${PORT}" \
-  --alias "${LLAMA_ALIAS:-local-model}" \
-  --ctx-size "${CTX}" \
-  --n-gpu-layers "${NGL}" \
-  --cache-type-k "${KV_K}" \
-  --cache-type-v "${KV_V}" \
-  --flash-attn "${FA}" \
+  --host 0.0.0.0 --port "${LLAMA_PORT:-8080}" \
+  --models-dir /models \
+  --models-preset "${PRESETS}" \
+  --models-max "${LLAMA_MODELS_MAX:-1}" \
   --parallel "${LLAMA_PARALLEL:-1}" \
   --jinja                          # use the model's chat template (tool calling)
 
-if [ -n "${LLAMA_N_CPU_MOE:-}" ]; then
-  set -- "$@" --n-cpu-moe "${LLAMA_N_CPU_MOE}"
-fi
-
-# Qwen3.6's template advertises supports_preserve_reasoning
+# Keep the model's reasoning across turns where the template supports it (Qwen3.x).
 [ "${LLAMA_REASONING_PRESERVE:-1}" = "1" ] && set -- "$@" --reasoning-preserve
 
-# Cap thinking tokens per generation so the model plans briefly instead of
-# musing for thousands of tokens each tool round (keeps turns snappy). -1 =
-# unrestricted, 0 = no thinking. Set LLAMA_REASONING_BUDGET=off on old builds
-# that lack the flag. No effect when thinking is disabled.
-case "${LLAMA_REASONING_BUDGET:-}" in
-  ""|off|none) : ;;
-  *) set -- "$@" --reasoning-budget "${LLAMA_REASONING_BUDGET}" ;;
-esac
-
-# --mmap/--no-mmap/--mlock are deprecated in favour of the single --load-mode
-# flag (llama.cpp PR #20834). mlock now always implies mmap, so our old
-# --no-mmap + --mlock combo ("no page-cache double-map, but pin CPU-resident
-# tensors") has no exact equivalent (llama.cpp#26110); mmap+mlock is the
-# closest available mode and still keeps the offloaded weights pinned in RAM.
+# --load-mode: "none" reads the weights into RAM up front (steadier decode,
+# exact load progress); mmap+mlock pins them instead.
 if [ "${LLAMA_MLOCK:-0}" = "1" ]; then
   set -- "$@" --load-mode mmap+mlock
 elif [ "${LLAMA_NO_MMAP:-1}" = "1" ]; then
   set -- "$@" --load-mode none
 fi
 
-# Optional MTP/speculative decoding using a draft model.
-# Kept opt-in because performance depends heavily on hardware/model pairing.
-if [ "${LLAMA_MTP_ENABLED:-0}" = "1" ]; then
-  set -- "$@" --spec-type "${LLAMA_MTP_SPEC_TYPE:-draft-mtp}"
-
-  if [ -n "${LLAMA_MTP_MODEL_HF:-}" ]; then
-    set -- "$@" --spec-draft-hf "${LLAMA_MTP_MODEL_HF}"
-  elif [ -n "${LLAMA_MTP_MODEL_FILE:-}" ]; then
-    set -- "$@" --spec-draft-model "/models/${LLAMA_MTP_MODEL_FILE}"
-  fi
-
-  [ -n "${LLAMA_MTP_DRAFT_MIN:-}" ] && set -- "$@" --spec-draft-n-min "${LLAMA_MTP_DRAFT_MIN}"
-  [ -n "${LLAMA_MTP_DRAFT_MAX:-}" ] && set -- "$@" --spec-draft-n-max "${LLAMA_MTP_DRAFT_MAX}"
-  [ -n "${LLAMA_MTP_P_MIN:-}" ] && set -- "$@" --spec-draft-p-min "${LLAMA_MTP_P_MIN}"
-  # shellcheck disable=SC2086
-  [ -n "${LLAMA_MTP_EXTRA_ARGS:-}" ] && set -- "$@" ${LLAMA_MTP_EXTRA_ARGS}
-fi
-
-# Free-form escape hatch for anything not parameterised above.
+# Free-form escape hatch for anything not covered by the Configuration view
+# (applies to every model and overrides the presets).
 # shellcheck disable=SC2086
 [ -n "${LLAMA_EXTRA_ARGS:-}" ] && set -- "$@" ${LLAMA_EXTRA_ARGS}
 
-# Model source: a Hugging Face ref (auto-downloaded + cached to the volume) takes
-# precedence; otherwise a GGUF mounted into /models. Exactly one must be set.
-if [ -n "${LLAMA_MODEL_HF:-}" ]; then
-  set -- "$@" -hf "${LLAMA_MODEL_HF}"
-elif [ -n "${LLAMA_MODEL_FILE:-}" ]; then
-  set -- "$@" -m "/models/${LLAMA_MODEL_FILE}"
-else
-  echo "[llama] ERROR: set LLAMA_MODEL_HF (e.g. unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M)" >&2
-  echo "[llama]        or drop a .gguf in ./models and set LLAMA_MODEL_FILE." >&2
-  exit 1
-fi
-
-echo "[llama] launching: llama-server $*" >&2
+GPU=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -n 1 || true)
+LOCAL=$(ls /models/*.gguf 2>/dev/null | wc -l | tr -d ' ')
+log_info "starting llama-server (router mode: no model loaded until one is picked)" "gpu=${GPU:-unknown}" \
+  "local_gguf_files=${LOCAL}" "models_max=${LLAMA_MODELS_MAX:-1}" "presets=${PRESETS}"
+log_info "llama-server args" "args=$*"
 exec /app/llama-server "$@"

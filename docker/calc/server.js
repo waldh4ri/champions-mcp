@@ -8,14 +8,19 @@
  *
  * Listens on PORT (default 3000), bound to 0.0.0.0.
  * Used by the MCP server when CHAMPIONS_MCP_CALC_HTTP is set.
+ *
+ * Logs one line per calc (see ../common/log.js), tagged with the MCP
+ * request id from X-Request-Id; health checks are not logged.
  */
 
-// Route every console channel to stderr so stdout stays clean.
-for (const k of ['log', 'info', 'warn', 'error', 'debug', 'trace']) {
-  console[k] = (...a) => process.stderr.write(a.map(String).join(' ') + '\n');
-}
-
+const fs = require('fs');
 const http = require('http');
+let logmod;
+try { logmod = require('./log'); } catch (e) { logmod = require('../common/log'); }
+const log = logmod.logger('calc');
+// Library chatter goes through the logger too (stderr; stdout stays clean).
+logmod.captureConsole(log);
+
 const calc = require('/app/calc/dist/index.js');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -72,27 +77,75 @@ function runCalc(r) {
   return out;
 }
 
+/** What this calc build knows, for the startup line and /health. */
+function datasetInfo() {
+  const info = { gen: 0 };
+  try {
+    const gen = calc.Generations.get(0);
+    info.species = [...gen.species].length;
+    info.moves = [...gen.moves].length;
+    info.items = [...gen.items].length;
+  } catch (e) { /* older calc builds: counts are informational only */ }
+  try { info.damage_calc_commit = fs.readFileSync('/app/calc/dist/.commit', 'utf8').trim(); } catch (e) { /* not recorded */ }
+  return info;
+}
+
+const INFO = datasetInfo();
+let served = 0;
+
+/** "Garchomp-Mega (Jolly, atk:32) Earthquake → Incineroar" style request label. */
+function sideLabel(side) {
+  const o = (side && side.options) || {};
+  const extras = [o.item, o.ability, o.nature].filter(Boolean);
+  return `${side && side.name}${extras.length ? ` (${extras.join(', ')})` : ''}`;
+}
+
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    res.end(JSON.stringify({ ok: true, served, ...INFO }));
     return;
   }
+  const rid = req.headers['x-request-id'];
   if (req.method !== 'POST') {
+    log.warn('rejected request', { rid, method: req.method, url: req.url, status: 405 });
     res.writeHead(405);
     res.end();
     return;
   }
 
+  const t0 = process.hrtime.bigint();
   let body = '';
   req.on('data', d => { body += d; });
   req.on('end', () => {
-    let out;
+    let out, r = {};
     try {
-      const r = JSON.parse(body || '{}');
+      r = JSON.parse(body || '{}');
       out = runCalc(r);
     } catch (e) {
       out = { ok: false, error: String((e && e.message) || e) };
+    }
+    served++;
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    const field = r.field || {};
+    if (out.ok) {
+      log.info(`${out.attacker} ${out.move} → ${out.defender}`, {
+        rid,
+        dmg: out.immune ? 'immune' : `${out.min_pct}-${out.max_pct}%`,
+        ko: out.ko_chance || undefined,
+        hp: out.defender_max_hp,
+        weather: field.weather, terrain: field.terrain,
+        game: field.gameType,
+        crit: (r.move && r.move.options && r.move.options.isCrit) || undefined,
+        ms: +ms.toFixed(1),
+      });
+      log.debug('calc detail', { rid, attacker: sideLabel(r.attacker), defender: sideLabel(r.defender), desc: out.description });
+    } else {
+      log.warn('calc failed', {
+        rid, error: out.error,
+        attacker: r.attacker && r.attacker.name, move: r.move && r.move.name,
+        defender: r.defender && r.defender.name, ms: +ms.toFixed(1),
+      });
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(out));
@@ -100,5 +153,13 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  process.stderr.write(`champions-calc HTTP sidecar listening on :${PORT}\n`);
+  log.info('ready — damage calc listening', { bold: true, port: PORT, node: process.version, ...INFO });
 });
+
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    log.info('shutting down', { signal: sig, calcs_served: served });
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2000).unref();
+  });
+}

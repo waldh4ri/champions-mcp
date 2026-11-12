@@ -20,6 +20,8 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer  # pyright: ignore[reportMissingImports]
 
 from . import legality as legality_mod
+from . import log as logmod
+from . import refresh, server_log
 from . import (
     builds,
     fields,
@@ -85,6 +87,20 @@ class App:
             cls._instance = App()
         return cls._instance
 
+    @classmethod
+    def reload(cls) -> App:
+        """Reopen the data mirror after a background pull swapped in a new
+        file: a fresh handle (the old one still reads the replaced file) and
+        empty read caches, which are keyed by the unchanged path. Requests in
+        flight finish on the old handle."""
+        new = App()
+        pokedex._SPEED_DIST_CACHE.clear()
+        for cache in (profiles._TYPE_CACHE, profiles._ENTITY_CACHE, profiles._STAT_CACHE,
+                      profiles._PROFILE_CACHE):
+            cache.clear()
+        cls._instance = new
+        return new
+
 
 def _version() -> str:
     """This package's installed version, for the MCP handshake's serverInfo."""
@@ -97,6 +113,8 @@ def _version() -> str:
 
 
 mcp = MCPServer("champions-mcp", version=_version())
+# One log line per client handshake / tool call / prompt / resource read.
+mcp.middleware.append(server_log.request_logger)
 
 
 def _db() -> Db:
@@ -1179,6 +1197,10 @@ def main() -> None:
     existing configs for nothing. They apply only to the HTTP transports —
     stdio has nothing to bind.
     """
+    import asyncio
+
+    logmod.setup()
+    log = logmod.get("mcp")
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     kwargs: dict[str, Any] = {}
     if transport in ("streamable-http", "sse"):
@@ -1186,6 +1208,26 @@ def main() -> None:
             "host": os.environ.get("FASTMCP_HOST", "127.0.0.1"),
             "port": int(os.environ.get("FASTMCP_PORT", "8000")),
         }
+    log.info("starting champions-mcp", version=_version(), transport=transport, **kwargs)
+    try:
+        app = App.get()
+        server_log.log_data_summary(app.db, app.settings.db_path)
+        settings = app.settings
+    except Exception as exc:  # the tools report it per call; don't hide why
+        settings = Settings.load()
+        log.error("could not open the data mirror; tools will fail until it exists",
+                  db=settings.db_path, error=f"{type(exc).__name__}: {exc}",
+                  hint="run champions-mcp-pull")
+    server_log.log_startup(transport=transport, port=kwargs.get("port"),
+                           tools=len(asyncio.run(mcp.list_tools())), settings=settings)
+
+    def _reloaded() -> None:
+        app = App.reload()
+        server_log.log_data_summary(app.db, app.settings.db_path)
+
+    # Set by the container entrypoint when data needs (re)fetching: the server
+    # serves right away and picks the new data up when the pull finishes.
+    refresh.start(os.environ.get("CHAMPIONS_MCP_BACKGROUND_PULL", ""), _reloaded)
     mcp.run(transport=transport, **kwargs)  # type: ignore[arg-type]
 
 

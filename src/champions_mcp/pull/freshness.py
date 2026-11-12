@@ -12,6 +12,10 @@ stops at whatever season it was pulled in. This check catches both:
 
 Usage (entrypoint.sh): python -m champions_mcp.pull.freshness <db_path>
 Exit 0 = fresh, 10 = stale (the reason is printed), 11 = no usable database.
+
+    python -m champions_mcp.pull.freshness --corpus <db_path>
+Exit 0 = the observed-team corpus is there, 12 = it is missing (e.g. its
+background fetch was interrupted by a restart).
 """
 
 from __future__ import annotations
@@ -58,8 +62,29 @@ def check(db_path: Path, max_age_days: float) -> tuple[int, str]:
     return 0, f"data format {fmt}, built {built}"
 
 
+def corpus_missing(db_path: Path) -> bool:
+    """True when the database has no observed-team corpus (build_teams), which
+    a first start fetches in the background: if that was interrupted, the
+    next start must resume it rather than wait for the age check."""
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            n = con.execute("SELECT COUNT(*) FROM build_teams").fetchone()[0]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return True
+    return n == 0
+
+
 def main() -> None:
-    db_path = Path(sys.argv[1] if len(sys.argv) > 1 else os.environ.get("CHAMPIONS_MCP_DB", "/data/champions.sqlite"))
+    args = sys.argv[1:]
+    if args and args[0] == "--corpus":
+        db_path = Path(args[1] if len(args) > 1 else os.environ.get("CHAMPIONS_MCP_DB", "/data/champions.sqlite"))
+        missing = corpus_missing(db_path)
+        print("missing" if missing else "present")
+        raise SystemExit(12 if missing else 0)
+    db_path = Path(args[0] if args else os.environ.get("CHAMPIONS_MCP_DB", "/data/champions.sqlite"))
     max_age = float(os.environ.get("CHAMPIONS_MCP_MAX_DATA_AGE_DAYS", "7") or 0)
     code, reason = check(db_path, max_age)
     print(reason)

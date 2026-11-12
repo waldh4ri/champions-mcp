@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+
+from . import log as logmod
 
 from .champions_stats import (
     ALL_STATS,
@@ -39,6 +42,8 @@ _TERRAIN = {
 }
 
 CHAMPIONS_GEN = 0  # @smogon/calc native Pokémon Champions generation
+
+log = logmod.get("calc")
 
 # Roster names the calc's Champions dataset spells differently. Its gen-0 table
 # has only the Eternal Flower Floette and the gendered Meowstic Megas, so the
@@ -187,9 +192,17 @@ class DamageCalculator:
             "move": {"name": req["move"], "options": move_opts},
             "field": field,
         }
+        t0 = time.perf_counter()
         result = await self._run(payload)
+        took = logmod.fmt_duration(time.perf_counter() - t0)
         if not result.get("ok"):
+            log.warning("damage calc failed", took=took, attacker=atk_name, move=req["move"],
+                        defender=def_name, error=result.get("error", "calc failed"))
             return {"error": result.get("error", "calc failed"), "payload": payload, "warnings": warnings}
+        log.debug("damage calc", took=took, attacker=atk_name, move=req["move"], defender=def_name,
+                  field=field, atk=atk_opts, dfn=def_opts)
+        if warnings:
+            log.info("damage calc input adjusted", warnings="; ".join(warnings))
         result.pop("ok", None)
         result["champions"] = {
             "mode": "native (@smogon/calc gen 0)", "level": 50, "ivs": 31,
@@ -238,8 +251,9 @@ class DamageCalculator:
         assert self._s.calc_http
         url = self._s.calc_http.rstrip("/") + "/"
         try:
+            rid = logmod.request_id.get()
             async with httpx.AsyncClient(timeout=self._s.calc_timeout) as client:
-                r = await client.post(url, json=payload)
+                r = await client.post(url, json=payload, headers={"X-Request-Id": rid} if rid else None)
                 r.raise_for_status()
                 return r.json()
         except httpx.TimeoutException:

@@ -2,6 +2,9 @@
 # llama-server chat backend, and champions-mcp's tools (see main.py).
 FROM python:3.12-slim
 
+# Unbuffered stdout/stderr: log lines reach `docker logs` as they happen.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 # No pyproject.toml here — this service is a single small script, so its
@@ -10,7 +13,9 @@ RUN pip install --no-cache-dir fastapi uvicorn httpx python-multipart
 
 # App code and static assets copied last (after the dependency install) so
 # editing main.py or the UI doesn't invalidate the pip-install layer cache.
-COPY docker/chat/main.py ./
+COPY docker/chat/*.py ./
+# Same log format as champions-mcp (stdlib-only module, shared verbatim).
+COPY src/champions_mcp/log.py ./cmlog.py
 COPY docker/chat/static/ ./static/
 
 # Web UI / chat API port (see WEBUI_PORT in docker-compose.yml).

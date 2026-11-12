@@ -13,6 +13,9 @@ const { Worker } = require('worker_threads');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+let logmod;
+try { logmod = require('./log'); } catch (e) { logmod = require('../common/log'); }
+const log = logmod.logger('sim.pool');
 
 const MB = 1024 * 1024;
 // Measured: a warmed worker (Showdown dex + a battle in flight) sits around
@@ -70,6 +73,8 @@ class Pool {
     this.queue = [];
     this.pending = new Map();
     this.nextId = 1;
+    this.battlesDone = 0;   // across all requests; the server diffs it for progress lines
+    this.crashes = 0;
     for (let i = 0; i < this.size; i++) this._spawn();
   }
 
@@ -81,6 +86,7 @@ class Pool {
       const p = this.pending.get(msg.id);
       this.pending.delete(msg.id);
       w.currentTask = null;
+      if (Array.isArray(msg.out)) this.battlesDone += msg.out.length;
       this.idle.push(w);
       this._drain();
       if (p) p.resolve(msg.out);
@@ -88,6 +94,11 @@ class Pool {
     w.on('error', err => {
       // A crashed worker (incl. hitting its heap limit) fails its task and is replaced.
       const task = w.currentTask;
+      this.crashes++;
+      log.error('worker crashed; replacing it', {
+        error: String(err.message || err), lost_battles: task ? task.jobs.length : 0,
+        heap_limit_mb: this.plan.heapMb, crashes: this.crashes,
+      });
       this.workers = this.workers.filter(x => x !== w);
       this.idle = this.idle.filter(x => x !== w);
       if (task) {

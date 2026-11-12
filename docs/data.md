@@ -124,23 +124,31 @@ prevents startup.
 
 ## Refreshing the data
 
-Container startup pulls when the database is missing, when its data-format
-version is older than the code needs, when it exceeds the default seven-day age
-limit, or when `CHAMPIONS_MCP_PULL=1` is set. There is no periodic runtime job.
+Container startup checks the data and only blocks on what the server cannot
+start without; the slow rest runs in the background while it serves:
 
-For an explicit Compose refresh, stop the server, run the pull against its
-persistent volume, and start it again:
+| State on start | Before serving | In the background |
+|---|---|---|
+| No database (first start, after `down -v`) | core pull (`--skip-builds`, ~2 min) | observed-team corpus + team reports (`--corpus-only`, ~15 min cold) |
+| Built by an older data format | core pull | corpus + reports |
+| Older than `CHAMPIONS_MCP_MAX_DATA_AGE_DAYS` (default 7) | nothing: the current data is served | full pull |
+| `CHAMPIONS_MCP_PULL=1` | nothing | full pull |
+
+A background pull builds into a copy, swaps it in atomically and the server
+reopens it (`background … refresh finished` in the log); a failed one leaves
+the served data untouched. `CHAMPIONS_MCP_BUILDS_SKIP=1` skips the corpus
+entirely. There is no periodic runtime job.
+
+For an explicit refresh, run the pull inside the running container (it keeps
+serving meanwhile), then restart it to pick the new data up:
 
 ```sh
-docker compose stop champions-mcp
-docker compose run --rm --no-deps --entrypoint champions-mcp-pull champions-mcp
-docker compose up -d champions-mcp
+docker compose exec champions-mcp champions-mcp-pull
+docker compose restart champions-mcp
 ```
 
-Run the final start command even if the pull reports a failure, if you want to
-resume serving a preserved existing database. This one-off command runs the pull
-directly: it does not use the startup script's `CHAMPIONS_MCP_BUILDS_SKIP` switch.
-Append `--skip-builds` explicitly only if you want a mirror without that corpus.
+`champions-mcp-pull --skip-builds` omits the corpus; `--corpus-only` refreshes
+just the corpus and team reports in the existing database.
 
 Alternatively set `CHAMPIONS_MCP_PULL=1` in `.env` and run Compose `up -d` to
 recreate the service with the new setting. Remove it after the refresh and apply
