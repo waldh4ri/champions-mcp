@@ -317,7 +317,11 @@
     // provider), vs. the catalogue's list price.
     const paid = m => {
       const e = m.effective || {};
-      if (e.blocked) return `<span style="color:#fca5a5">no provider under the price cap ($${h(e.cap)}/1M): requests fail; raise the cap or remove it</span> · list ${price(m)}`;
+      if (e.blocked) {
+        const caps = [e.cap_in != null ? `$${e.cap_in} in` : null, e.cap_out != null ? `$${e.cap_out} out` : null].filter(Boolean).join(' / ');
+        return `<span style="color:#fca5a5">no provider within your price caps (${h(caps)} per 1M): requests would fail. ` +
+          `Raise the max input/output price in the OpenRouter settings above (0 = no cap).</span> · list ${price(m)}`;
+      }
       if (e.prompt_per_m == null) return price(m);
       const pays = e.max_prompt_per_m != null
         ? `$${e.prompt_per_m}–${e.max_prompt_per_m} in / $${e.completion_per_m}–${e.max_completion_per_m} out per 1M (${e.providers} providers, load-balanced)`

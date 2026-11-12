@@ -338,14 +338,16 @@ services:
       # "openrouter/auto (low|medium|high)", is always offered in addition.
       OPENROUTER_MODEL: "${OPENROUTER_MODEL:-deepseek/deepseek-v4.1-flash,openai/gpt-6-luna,google/gemini-4-argon}"
       # Candidate pools per tier (empty = OpenRouter's whole ranking for that band).
-      # Several providers per model: price = cheapest first (default) |
-      # throughput | latency | default (OpenRouter's load balancing).
+      # Several providers per model: price = cheapest first, flex service
+      # tiers included (default) | throughput | latency | default (OpenRouter's
+      # load balancing).
       OPENROUTER_PROVIDER_SORT: "${OPENROUTER_PROVIDER_SORT:-price}"
       OPENROUTER_AUTO_MODELS: "${OPENROUTER_AUTO_MODELS:-deepseek/deepseek-v4.1-flash,openai/gpt-6-luna}"  # low
       OPENROUTER_AUTO_MODELS_MEDIUM: "${OPENROUTER_AUTO_MODELS_MEDIUM:-}"
       OPENROUTER_AUTO_MODELS_HIGH: "${OPENROUTER_AUTO_MODELS_HIGH:-}"
       # Price caps, USD per 1M tokens (input and output); empty = no cap.
-      OPENROUTER_MAX_PRICE: "${OPENROUTER_MAX_PRICE:-1}"  # fixed models + low tier
+      OPENROUTER_MAX_PRICE: "${OPENROUTER_MAX_PRICE:-1}"  # input, fixed models + low tier (0 = no cap)
+      OPENROUTER_MAX_PRICE_OUTPUT: "${OPENROUTER_MAX_PRICE_OUTPUT:-5}"  # output, same scope
       OPENROUTER_MAX_PRICE_MEDIUM: "${OPENROUTER_MAX_PRICE_MEDIUM:-}"
       OPENROUTER_MAX_PRICE_HIGH: "${OPENROUTER_MAX_PRICE_HIGH:-}"
       # Per-model provider routing, JSON keyed by model id (empty = built-in:

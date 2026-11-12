@@ -584,6 +584,12 @@
     }
     #sendBtn:hover:not(:disabled) { background: #4f46e5; }
     #sendBtn:disabled { background: #1e293b; color: #475569; cursor: not-allowed; }
+    #stopBtn {
+      background: #0f172a; color: #fca5a5; border: 1px solid #7f1d1d; border-radius: 10px;
+      padding: 10px 16px; font-size: 0.875rem; font-family: inherit; cursor: pointer; flex-shrink: 0;
+    }
+    #stopBtn:hover { background: #7f1d1d; color: #fee2e2; }
+    #stopBtn[hidden] { display: none; }
 
     #resetBtn {
       background: #0f172a;
@@ -784,6 +790,7 @@
   <div class="footer-inner">
     <textarea id="input" placeholder="Ask about Pokémon teams, damage calcs, spreads…" rows="1"></textarea>
     <button id="sendBtn" onclick="send()">Send</button>
+    <button id="stopBtn" onclick="stopTurn()" hidden title="Stop this reply. What it gathered so far is kept: pick any model and send to carry on from there.">Stop</button>
   </div>
 </footer>
 </div>
@@ -804,6 +811,8 @@
   const messagesScrollEl = document.getElementById('messagesScroll');
   const inputEl    = document.getElementById('input');
   const sendBtn    = document.getElementById('sendBtn');
+  const stopBtn    = document.getElementById('stopBtn');
+  let turnAbort = null;  // AbortController of the reply in flight
   const modelSel   = document.getElementById('modelSelect');
   const resetBtn   = document.getElementById('resetBtn');
   const mPrefill   = document.querySelector('#mPrefill .meter-val');
@@ -984,6 +993,7 @@
       renderMarkdown(bub, event.content);
       try { TeamPanel.onFinal(event.content); } catch (e) { console.warn('team panel', e); }
     } else if (event.t === 'error') addBubble('info', `<strong>Error:</strong> ${esc(event.text)}`);
+    else if (event.t === 'stopped') addBubble('info', esc(event.text));
   }
 
   async function openSession(id) {
@@ -1350,6 +1360,11 @@
     let typingRemoved = false;
     let toolEvents = [];
     let lastThinking = '';
+    // Each finished tool round's messages: kept in the history if the reply
+    // is stopped or fails, so the next message (with any model) continues
+    // from there. Reasoning is dropped: another model can't replay it.
+    const partial = [];
+    turnAbort = new AbortController();
 
     // Interim thinking/tool-call messages render as they arrive, each as its
     // own standalone message — the typing indicator only needs to disappear
@@ -1375,6 +1390,11 @@
         addToolMessage(evt.event);
         try { TeamPanel.onTool(evt.event); } catch (e) { console.warn('team panel', e); }
         record({ t: 'tool', ev: evt.event });
+      } else if (evt.type === 'round') {
+        for (const m of evt.messages || []) {
+          const { reasoning_content, reasoning_details, ...plain } = m;
+          partial.push(plain);
+        }
       } else if (evt.type === 'error') {
         throw new Error(evt.detail || 'Stream error');
       }
@@ -1386,6 +1406,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: modelSel.value, messages: history }),
+        signal: turnAbort.signal,
       });
 
       if (!resp.ok || !resp.body) {
@@ -1456,19 +1477,42 @@
       record({ t: 'assistant', content });
     } catch (err) {
       removeTypingOnce();
-      addBubble('info', `<strong>Error:</strong> ${esc(err.message)}`);
-      record({ t: 'error', text: err.message });
+      // keep what the finished rounds gathered (tool calls + results)
+      if (partial.length) history.push(...partial);
+      const rounds = partial.filter(m => m.role === 'assistant').length;
+      if (err.name === 'AbortError') {
+        const text = `Stopped${rounds ? ` after ${rounds} tool round${rounds > 1 ? 's' : ''}; its work is kept` : ''}. ` +
+          'Pick any model and send a message to carry on from here.';
+        addBubble('info', esc(text));
+        record({ t: 'stopped', text });
+        if (!inputEl.value.trim()) {
+          inputEl.value = 'Continue.';
+          inputEl.dispatchEvent(new Event('input'));
+        }
+      } else {
+        addBubble('info', `<strong>Error:</strong> ${esc(err.message)}` +
+          (rounds ? `<br>The ${rounds} finished tool round${rounds > 1 ? 's are' : ' is'} kept: send a message (with any model) to carry on.` : ''));
+        record({ t: 'error', text: err.message });
+      }
     } finally {
+      turnAbort = null;
       saveNow();
       setBusy(false);
       inputEl.focus();
     }
   }
 
+  // Stop the reply in flight: aborting the request disconnects the stream, and
+  // the server cancels the turn (and its in-flight model call) on disconnect.
+  function stopTurn() {
+    if (turnAbort) turnAbort.abort();
+  }
+
   // Disable sending while a request runs (quick prompts only fill the box, so
   // they stay usable: the next message can be prepared meanwhile).
   function setBusy(busy) {
     sendBtn.disabled = busy;
+    stopBtn.hidden = !busy;
   }
 
   // ── quick prompts: examples covering the MCP's tool groups. A click puts
