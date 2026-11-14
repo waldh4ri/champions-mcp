@@ -663,3 +663,60 @@ def test_bss_team_with_several_megas_gets_the_one_per_bring_rule(db):
             {"species": "Feraligatr", "item": "Feraligite"}, {"species": "Skarmory"}]
     assert "mega_per_bring" in teambuilder.analyze_team(db, team, "bss")
     assert "mega_per_bring" not in teambuilder.analyze_team(db, team, "vgc")
+
+
+def test_calc_explain_uses_the_type_the_move_lands_as(db):
+    """Pixilate turns Double-Edge into Fairy; the calc's `explain` used to judge
+    the Normal type (Garchomp 1x, Kingambit 0.5x) while the damage was Fairy
+    (2x / 1x), so a reader trusting it was told the wrong effectiveness."""
+    from champions_mcp import explain
+
+    garchomp = explain.explain_damage(db, "Double-Edge", "Garchomp", None, None,
+                                      "Mega Altaria", "Altarianite", None)
+    assert garchomp["move_type"] == "Fairy" and garchomp["base_move_type"] == "Normal"
+    assert garchomp["type_effectiveness"] == "2x"
+    assert "Pixilate" in garchomp["move_type_note"]
+
+    kingambit = explain.explain_damage(db, "Double-Edge", "Kingambit", None, None,
+                                       "Altaria", "Altarianite", "Pixilate")
+    assert kingambit["type_effectiveness"] == "1x"   # Fairy: Dark 2x, Steel 0.5x
+
+    # without the ability it is a plain Normal move, untouched
+    plain = explain.explain_damage(db, "Double-Edge", "Garchomp", None, None,
+                                   "Altaria", None, "Cloud Nine")
+    assert plain["move_type"] == "Normal" and "base_move_type" not in plain
+    # non-Normal moves are never retyped by Pixilate
+    assert explain.explain_damage(db, "Moonblast", "Garchomp", None, None,
+                                  "Mega Altaria", "Altarianite", None)["move_type"] == "Fairy"
+    # and callers that give no attacker keep working
+    assert explain.explain_damage(db, "Double-Edge", "Garchomp", None, None)["move_type"] == "Normal"
+
+
+def test_calc_explain_covers_every_move_retyping_ability(db):
+    """Every ability in the data that retypes a move: Pixilate, Aerilate,
+    Refrigerate, Dragonize (Normal moves) and Liquid Voice (sound moves)."""
+    from champions_mcp import explain
+    cases = [
+        # (attacker, item, ability, move, defender, retyped to, effectiveness)
+        ("Sylveon", None, "Pixilate", "Hyper Voice", "Garchomp", "Fairy", "2x"),
+        ("Mega Gardevoir", "Gardevoirite", None, "Double-Edge", "Garchomp", "Fairy", "2x"),
+        ("Mega Salamence", "Salamencite", None, "Double-Edge", "Rillaboom", "Flying", "2x"),
+        ("Mega Pinsir", "Pinsirite", None, "Double-Edge", "Rillaboom", "Flying", "2x"),
+        ("Aurorus", None, "Refrigerate", "Double-Edge", "Garchomp", "Ice", "4x"),
+        ("Mega Glalie", "Glalitite", None, "Double-Edge", "Garchomp", "Ice", "4x"),
+        ("Mega Feraligatr", "Feraligite", None, "Double-Edge", "Garchomp", "Dragon", "2x"),
+        ("Primarina", None, "Liquid Voice", "Hyper Voice", "Incineroar", "Water", "2x"),
+    ]
+    for atk, item, ability, move, dfn, to, eff in cases:
+        e = explain.explain_damage(db, move, dfn, None, None, atk, item, ability)
+        assert (e["move_type"], e["type_effectiveness"]) == (to, eff), (atk, move, e)
+        assert e["base_move_type"] == "Normal"
+    # Liquid Voice only touches sound moves, and has no power boost
+    assert explain.explain_damage(db, "Surf", "Incineroar", None, None,
+                                  "Primarina", None, "Liquid Voice")["move_type"] == "Water"
+    assert explain.explain_damage(db, "Moonblast", "Garchomp", None, None,
+                                  "Primarina", None, "Liquid Voice")["move_type"] == "Fairy"
+    assert "boosts" not in explain.explain_damage(
+        db, "Hyper Voice", "Incineroar", None, None, "Primarina", None, "Liquid Voice")["move_type_note"]
+    assert "boosts it 20%" in explain.explain_damage(
+        db, "Double-Edge", "Garchomp", None, None, "Mega Altaria", "Altarianite", None)["move_type_note"]

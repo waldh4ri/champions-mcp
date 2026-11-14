@@ -24,6 +24,7 @@ from . import log as logmod
 from . import refresh, server_log
 from . import (
     builds,
+    explain,
     fields,
     historical_sets,
     pokedex,
@@ -55,7 +56,6 @@ from .damage import DamageCalculator
 from .db import Db
 from .formats import game_type, resolve_format, rules
 from .names import NameError, resolve
-from .names import try_resolve as names_try_resolve
 from .sim import BattleSimulator, SimError
 
 
@@ -1012,48 +1012,11 @@ async def calc_damage(
                          "get_pokemon_moves or search_moves."}
     result = await App.get().damage.calculate(req)
     if isinstance(result, dict) and "error" not in result:
-        explained = _explain_damage(move, defender, defender_item, defender_ability)
+        explained = explain.explain_damage(_db(), move, defender, defender_item, defender_ability,
+                                           attacker, attacker_item, attacker_ability)
         if explained:
             result["explain"] = explained
     return result
-
-
-def _explain_damage(move: str, defender: str, defender_item: str | None,
-                    defender_ability: str | None) -> dict[str, Any] | None:
-    """The type effectiveness behind a calc, and the defender form/ability it
-    hit. A small model that sees a number lower than it expected otherwise
-    spends pages re-deriving the type chart and the damage formula (it did, for
-    Close Combat into Aura Guard Mega Lucario Z) instead of reading why."""
-    db = _db()
-    mv = db.get_move(move)
-    if not mv or not mv.get("type"):
-        return None
-    ekey = profiles.resolve_entity(db, defender)
-    ent = profiles._entities(db).get(ekey or "")
-    if ent and ent["is_mega"]:
-        form = {"form": ent["name"], "types": ent["types"], "ability": ent["ability"]}
-    else:
-        slug = names_try_resolve(db, defender)
-        if not slug:
-            return None
-        form = teambuilder._member_form(db, {"item": defender_item, "ability": defender_ability}, slug)
-    atk = str(mv["type"]).capitalize()
-    mult = 1.0
-    for t in form["types"]:
-        mult *= db.type_multiplier(atk, t)
-    ability = defender_ability or form.get("ability")
-    out = {
-        "move_type": atk, "move_category": mv.get("damage_class"),
-        "defender_form": form["form"], "defender_types": form["types"],
-        "type_effectiveness": f"{mult:g}x",
-    }
-    if ability:
-        out["defender_ability"] = ability
-    out["note"] = ("Type effectiveness is from the Champions chart. Any gap between it "
-                   "and the damage comes from abilities, items, weather, boosts or "
-                   "screens named in `description` (e.g. Aura Guard halves contact "
-                   "damage) — read them there; don't re-derive the formula.")
-    return out
 
 
 # --------------------------- Battle simulation ------------------------
