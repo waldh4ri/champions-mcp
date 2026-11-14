@@ -22,7 +22,7 @@ def _names(db: Db, slugs: list[str]) -> list[dict[str, str]]:
 
 def list_pokemon(
     db: Db, query: str | None = None, type: str | None = None,
-    format: str | None = None, limit: int = 60,
+    format: str | None = None, limit: int | None = None, compact: bool = False,
 ) -> dict[str, Any]:
     """Roster pick list. Every entry is legal in the current season; filter by
     name substring and/or a single type. Sorted by usage rank when a format is
@@ -35,12 +35,18 @@ def list_pokemon(
     ``count`` always reports the true number of matches so the caller knows to
     narrow the filters or raise the limit.
 
+    ``compact=True`` is the way to see the *whole* roster in one call: each
+    entry shrinks to ``{"slug", "types"}`` (~9k characters for all 235, well
+    inside a tool result), and ``limit`` defaults to no cap.
+
     Args:
         db: Open Champions database handle.
         query: Optional substring filter over Pokémon name or slug.
         type: Optional single type filter.
         format: Optional format (``vgc``/``bss``) to sort by usage rank.
-        limit: Maximum number of entries to return.
+        limit: Maximum number of entries to return (default 60, or no cap
+            when ``compact``).
+        compact: Return only slug and types per entry, so the full roster fits.
 
     Returns:
         The matching roster entries, with ``count`` (total matches) and
@@ -67,7 +73,11 @@ def list_pokemon(
         out.sort(key=lambda e: (e["usage_rank"] is None, e["usage_rank"] or 0))
     else:
         out.sort(key=lambda e: e["name"])
+    if limit is None:
+        limit = len(out) if compact else 60
     shown = out[:max(1, limit)]
+    if compact:  # after sorting, which may need the usage rank
+        shown = [{"slug": e["slug"], "types": "/".join(e["types"])} for e in shown]
     result = {"count": len(out), "returned": len(shown), "format": format,
               "pokemon": shown}
     if len(shown) < len(out):

@@ -170,6 +170,7 @@ def test_catalogue_tools_fit_a_tool_result_budget(db):
         ("list_megas", pokedex.list_megas(db)),
         ("list_pokemon", roster.list_pokemon(db)),
         ("list_pokemon(vgc)", roster.list_pokemon(db, None, None, "vgc")),
+        ("list_pokemon(compact)", roster.list_pokemon(db, compact=True)),
         ("list_roles(vgc)", roles.list_roles(format="vgc")),
     ):
         size = len(json.dumps(payload, ensure_ascii=False))
@@ -206,6 +207,24 @@ def test_list_pokemon_reports_the_true_match_count(db):
 
     # the resource contract still gets the whole roster
     assert roster.list_pokemon(db, limit=10_000)["returned"] == db.count("pokemon")
+
+
+def test_list_pokemon_compact_returns_the_whole_roster(db):
+    whole = roster.list_pokemon(db, compact=True)
+    assert whole["returned"] == whole["count"] == db.count("pokemon")
+    assert "truncated" not in whole
+    assert set(whole["pokemon"][0]) == {"slug", "types"}
+    assert isinstance(whole["pokemon"][0]["types"], str)
+
+    # format still sorts (by usage rank) without leaking the rank into entries
+    ranked = roster.list_pokemon(db, format="vgc", compact=True)
+    assert ranked["returned"] == ranked["count"]
+    assert set(ranked["pokemon"][0]) == {"slug", "types"}
+
+    # an explicit limit and filters still apply
+    assert roster.list_pokemon(db, limit=5, compact=True)["returned"] == 5
+    dragons = roster.list_pokemon(db, None, "Dragon", compact=True)
+    assert all("Dragon" in e["types"] for e in dragons["pokemon"])
 
 
 def test_list_items_groups_the_pool_and_hides_stones(db):

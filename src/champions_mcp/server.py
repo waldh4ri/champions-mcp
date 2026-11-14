@@ -473,17 +473,19 @@ async def get_pokemon_weaknesses(
 @mcp.tool()
 async def list_pokemon(
     query: str | None = None, type: str | None = None,
-    format: str | None = None, limit: int = 60,
+    format: str | None = None, limit: int | None = None, compact: bool = False,
 ) -> dict[str, Any]:
     """Roster pick list (every entry is legal this season). Filter by name
     substring and/or a single type; pass a format to sort by usage rank.
 
-    The roster is 235 Pokémon, so this returns the first `limit` (default 60)
-    matches. `count` is always the true match total and a `truncated` note
-    appears when there are more — narrow with `query`/`type` rather than raising
-    `limit` blindly. To rank by usage use get_usage_stats (`order='bottom'` for
-    off-meta picks), not this tool."""
-    return roster.list_pokemon(_db(), query, type, format, limit)
+    To see the WHOLE roster in one call, pass `compact=true`: each entry is
+    just {slug, types} and nothing is capped. Without it the roster (235+
+    Pokémon) is returned in full detail, first `limit` (default 60) matches.
+    `count` is always the true match total and a `truncated` note appears when
+    there are more — narrow with `query`/`type` or use `compact`. To rank by
+    usage use get_usage_stats (`order='bottom'` for off-meta picks), not this
+    tool."""
+    return roster.list_pokemon(_db(), query, type, format, limit, compact)
 
 
 @mcp.tool()
