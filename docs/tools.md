@@ -276,16 +276,19 @@ older games (snow is not hail: no chip damage, no Ice power boost).
 
 Roster pick list (every entry is legal this season). Filter by name
 substring and/or a single type; pass a format to sort by usage rank. The
-roster size changes with regulations, so this returns the first `limit`
-matches; narrow with `query`/`type` rather than raising `limit` blindly. To rank
-by usage, use `get_usage_stats` instead.
+roster size changes with regulations, so by default this returns the first
+`limit` matches in full detail; narrow with `query`/`type`, or pass
+`compact=true` to get the **whole roster in one call** (each entry just
+`{slug, types}`, ~9k characters, uncapped). To rank by usage, use
+`get_usage_stats` instead.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `query` | `str \| None` | `None` | Name substring |
 | `type` | `str \| None` | `None` | Single type filter |
 | `format` | `str \| None` | `None` | `"vgc"`/`"bss"`; sorts results by usage rank |
-| `limit` | `int` | `60` | Maximum results |
+| `limit` | `int \| None` | `None` | Maximum results (60 by default, no cap when `compact`) |
+| `compact` | `bool` | `false` | Only `slug` and `types` per entry, so the full roster fits |
 
 ### `search_pokemon_by_type`
 

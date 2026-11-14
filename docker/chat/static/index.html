@@ -87,6 +87,10 @@
        values the generic min-width is sized for) — the reserved 7ch box plus
        right-alignment left a big dead gap after the label. */
     #mCache .meter-val { color: #c084fc; min-width: 4ch; }
+    /* The model that answered (the Auto Router's pick): variable length, so
+       cap it and let the title hold the full id / the turn's list. */
+    #mModel .meter-val { color: #fbbf24; min-width: 0; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; }
+    .message-models { margin-top: 6px; font-size: 0.7rem; color: #64748b; font-family: ui-monospace, Consolas, monospace; }
 
     #modelSelect {
       background: #0f172a;
@@ -744,7 +748,8 @@
       <span class="meter" id="mDecode" title="Token generation (decode) speed"><span class="meter-label">TG</span><span class="meter-val">--</span></span>
       <span class="meter" id="mCache" title="Prompt-cache hit rate"><span class="meter-label">CACHE</span><span class="meter-val">--</span></span>
       <span class="meter" id="mCtx" title="Context window used"><span class="meter-label">CTX</span><span class="meter-val">--</span></span>
-      <span class="meter" id="mCost" style="display:none" title="OpenRouter spend"><span class="meter-label">$</span><span class="meter-val">--</span></span>
+      <span class="meter" id="mModel" style="display:none" title="Model that answered"><span class="meter-label">MODEL</span><span class="meter-val">--</span></span>
+      <span class="meter" id="mCost"style="display:none" title="OpenRouter spend"><span class="meter-label">$</span><span class="meter-val">--</span></span>
     </div>
     <label class="viewToggle" title="Keep the view pinned to the newest message while a reply streams in">
       <input type="checkbox" id="autoscrollChk" checked>
@@ -820,6 +825,17 @@
   const mCache     = document.querySelector('#mCache .meter-val');
   const mCostBox   = document.getElementById('mCost');
   const mCost      = document.querySelector('#mCost .meter-val');
+  const mModelBox  = document.getElementById('mModel');
+  const mModel     = document.querySelector('#mModel .meter-val');
+  const shortModel = id => String(id).replace(/^[^/]+\//, '');  // "google/gemini-x" -> "gemini-x"
+  function showModels(models) {
+    if (!models?.length) { mModelBox.style.display = 'none'; return; }
+    mModelBox.style.display = '';
+    mModel.textContent = shortModel(models[models.length - 1]);
+    mModelBox.title = models.length > 1
+      ? `Models used this turn (in order):\n${models.join('\n')}`
+      : `Model that answered: ${models[0]}`;
+  }
   let turnCost = 0;      // this turn so far (metrics events are cumulative per turn)
   let accountUsage = null;
   const mCtx       = document.querySelector('#mCtx .meter-val');
@@ -866,6 +882,7 @@
     mCache.textContent = '--';
     mCtx.textContent = ctxMax ? `0/${fmtK(ctxMax)}` : '--';
     mCtx.style.color = '';
+    showModels(null);
     turnCost = 0;
     showCost();
     TeamPanel.reset();
@@ -950,6 +967,7 @@
     current.events.push(event);
     saveSoon();
   }
+  let turnPartial = null;  // the running turn's finished rounds (see sendMessage)
   let saveTimer = null;
   function saveSoon() {
     clearTimeout(saveTimer);
@@ -959,7 +977,9 @@
     clearTimeout(saveTimer);
     if (!current.events.length) return;
     current.updated = Date.now();
-    current.history = history;
+    // A turn still running saves its finished tool rounds too, so reloading the
+    // page mid-run (which cancels it) keeps that work like the Stop button does.
+    current.history = turnPartial?.length ? [...history, ...turnPartial] : history;
     current.model = modelSel.value || current.model;
     if (!current.title) {
       const first = current.events.find(e => e.t === 'user');
@@ -991,6 +1011,7 @@
     } else if (event.t === 'assistant') {
       const bub = addBubble('assistant', '');
       renderMarkdown(bub, event.content);
+      addModelsFooter(bub, event.models);
       try { TeamPanel.onFinal(event.content); } catch (e) { console.warn('team panel', e); }
     } else if (event.t === 'error') addBubble('info', `<strong>Error:</strong> ${esc(event.text)}`);
     else if (event.t === 'stopped') addBubble('info', esc(event.text));
@@ -1114,6 +1135,7 @@
     mDecode.textContent  = m.decode_tps  ? `${m.decode_tps.toFixed(1)} t/s`  : '--';
     mCache.textContent   = `${Math.round(m.cache_hit_pct ?? 0)}%`;
     if (m.cost != null) { turnCost = m.cost; showCost(); }
+    showModels(m.models || (m.model ? [m.model] : null));
 
     const max = m.context_max || ctxMax;
     const used = m.context_tokens || 0;
@@ -1193,6 +1215,17 @@
   // log instead of an undated wall of bubbles.
   function nowStamp() {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // "answered by: a → b" under a reply (only when the server reported models:
+  // OpenRouter and some endpoints do; llama-server doesn't).
+  function addModelsFooter(bub, models) {
+    if (!models?.length) return;
+    const el = document.createElement('div');
+    el.className = 'message-models';
+    el.textContent = `model: ${models.map(shortModel).join(' → ')}`;
+    el.title = models.join('\n');
+    bub.appendChild(el);
   }
 
   function addBubble(role, html) {
@@ -1364,6 +1397,7 @@
     // is stopped or fails, so the next message (with any model) continues
     // from there. Reasoning is dropped: another model can't replay it.
     const partial = [];
+    turnPartial = partial;  // also saved with the session while the turn runs
     turnAbort = new AbortController();
 
     // Interim thinking/tool-call messages render as they arrive, each as its
@@ -1395,6 +1429,7 @@
           const { reasoning_content, reasoning_details, ...plain } = m;
           partial.push(plain);
         }
+        saveSoon();
       } else if (evt.type === 'error') {
         throw new Error(evt.detail || 'Stream error');
       }
@@ -1419,6 +1454,7 @@
       let buf = '';
       let finalMessage = null;
       let finalTurnMessages = null;
+      let finalMetrics = null;
 
       const consume = (line) => {
         if (!line.trim()) return;
@@ -1428,6 +1464,7 @@
           finalTurnMessages = evt.turn_messages;
           toolEvents = evt.tool_events ?? toolEvents;
           updateMeters(evt.metrics);
+          finalMetrics = evt.metrics;
           if (evt.metrics?.cost != null) {
             current.cost = (current.cost || 0) + evt.metrics.cost;  // saved with the chat
             turnCost = 0;
@@ -1473,8 +1510,10 @@
       removeTypingOnce(); // in case the model answered with no thinking/tool calls at all
       const bub = addBubble('assistant', '');
       renderMarkdown(bub, content);
+      const turnModels = finalMetrics?.models || [];
+      addModelsFooter(bub, turnModels);
       try { TeamPanel.onFinal(content); } catch (e) { console.warn('team panel', e); }
-      record({ t: 'assistant', content });
+      record({ t: 'assistant', content, models: turnModels });
     } catch (err) {
       removeTypingOnce();
       // keep what the finished rounds gathered (tool calls + results)
@@ -1496,6 +1535,7 @@
       }
     } finally {
       turnAbort = null;
+      turnPartial = null;  // by now it is in history (error/Stop) or superseded by the final turn
       saveNow();
       setBusy(false);
       inputEl.focus();

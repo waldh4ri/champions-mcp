@@ -1073,6 +1073,7 @@ class TurnMetrics:
         self.prompt_tokens_total_sum = 0  # incl. cached, for cache-hit %
         self.last_context_tokens = 0
         self.model = ""  # the model that actually answered (Auto Router resolves it)
+        self.models: list[str] = []  # every distinct model this turn, in order
         self.cost = 0.0  # USD, as reported by OpenRouter (usage.cost)
         self.has_cost = False
 
@@ -1095,6 +1096,8 @@ class TurnMetrics:
             self.predicted_ms_sum += elapsed_ms
         if resp_json.get("model"):
             self.model = resp_json["model"]
+            if self.model not in self.models:
+                self.models.append(self.model)
         self.last_provider = resp_json.get("provider")
         self.last_cost = None
         if usage.get("cost") is not None:
@@ -1118,7 +1121,7 @@ class TurnMetrics:
             "cache_hit_pct": (self.cached_tokens_sum / cache_denom * 100) if cache_denom else 0.0,
             "context_tokens": self.last_context_tokens,
             "context_max": self.context_max,
-            **({"model": self.model} if self.model else {}),
+            **({"model": self.model, "models": list(self.models)} if self.model else {}),
             **({"cost": round(self.cost, 6)} if self.has_cost else {}),
         }
 
