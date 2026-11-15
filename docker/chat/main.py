@@ -44,6 +44,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import backends as bk
+import history as hist
 import settings as cfg
 
 # Backends offered. "auto" (default): every available one — the local
@@ -1286,13 +1287,14 @@ async def _openrouter_chat(model: str, messages: list[dict], use_tools: bool,
     if resp.status_code >= 400:
         # OpenRouter puts the useful part (bad key, no credits, model down) in the body.
         try:
-            detail = resp.json().get("error", {}).get("message") or resp.text
+            err = resp.json().get("error")
+            detail = hist.openrouter_error(err) if err else resp.text
         except ValueError:
             detail = resp.text
-        raise RuntimeError(f"OpenRouter {resp.status_code}: {detail[:400]}")
+        raise RuntimeError(f"OpenRouter {resp.status_code}: {detail[:800]}")
     body = resp.json()
     if body.get("error"):  # provider errors can arrive with a 200
-        raise RuntimeError(f"OpenRouter: {body['error'].get('message', body['error'])}")
+        raise RuntimeError(f"OpenRouter: {hist.openrouter_error(body['error'])[:800]}")
     if metrics is not None:
         metrics.add(body, elapsed_ms)
     msg = body["choices"][0]["message"]
@@ -1377,28 +1379,10 @@ OLD_TOOL_RESULT_CHARS = 1500
 
 
 def _fit_history(messages: list[dict], upto: int, model: str) -> None:
-    """Shrink earlier turns (messages[:upto]) until they fit their share of the
-    model's context: first shorten their tool results, oldest first, then drop
-    their tool chains entirely (assistant tool calls + results), oldest first,
-    keeping every user message and final answer."""
+    """Shrink earlier turns (messages[:upto]) to their share of the model's
+    context (see history.fit_history)."""
     budget = int(_context_size(model) * 4 * HISTORY_CONTEXT_SHARE)
-    size = lambda: sum(len(json.dumps(m, ensure_ascii=False, default=str)) for m in messages[:upto])  # noqa: E731
-    if size() <= budget:
-        return
-    for m in messages[:upto]:
-        if m.get("role") == "tool" and isinstance(m.get("content"), str) and len(m["content"]) > OLD_TOOL_RESULT_CHARS:
-            m["content"] = (m["content"][:OLD_TOOL_RESULT_CHARS]
-                            + "\n...[earlier tool result shortened to fit the context]")
-            if size() <= budget:
-                return
-    i = 0
-    while i < upto and size() > budget:
-        m = messages[i]
-        if m.get("role") == "tool" or (m.get("role") == "assistant" and m.get("tool_calls")):
-            del messages[i]
-            upto -= 1
-        else:
-            i += 1
+    hist.fit_history(messages, upto, budget, OLD_TOOL_RESULT_CHARS)
 
 
 def _reply(msg: dict) -> dict:
@@ -1491,6 +1475,10 @@ async def _chat_events(req: ChatRequest) -> AsyncIterator[bytes]:
             provider, name = bk.split(fallback)
         model = bk.qualify(provider, name)
         _fit_history(messages, turn_start - 1, model)  # keep this turn's user message whole
+        fixed = hist.repair_tool_pairs(messages)
+        if fixed:
+            log.warning("dropped history messages providers would reject (tool results/calls "
+                        "that no longer pair up)", messages=fixed)
         turn_start = len(messages)
         metrics = TurnMetrics(_context_size(model))
         route_tier = _auto_tier(name) if provider == bk.OPENROUTER else None  # survives pinning below
