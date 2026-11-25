@@ -492,10 +492,33 @@ async def mcp_rpc(method: str, params: dict = {}) -> Any:
     if rid:  # champions-mcp tags its lines (and the calc/sim calls) with the same id
         headers["X-Request-Id"] = rid
     resp = await http_client.post(MCP_URL, json=payload, headers=headers)
+    if resp.status_code == 404 and mcp_session_id and method != "initialize":
+        # The server forgot our session (it restarted, or reaped an idle one):
+        # Streamable HTTP answers an unknown Mcp-Session-Id with 404. Open a new
+        # session and replay the request once instead of failing every tool call
+        # until the chat itself is restarted.
+        log.warning("champions-mcp dropped our session; re-initialising", method=method)
+        mcp_session_id = None
+        await _init_mcp_session()
+        if mcp_session_id:
+            headers["Mcp-Session-Id"] = mcp_session_id
+        else:
+            headers.pop("Mcp-Session-Id", None)
+        resp = await http_client.post(MCP_URL, json=payload, headers=headers)
     resp.raise_for_status()
     if "Mcp-Session-Id" in resp.headers:
         mcp_session_id = resp.headers["Mcp-Session-Id"]
     return await _parse_mcp_response(resp)
+
+
+async def _init_mcp_session() -> None:
+    """The MCP handshake only (no tool listing): initialize + initialized."""
+    await mcp_rpc("initialize", {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "champions-chat", "version": "2.0"},
+    })
+    await mcp_notify("notifications/initialized")
 
 
 async def mcp_notify(method: str, params: dict = {}) -> None:
@@ -541,12 +564,7 @@ async def _init_mcp() -> None:
     global mcp_tools, skill_guide_text
     for attempt in range(20):
         try:
-            await mcp_rpc("initialize", {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "champions-chat", "version": "2.0"},
-            })
-            await mcp_notify("notifications/initialized")
+            await _init_mcp_session()
             result = await mcp_rpc("tools/list")
             tools = result.get("tools", [])
             mcp_tools = [
