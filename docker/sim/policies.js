@@ -18,7 +18,7 @@
  * 'default' if a choice is rejected, so a policy bug can't stall a battle.
  */
 
-const { PRNG, toID } = require(process.env.PS_SIM || '/ps/dist/sim');
+const { PRNG, toID, Battle } = require(process.env.PS_SIM || '/ps/dist/sim');
 
 // ------------------------------------------------------ information model
 //
@@ -872,6 +872,23 @@ function switchScore(battle, side, slot, cand, a, free) {
   if (wx && battle.field.weather !== wx) v += battle.field.weather ? 14 : 8;
   v += 40 * Math.min(1, e.offense) + (e.faster ? 12 : 0);
   v -= 30 * Math.min(1, e.followUp) + (e.followUp >= 1 && !e.faster ? 15 : 0);
+  // Singles: the long-run 1v1 against the foe in front (recovery, status,
+  // setup, attrition), versus staying in.
+  if (side.active.length === 1 && DUEL_SWITCH_W) {
+    const foe = foesOf(side)[0];
+    if (foe) {
+      v += DUEL_SWITCH_W * duelLive(battle, cand, foe);
+      if (!free && alive(mon)) {
+        // A Baton Passer staying in sets up for its recipient: it's worth what
+        // that recipient will do here, not its own (often hopeless) 1v1.
+        let stay = duelLive(battle, mon, foe);
+        if (canBatonPass(side, mon) && isPasserSet(battle.dex, mon)) {
+          for (const i of benchIndices(side, new Set())) stay = Math.max(stay, duelLive(battle, side.pokemon[i], foe));
+        }
+        v -= DUEL_SWITCH_W * stay;
+      }
+    }
+  }
   return v;
 }
 
@@ -1227,6 +1244,273 @@ function subsetSynergy(subset, info) {
   return bonus;
 }
 
+// ------------------------------------------------ singles preview: 1v1 duels
+//
+// Singles team preview plays every one of our Pokémon against every one of
+// theirs as a quick 1v1 on expected values: best hit, recovery, status
+// (Toxic, burn, paralysis, Yawn), Leech Seed, trapping (Infestation and co.,
+// Binding Band), setup (Iron Defense into Body Press, Calm Mind...) unless the
+// foe can undo it (Haze, phazing, Unaware), Leftovers / Black Sludge, Rocky
+// Helmet, sand chip and speed order. Walls and stall pieces win (or hold)
+// these duels through attrition, which a "how hard does it hit" score never
+// sees. The bring is the subset that best answers each of their Pokémon.
+
+const TRAP_MOVES = new Set(['infestation', 'whirlpool', 'firespin', 'sandtomb', 'bind', 'wrap', 'magmastorm', 'clamp', 'snaptrap', 'thundercage']);
+const HEAL_FRACTION = {
+  recover: 0.5, roost: 0.5, slackoff: 0.5, softboiled: 0.5, milkdrink: 0.5, healorder: 0.5,
+  shoreup: 0.5, moonlight: 0.5, synthesis: 0.5, morningsun: 0.5, rest: 1, wish: 0.5,
+  lunarblessing: 0.25, junglehealing: 0.25, lifedew: 0.25, strengthsap: 0.35,
+};
+const ROUGH = { rockyhelmet: 1 / 6 };
+const ROUGH_ABILITY = { roughskin: 1 / 8, ironbarbs: 1 / 8 };
+const DUEL_TURNS = 30;
+const DUEL_SWITCH_W = Number(process.env.DUEL_SWITCH_W || 60);
+
+/** duel() on live Pokémon, memoized for one decision (battle._dmgCache's lifetime). */
+function duelLive(battle, p, q) {
+  const memo = battle._duelMemo || (battle._duelMemo = new Map());
+  const bk = m => { const b = m.boosts || {}; return `${b.atk | 0},${b.def | 0},${b.spa | 0},${b.spd | 0},${b.spe | 0}`; };
+  const key = `${p.side && p.side.n}:${p.position}:${p.species.id}:${p.hp}:${p.status}:${bk(p)}|${q.species.id}:${q.hp}:${q.status}:${bk(q)}`;
+  if (memo.has(key)) return memo.get(key);
+  const v = duel(battle.dex, p, q, null, battle);
+  memo.set(key, v);
+  return v;
+}
+
+const typesOf = p => (p.getTypes ? p.getTypes() : (p.types || (p.species && p.species.types) || []));
+
+/**
+ * What `p` can do to `q` in a 1v1: best hit, heal, status, trap, setup, undo.
+ * In battle (`battle` given, real Pokémon) hits come from the engine's own
+ * damage calc at +0 (the duel applies stages itself); at team preview, from
+ * the fast formula.
+ */
+function duelKit(dex, p, q, battle) {
+  if (battle && p.side && q.side) {
+    const sb = [p.boosts, q.boosts];
+    p.boosts = { ...NO_BOOSTS }; q.boosts = { ...NO_BOOSTS };
+    try { return duelKitAt(dex, p, q, (m) => simDamage(battle, p, q, m, false)); } finally { [p.boosts, q.boosts] = sb; }
+  }
+  return duelKitAt(dex, p, q, (m) => formulaDamage(dex, p, q, m));
+}
+
+function duelKitAt(dex, p, q, dmg) {
+  const kit = { atk: 0, phys: false, contact: false, stat: 'atk', heal: 0, status: null, seed: false,
+    trap: 0, trapDmg: 0, setup: null, undo: false, unaware: abilityId(p) === 'unaware' };
+  const qTypes = typesOf(q), qAb = abilityId(q);
+  const bounce = qAb === 'magicbounce' || qAb === 'goodasgold';
+  for (const ms of p.moveSlots) {
+    const mv = dex.moves.get(ms.id);
+    if (!mv.exists) continue;
+    if (mv.category !== 'Status') {
+      const d = dmg(ms.id) / Math.max(1, q.maxhp);
+      if (TRAP_MOVES.has(mv.id) && d > 0 && !qTypes.includes('Ghost')) {
+        kit.trap = itemId(p) === 'bindingband' ? 1 / 6 : 1 / 8;
+        kit.trapDmg = d;
+      }
+      if (d > kit.atk) {
+        kit.atk = d; kit.phys = mv.category === 'Physical'; kit.contact = !!(mv.flags && mv.flags.contact);
+        kit.stat = mv.id === 'bodypress' ? 'def' : mv.category === 'Physical' ? 'atk' : 'spa';
+      }
+      continue;
+    }
+    const heal = HEAL_FRACTION[mv.id] || (mv.heal ? mv.heal[0] / mv.heal[1] : 0);
+    if (heal > kit.heal) kit.heal = heal;
+    if (['haze', 'clearsmog', 'roar', 'whirlwind'].includes(mv.id)) kit.undo = true;
+    if (bounce) continue;
+    if (mv.id === 'leechseed' && !qTypes.includes('Grass') && qAb !== 'magicguard') kit.seed = true;
+    let st = mv.id === 'yawn' ? 'yawn' : mv.status || null;
+    if (!st) continue;
+    const immune =
+      (st === 'tox' || st === 'psn') ? (qTypes.includes('Poison') || qTypes.includes('Steel')) && abilityId(p) !== 'corrosion' ||
+        ['immunity', 'poisonheal', 'magicguard', 'purifyingsalt', 'comatose'].includes(qAb) :
+      st === 'brn' ? qTypes.includes('Fire') || ['waterveil', 'waterbubble', 'flashfire', 'guts', 'magicguard', 'purifyingsalt', 'comatose'].includes(qAb) :
+      st === 'par' ? qTypes.includes('Electric') || (mv.type === 'Electric' && qTypes.includes('Ground')) || ['limber', 'purifyingsalt', 'comatose', 'guts', 'quickfeet'].includes(qAb) :
+      (st === 'slp' || st === 'yawn') ? ['insomnia', 'vitalspirit', 'comatose', 'purifyingsalt'].includes(qAb) : false;
+    if (immune || (mv.flags && mv.flags.powder && qTypes.includes('Grass'))) continue;
+    const rank = { slp: 5, yawn: 4, tox: 3, par: 2, brn: 2, psn: 1 };
+    if (!kit.status || rank[st] > rank[kit.status]) { kit.status = st; kit.statusAcc = mv.accuracy === true ? 1 : mv.accuracy / 100; }
+  }
+  for (const ms of p.moveSlots) {
+    const b = setupBoosts(p, dex.moves.get(ms.id));
+    if (!b) continue;
+    const useful = (b[kit.stat] || 0) > 0 || (b.def || 0) > 0 || (b.spd || 0) > 0;
+    if (useful && (!kit.setup || ((b[kit.stat] || 0) > (kit.setup[kit.stat] || 0)))) kit.setup = b;
+  }
+  if (kit.status === 'brn' && q.storedStats.atk < q.storedStats.spa) kit.status = null; // burn barely matters to a special attacker
+  return kit;
+}
+
+const stageMult = s => (s >= 0 ? (2 + s) / 2 : 2 / (2 - s));
+
+/**
+ * Expected-value 1v1 between `p` and `q` (preview forms), from p's side:
+ * +0.4..+1 = p wins with that much HP left, -0.4..-1 = q wins, in between = a
+ * stalemate after DUEL_TURNS weighted by the HP difference.
+ */
+function duel(dex, p, q, cache, battle) {
+  const key = cache && `${p.species.id}|${abilityId(p)}|${q.species.id}|${abilityId(q)}`;
+  if (cache && cache.has(key)) return cache.get(key);
+  const v = duelOutcome(dex, p, q, battle).v;
+  if (cache) cache.set(key, v);
+  return v;
+}
+
+/** The duel played out: {v (as duel()), a, b (each side's HP fraction at the end, 0 = fainted)}. */
+function duelOutcome(dex, p, q, battle) {
+  const kits = [duelKit(dex, p, q, battle), duelKit(dex, q, p, battle)];
+  const mons = [p, q];
+  // Start from the live state (in battle) or a clean one (team preview).
+  const st = [0, 1].map(i => {
+    const m = mons[i], b = m.boosts || {}, ss = m.statusState || {};
+    return {
+      hp: Math.min(1, m.hp / m.maxhp), status: ['tox', 'psn', 'brn', 'par'].includes(m.status) ? m.status : null,
+      tox: m.status === 'tox' ? (ss.stage || 0) : 0, seeded: !!(m.volatiles && m.volatiles['leechseed']),
+      trapped: m.volatiles && m.volatiles['partiallytrapped'] ? 3 : 0, yawn: 0,
+      sleep: m.status === 'slp' ? 2 : 0, setups: 0,
+      boost: { atk: b.atk || 0, def: b.def || 0, spa: b.spa || 0, spd: b.spd || 0, spe: b.spe || 0 },
+    };
+  });
+  const sand = [p, q].some(m => abilityId(m) === 'sandstream');
+  // Focus Sash / Sturdy: the first would-be KO from full HP leaves 1 HP.
+  const sash = [0, 1].map(i => st[i].hp >= 1 && (itemId(mons[i]) === 'focussash' ||
+    (abilityId(mons[i]) === 'sturdy' && !MOLD_BREAKERS.has(abilityId(mons[1 - i])))));
+  const hurt = (j, d) => {
+    if (sash[j] && st[j].hp >= 1 && d >= st[j].hp) { st[j].hp = 1 / mons[j].maxhp; sash[j] = false; return; }
+    st[j].hp -= d;
+  };
+  const spe = i => mons[i].storedStats.spe * stageMult(st[i].boost.spe) * (st[i].status === 'par' ? 0.5 : 1);
+  const hitOf = i => {
+    const k = kits[i], me = st[i], foe = st[1 - i];
+    const foeUnaware = kits[1 - i].unaware;
+    let d = k.atk * (foeUnaware ? 1 : stageMult(me.boost[k.stat]));
+    if (!k.unaware) d /= stageMult(k.phys ? foe.boost.def : foe.boost.spd);
+    if (me.status === 'brn' && k.phys && abilityId(mons[i]) !== 'guts') d *= 0.5;
+    return d;
+  };
+  const act = i => {
+    const k = kits[i], me = st[i], foe = st[1 - i];
+    if (me.sleep > 0) { me.sleep--; return; }
+    const parScale = me.status === 'par' ? 0.75 : 1;
+    const hit = hitOf(i), incoming = hitOf(1 - i);
+    if (hit >= foe.hp && !(sash[1 - i] && foe.hp >= 1)) { hurt(1 - i, hit * parScale); return; }
+    if (k.heal && me.hp < 0.55 && k.heal > incoming * 0.6 && me.hp + k.heal > incoming) {
+      me.hp = Math.min(1, me.hp + k.heal * parScale);
+      if (k.heal >= 1) { me.status = null; me.sleep = 2; } // Rest
+      return;
+    }
+    if (k.status && !foe.status && !foe.yawn && !foe.sleep) {
+      if (k.status === 'yawn') foe.yawn = 2;
+      else { foe.status = k.status === 'slp' ? null : k.status; if (k.status === 'slp') foe.sleep = 2; }
+      return;
+    }
+    if (k.seed && !foe.seeded) { foe.seeded = true; return; }
+    if (k.trap && !foe.trapped) { foe.trapped = 5; hurt(1 - i, k.trapDmg * parScale); return; }
+    const safe = incoming < 0.28 || (k.heal >= 0.5 && incoming < 0.45);
+    if (k.setup && safe && me.setups < 3 && !kits[1 - i].undo && !kits[1 - i].unaware) {
+      for (const [s, v] of Object.entries(k.setup)) if (me.boost[s] !== undefined) me.boost[s] = Math.max(-6, Math.min(6, me.boost[s] + v));
+      me.setups++;
+      return;
+    }
+    hurt(1 - i, hit * parScale);
+    if (k.contact) {
+      const rough = (ROUGH[itemId(mons[1 - i])] || 0) + (ROUGH_ABILITY[abilityId(mons[1 - i])] || 0);
+      me.hp -= rough;
+    }
+  };
+  let t = 0;
+  for (; t < DUEL_TURNS && st[0].hp > 0 && st[1].hp > 0; t++) {
+    const first = spe(0) >= spe(1) ? 0 : 1;
+    act(first);
+    if (st[1 - first].hp > 0) act(1 - first);
+    for (let i = 0; i < 2; i++) {
+      const me = st[i], m = mons[i];
+      if (me.hp <= 0) continue;
+      if (me.yawn && --me.yawn === 0 && !me.status) me.sleep = 2;
+      if (abilityId(m) === 'magicguard') continue;
+      if (me.status === 'tox') me.hp -= Math.min(15, ++me.tox) / 16;
+      else if (me.status === 'psn') me.hp -= 1 / 8;
+      else if (me.status === 'brn') me.hp -= 1 / 16;
+      if (me.seeded) { me.hp -= 1 / 8; st[1 - i].hp = Math.min(1, st[1 - i].hp + 1 / 8); }
+      if (me.trapped) { me.hp -= kits[1 - i].trap; me.trapped--; }
+      if (sand && !typesOf(m).some(x => ['Rock', 'Ground', 'Steel'].includes(x)) && !['sandveil', 'sandrush', 'sandforce', 'overcoat'].includes(abilityId(m))) me.hp -= 1 / 16;
+      const it = itemId(m);
+      if (it === 'leftovers' || (it === 'blacksludge' && typesOf(m).includes('Poison'))) me.hp = Math.min(1, me.hp + 1 / 16);
+    }
+  }
+  const [a, b] = st;
+  let v;
+  if (a.hp > 0 && b.hp <= 0) v = 0.4 + 0.6 * Math.min(1, a.hp);
+  else if (b.hp > 0 && a.hp <= 0) v = -(0.4 + 0.6 * Math.min(1, b.hp));
+  else if (a.hp <= 0 && b.hp <= 0) v = 0;
+  else v = 0.35 * (a.hp - b.hp);
+  return { v, a: Math.max(0, Math.min(1, a.hp)), b: Math.max(0, Math.min(1, b.hp)) };
+}
+
+/** Bring + lead order for singles from the duel matrix. */
+function singlesPreview(battle, side, n, rng) {
+  const dex = battle.dex;
+  const cache = new Map();
+  const theirs = side.foe.pokemon.map(p => previewForm(battle, p, true));
+  const mine = side.pokemon.map(p => {
+    const mega = previewForm(battle, p, true);
+    return { p, mega, isMega: mega !== p };
+  });
+  const row = form => theirs.map(q => duel(dex, form, q, cache));
+  for (const x of mine) { x.rowMega = row(x.mega); x.rowBase = x.isMega ? row(x.p) : x.rowMega; }
+  // Their likely bring: the Pokémon that do best against our six.
+  const threat = theirs.map((_, j) => {
+    let s = 0;
+    for (const x of mine) s -= x.rowMega[j];
+    return s / mine.length;
+  });
+  const wq = threat.map(t => 1 + Math.max(0, t));
+  const wsum = wq.reduce((x, y) => x + y, 0);
+  const hazards = x => (x.p.moveSlots.some(m => ['stealthrock', 'spikes', 'toxicspikes'].includes(m.id)) ? 0.06 : 0);
+  // Baton Pass: a passer is worth what its boosts add to the best recipient
+  // brought with it (its own duels are usually hopeless).
+  const info = side.pokemon.some(p => isPasserSet(dex, p)) ? previewScores(battle, side, false) : null;
+  const passBonus = acc => (info ? subsetPassGains(acc, info).reduce((x, g, k) => x + (k ? 0.4 : 0.9) * g, 0) : 0);
+  let best = null;
+  const m = mine.length;
+  const rec = (start, acc) => {
+    if (acc.length === n) {
+      // Only one Mega: the holder with the best Mega row gets it.
+      const megaHolders = acc.filter(i => mine[i].isMega)
+        .sort((x, y) => mine[y].rowMega.reduce((s, v) => s + v, 0) - mine[x].rowMega.reduce((s, v) => s + v, 0));
+      const rows = acc.map(i => (mine[i].isMega && i !== megaHolders[0] ? mine[i].rowBase : mine[i].rowMega));
+      let cover = 0, avg = 0, worst = Infinity;
+      theirs.forEach((_, j) => {
+        const bestP = Math.max(...rows.map(r => r[j]));
+        cover += wq[j] * bestP;
+        worst = Math.min(worst, bestP);
+        avg += wq[j] * rows.reduce((s, r) => s + r[j], 0) / rows.length;
+      });
+      const score = 0.55 * cover / wsum + 0.3 * avg / wsum + 0.15 * worst + passBonus(acc) +
+        acc.reduce((s, i) => s + hazards(mine[i]), 0) / n + (rng() - 0.5) * 0.02;
+      if (!best || score > best.score) best = { score, acc: [...acc], rows, mega: megaHolders[0] };
+      return;
+    }
+    for (let i = start; i <= m - (n - acc.length); i++) { acc.push(i); rec(i + 1, acc); acc.pop(); }
+  };
+  rec(0, []);
+  // Lead: the best average duel against their likely leads, plus hazard setters.
+  const rowAvg = k => best.rows[k].reduce((s, v, j) => s + wq[j] * v, 0) / wsum;
+  const leadScore = best.acc.map((i, k) => {
+    // A Baton Passer leads (it needs turns to set up) and fights through its
+    // recipient: credit it with the recipient's matchups, not its own.
+    const passer = info && info[i].passer && best.acc.some(j => j !== i && info[i].passGain[j] > 0);
+    const base = passer ? Math.max(...best.acc.map((_, kk) => rowAvg(kk))) : rowAvg(k);
+    return {
+      i, s: base + 1.5 * hazards(mine[i]) + (rng() - 0.5) * 0.02 +
+        (passer ? 0.6 + Math.max(0, ...best.acc.map(j => info[i].passGain[j])) : 0),
+    };
+  });
+  leadScore.sort((x, y) => y.s - x.s);
+  const order = leadScore.map(x => x.i);
+  return 'team ' + order.map(i => i + 1).join('');
+}
+
 function teamPreview(policy, battle, side, req, rng) {
   const n = req.maxChosenTeamSize || side.pokemon.length;
   const order = side.pokemon.map((_, i) => i);
@@ -1234,6 +1518,7 @@ function teamPreview(policy, battle, side, req, rng) {
     for (let i = order.length - 1; i > 0; i--) { const j = rint(rng, i + 1); [order[i], order[j]] = [order[j], order[i]]; }
     return 'team ' + order.slice(0, n).map(i => i + 1).join('');
   }
+  if (side.active.length === 1 && n < side.pokemon.length) return singlesPreview(battle, side, n, rng);
   const info = previewScores(battle, side, false);
   const m = side.pokemon.length;
   // Evaluate all C(m, n) bring subsets so at most one Mega Stone holder gets
@@ -2005,6 +2290,7 @@ function applyHits(hpLeft, hits, mult = 1, wOverride = null) {
 
 function heuristicTurn(battle, side, req, rng) {
   const restoreMega = applyMegaProjection(battle);
+  let megaRestored = false;
   try {
     const used = new Set();
     const n = side.active.length;
@@ -2124,6 +2410,27 @@ function heuristicTurn(battle, side, req, rng) {
       return { c, score: s };
     });
 
+    // Singles: resolve the best candidates one turn deeper in the real engine.
+    // (Not for a Baton Passer: set up, then pass, is a plan longer than one turn,
+    // which the heuristic's passing logic already handles.)
+    const passerActive = n === 1 && alive(side.active[0]) && canBatonPass(side, side.active[0]) && isPasserSet(battle.dex, side.active[0]);
+    if (n === 1 && LOOKAHEAD && scored.length > 1 && !passerActive) {
+      const ranked = [...scored].sort((x, y) => y.score - x.score);
+      // Protect only delays the same position a turn in singles (it can't be
+      // chained), which a one-turn look always overrates: the heuristic alone
+      // decides it.
+      const isProtect = x => x.c[0].kind === 'move' && PROTECT.has(x.c[0].id);
+      if (isProtect(ranked[0])) return ranked[0].c[0].choice;
+      // Only close calls go to the search: what the heuristic rates far below
+      // its best is left out (a one-turn look has blind spots of its own).
+      const cands = ranked.filter(x => !isProtect(x) && x.score >= ranked[0].score - LA_GAP).slice(0, LA_OURS);
+      if (cands.length < 2) return (cands[0] || ranked[0]).c[0].choice;
+      restoreMega(); // (the projection must not leak into the snapshot)
+      megaRestored = true;
+      const pick = lookaheadPick(battle, side, cands, rng);
+      if (pick) return pick.c[0].choice;
+      return cands[0].c[0].choice;
+    }
     const best = pickTop(rng, scored, 0.08).c;
     const bySlot = new Map(best.map(o => [o.slot, o]));
     // Only one Mega per battle: if both slots have `' mega'`, prioritize the slot
@@ -2144,8 +2451,171 @@ function heuristicTurn(battle, side, req, rng) {
     }
     return parts.join(', ');
   } finally {
+    if (!megaRestored) restoreMega();
+  }
+}
+
+// ------------------------------------------------- one turn deeper (singles)
+//
+// The heuristic's best few actions are each played one real turn forward on
+// a copy of the battle against the opponent's likeliest replies (the same
+// heuristic from its side), and the positions they lead to are compared. The
+// copy is taken under this side's information view (the foe's sets are what
+// we believe them to be) and re-seeded, so the search can't see the real
+// battle's hidden sets or its upcoming rolls.
+
+const LOOKAHEAD = process.env.SIM_LOOKAHEAD !== '0';
+const LA_OURS = Number(process.env.LA_OURS || 4);
+const LA_THEIRS = Number(process.env.LA_THEIRS || 3);
+const LA_SAMPLES = Number(process.env.LA_SAMPLES || 1);
+const LA_DUEL_W = Number(process.env.LA_DUEL_W || 10);
+const LA_PROJ = Number(process.env.LA_PROJ || 0.5);
+const LA_GAP = Number(process.env.LA_GAP || 40);
+const LA_TOP_HALF = Number(process.env.LA_TOP_HALF || 0.3);
+const LA_HAZARD_W = Number(process.env.LA_HAZARD_W || 0.75);
+
+/** The foe's likeliest singles actions, by the heuristic from its side: [{choice, score}]. */
+function foeReplies(battle, foeSide, k) {
+  const req = foeSide.activeRequest;
+  const mon = foeSide.active[0];
+  if (!req || req.wait || req.teamPreview || req.forceSwitch || !req.active || !req.active[0] || !alive(mon)) return null;
+  const restoreMega = applyMegaProjection(battle);
+  try {
+    const realAct = req.active[0];
+    // Options from the moves this side believes the foe has (the snapshot holds the same).
+    const act = {
+      moves: mon.moveSlots.map(ms => ({ id: ms.id, pp: ms.pp, disabled: ms.disabled, target: battle.dex.moves.get(ms.id).target })),
+      trapped: realAct.trapped, maybeTrapped: realAct.maybeTrapped, canMegaEvo: realAct.canMegaEvo,
+    };
+    const a = assess(battle, foeSide);
+    const mine = foeSide.active.filter(alive), foes = foesOf(foeSide);
+    const avg = arr => arr.reduce((x, p) => x + speedOf(p), 0) / Math.max(1, arr.length);
+    const ctx = { slower: avg(mine) < avg(foes), naturallyFaster: false, allyThreat: 0, a };
+    const opts = slotOptions(battle, foeSide, 0, act, new Set());
+    scoreSlot(battle, foeSide, 0, opts, a, ctx);
+    for (const o of opts) o.solo = o.base + applyHits(new Map(), o.hits);
+    opts.sort((x, y) => y.solo - x.solo);
+    return opts.slice(0, k).map(o => ({ choice: o.choice, score: o.solo }));
+  } catch (e) {
+    return null;
+  } finally {
     restoreMega();
   }
+}
+
+// Status cost (in Pokémon units) on top of the HP it chips: burn mostly
+// matters to a physical attacker, paralysis when it flips the speed order.
+const STATUS_COST = { tox: 0.14, psn: 0.07, brn: 0.04, par: 0.06, slp: 0.12, frz: 0.15 };
+function statusCost(p, opp) {
+  let c = STATUS_COST[p.status] || 0;
+  if (p.status === 'brn' && p.storedStats.atk > p.storedStats.spa && abilityId(p) !== 'guts') c += 0.11;
+  if (p.status === 'par' && alive(opp) && p.storedStats.spe > opp.storedStats.spe && p.storedStats.spe / 2 < opp.storedStats.spe) c += 0.09;
+  return c;
+}
+
+/** Value of position `c` for side index `n` (move-score units, ~100 per Pokémon). */
+function evalPosition(c, n) {
+  const me = c.sides[n], foe = c.sides[1 - n];
+  if (c.ended) return c.winner === me.name ? 2000 : c.winner === foe.name ? -2000 : 0;
+  const picked = c.ruleTable.pickedTeamSize || me.pokemon.length;
+  // With reliable recovery the top half of the HP bar is cheap (one heal turn
+  // gets it back), so it counts for less: no point healing from 90%, and
+  // chipping a healthy wall isn't progress.
+  const recovers = p => !(p.volatiles && p.volatiles['healblock']) &&
+    p.moveSlots.some(ms => ms.pp > 0 && (HEAL_FRACTION[ms.id] || 0) >= 0.5 && ms.id !== 'rest');
+  const hpValue = h => (0.65 * Math.min(h, 0.5) + 0.65 * Math.max(0, h - 0.5));
+  const hpValueRec = h => 0.65 * Math.min(h, 0.5) + LA_TOP_HALF * Math.max(0, h - 0.5);
+  const a = me.active[0], f = foe.active[0];
+  // The front-line 1v1 played out to its end (expected values), blended with
+  // the board as it stands since either side may still switch: a line that
+  // wins the exchange beats one that only deals more damage this turn.
+  const proj = new Map();
+  let duelV = 0;
+  if (alive(a) && alive(f)) {
+    const o = duelOutcome(c.dex, a, f, c);
+    proj.set(a, o.a); proj.set(f, o.b);
+    duelV = o.v;
+  }
+  const worth = p => {
+    const h = p.hp / p.maxhp;
+    const hv = recovers(p) ? hpValueRec : hpValue;
+    const now = 0.35 + hv(h);
+    if (!proj.has(p)) return now;
+    const end = proj.get(p);
+    return (1 - LA_PROJ) * now + LA_PROJ * (end > 0 ? 0.35 + hv(end) : 0);
+  };
+  const material = s => s.pokemon.slice(0, picked).reduce((x, p) => {
+    if (!alive(p)) return x;
+    return x + worth(p) - statusCost(p, s.foe.active[0]);
+  }, 0);
+  let v = 100 * (material(me) - material(foe));
+  const bench = s => s.pokemon.slice(0, picked).filter(p => alive(p) && !p.isActive);
+  if (alive(a) && alive(f)) {
+    v += LA_DUEL_W * duelV;
+    v += 5 * (posBoosts(a.boosts) - negBoosts(a.boosts)) - 5 * (posBoosts(f.boosts) - negBoosts(f.boosts));
+  } else if (alive(f)) {
+    // We replace a fainted active: our best answer comes in.
+    const opts = bench(me).map(p => duel(c.dex, p, f, null, c));
+    if (opts.length) v += LA_DUEL_W * Math.max(...opts);
+  } else if (alive(a)) {
+    const opts = bench(foe).map(p => duel(c.dex, a, p, null, c));
+    if (opts.length) v += LA_DUEL_W * Math.min(...opts);
+  }
+  v += LA_HAZARD_W * (hazardBurden(c, foe) - hazardBurden(c, me));
+  return v;
+}
+
+/** Pick among `cands` ([{c: [option], score}]) by playing each one turn forward. */
+function lookaheadPick(battle, side, cands, rng) {
+  const replies = foeReplies(battle, side.foe, LA_THEIRS);
+  if (!replies || !replies.length) return null;
+  // The foe's reply mix: its heuristic scores, softened.
+  const top = replies[0].score;
+  const w = replies.map(r => Math.exp((r.score - top) / 25));
+  const wsum = w.reduce((x, y) => x + y, 0);
+  let snap;
+  // (our per-decision caches live on the battle and aren't serializable)
+  const caches = [battle._dmgCache, battle._duelMemo];
+  battle._dmgCache = null; battle._duelMemo = null;
+  try {
+    snap = JSON.stringify(battle.toJSON());
+  } catch (e) {
+    return null;
+  } finally {
+    [battle._dmgCache, battle._duelMemo] = caches;
+  }
+  const n = side.n, foeId = side.foe.id;
+  let best = null;
+  for (const cand of cands) {
+    const choice = cand.c[0].choice;
+    let exp = 0, worst = Infinity, ok = true;
+    for (let r = 0; r < replies.length && ok; r++) {
+      let sum = 0;
+      for (let k = 0; k < LA_SAMPLES; k++) {
+        const c = Battle.fromJSON(snap);
+        try {
+          c.prng = new PRNG([1 + rint(rng, 65535), 1 + rint(rng, 65535), 1 + rint(rng, 65535), 1 + rint(rng, 65535)]);
+          c.sides[n].clearChoice(); c.sides[1 - n].clearChoice();
+          if (!c.choose(foeId, replies[r].choice)) { c.sides[1 - n].clearChoice(); c.choose(foeId, 'default'); }
+          if (!c.choose(side.id, choice)) { ok = false; break; }
+          sum += evalPosition(c, n);
+        } catch (e) {
+          ok = false;
+        } finally {
+          c.destroy();
+        }
+      }
+      if (!ok) break;
+      const v = sum / LA_SAMPLES;
+      exp += w[r] * v / wsum;
+      worst = Math.min(worst, v);
+    }
+    if (!ok) continue;
+    // Mostly the expected reply, partly the worst one; the heuristic breaks ties.
+    const score = 0.75 * exp + 0.25 * worst + 0.15 * cand.score;
+    if (!best || score > best.score) best = { c: cand.c, score };
+  }
+  return best;
 }
 
 function simpleTurn(policy, battle, side, req, rng) {
@@ -2182,6 +2652,7 @@ function choose(policy, battle, side, rng, view) {
   if (!req || req.wait) return null;
   const restore = policy === 'random' ? () => {} : applyView(battle, side, view);
   battle._dmgCache = new Map();
+  battle._duelMemo = new Map();
   try {
     if (req.teamPreview) return teamPreview(policy, battle, side, req, rng);
     if (req.forceSwitch) return forcedSwitch(policy, battle, side, req, rng);
@@ -2189,6 +2660,7 @@ function choose(policy, battle, side, rng, view) {
     return simpleTurn(policy, battle, side, req, rng);
   } finally {
     battle._dmgCache = null;
+    battle._duelMemo = null;
     restore();
   }
 }
