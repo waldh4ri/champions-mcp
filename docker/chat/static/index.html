@@ -820,6 +820,10 @@
     .tp-body { min-width: 0; }
     .tp-mon-head { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
     .tp-name { font-family: var(--font-ui); font-size: 9px; line-height: 1.5; text-transform: uppercase; color: var(--ink); margin-right: 2px; }
+    /* Name in its first type's colour (--tc, set inline), lightness clamped
+       so even Electric or Ice stays readable on either theme's paper. */
+    .tp-name[style*="--tc"], .pk-name { color: oklch(from var(--tc) min(l, 0.52) c h); }
+    [data-theme="dark"] .tp-name[style*="--tc"], [data-theme="dark"] .pk-name { color: oklch(from var(--tc) max(l, 0.78) c h); }
     .tp-item { color: var(--ink-2); font-size: 14px; }
     .tp-rank { margin-left: auto; color: var(--muted); font-family: var(--font-mono); font-size: 16px; white-space: nowrap; }
     .tp-type {
@@ -1229,6 +1233,7 @@
     } else if (event.t === 'assistant') {
       const bub = addBubble('assistant', '');
       renderMarkdown(bub, event.content);
+      colourNames(bub);
       addModelsFooter(bub, event.models);
       try { TeamPanel.onFinal(event.content); } catch (e) { console.warn('team panel', e); }
     } else if (event.t === 'error') addBubble('info', `<strong>Error:</strong> ${esc(event.text)}`);
@@ -1740,6 +1745,7 @@
       removeTypingOnce(); // in case the model answered with no thinking/tool calls at all
       const bub = addBubble('assistant', '');
       renderMarkdown(bub, content);
+      colourNames(bub);
       const turnModels = finalMetrics?.models || [];
       addModelsFooter(bub, turnModels);
       try { TeamPanel.onFinal(content); } catch (e) { console.warn('team panel', e); }
@@ -2205,7 +2211,7 @@
         ${spriteTag(set.species || info.name, set.item)}
         <div class="tp-body">
         <div class="tp-mon-head">
-          <span class="tp-name">${esc(info.name || set.species)}</span>${typeBadges(info.types)}
+          <span class="tp-name"${TYPE_COLORS[(info.types || [])[0]] ? ` style="--tc:${TYPE_COLORS[info.types[0]]}"` : ''}>${esc(info.name || set.species)}</span>${typeBadges(info.types)}
           ${set.item ? `<span class="tp-item">@ ${esc(set.item)}</span>` : ''}
           ${rankTxt ? `<span class="tp-rank" title="Usage rank">${esc(rankTxt)}</span>` : ''}
         </div>
@@ -2241,8 +2247,63 @@
       </div>`;
     }
 
-    return { onTool, onFinal, reset, parsePaste, teamFrom, _state: () => ({ mons, team }) };
+    return { onTool, onFinal, reset, parsePaste, teamFrom, typeColors: TYPE_COLORS, _state: () => ({ mons, team }) };
   })();
+
+  // ── Pokémon names in answers, coloured by their first type ────────────────
+  // The roster and Megas with their types come from champions-mcp through the
+  // chat server (/api/pokemon-types). Answers rendered before that arrives are
+  // coloured once it does. Code, links and pastes are left alone.
+  // `var`: colourNames is hoisted and may run (as a no-op) before this line.
+  var pkTypes = null;  // display name -> first type
+  var pkRe = null;
+  function colourNames(root) {
+    if (!pkRe || !root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: n => n.parentElement?.closest('code, pre, a, .pk-name, .message-models')
+        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) {
+      const text = node.nodeValue;
+      pkRe.lastIndex = 0;
+      if (!pkRe.test(text)) continue;
+      pkRe.lastIndex = 0;
+      const frag = document.createDocumentFragment();
+      let last = 0, m;
+      while ((m = pkRe.exec(text))) {
+        if (m.index > last) frag.append(text.slice(last, m.index));
+        const span = document.createElement('span');
+        span.className = 'pk-name';
+        span.style.setProperty('--tc', TeamPanel.typeColors[pkTypes.get(m[0])]);
+        span.textContent = m[0];
+        frag.append(span);
+        last = m.index + m[0].length;
+      }
+      if (last < text.length) frag.append(text.slice(last));
+      node.replaceWith(frag);
+    }
+  }
+  async function loadPokemonTypes(attempt = 0) {
+    let types = {};
+    try { types = (await (await fetch('/api/pokemon-types')).json()).types || {}; } catch { /* retried below */ }
+    if (!Object.keys(types).length) {
+      if (attempt < 20) setTimeout(() => loadPokemonTypes(attempt + 1), 15000);  // champions-mcp still starting
+      return;
+    }
+    const map = new Map();
+    const add = (name, t) => { if (name && TeamPanel.typeColors[t] && !map.has(name)) map.set(name, t); };
+    for (const [name, t] of Object.entries(types)) add(name, t[0]);
+    // "Basculegion (Male)" is also written plain "Basculegion" (first form wins)
+    for (const [name, t] of Object.entries(types)) add(name.replace(/\s*\([^()]*\)$/, ''), t[0]);
+    const alts = [...map.keys()].sort((a, b) => b.length - a.length)
+      .map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    pkTypes = map;
+    pkRe = new RegExp(`(?<![\\p{L}\\p{N}])(?:${alts})(?![\\p{L}\\p{N}])`, 'gu');
+    document.querySelectorAll('.message.assistant .bubble').forEach(colourNames);
+  }
+  loadPokemonTypes();
 
   // Sprite fallback chain (Mega render -> species render -> dex sprite -> hidden).
   function nextSprite(img) {

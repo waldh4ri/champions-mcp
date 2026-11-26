@@ -1047,6 +1047,37 @@ async def openrouter_usage():
     return data
 
 
+_TYPES_CACHE: dict[str, Any] = {}
+
+
+@app.get("/api/pokemon-types")
+async def pokemon_types():
+    """Display name -> types for the whole roster and its Megas, so the UI can
+    colour Pokémon names in answers. Read from champions-mcp (list_pokemon +
+    list_megas, i.e. this season's data) and cached for an hour; on failure the
+    last good copy, or an empty map the page retries later."""
+    now = time.monotonic()
+    if _TYPES_CACHE.get("at", 0) > now - 3600:
+        return _TYPES_CACHE["data"]
+    types: dict[str, list[str]] = {}
+    try:
+        for tool, args, key, name_key in (("list_pokemon", {"limit": 10_000}, "pokemon", "name"),
+                                          ("list_megas", {"limit": 1_000}, "megas", "mega_name")):
+            res = await mcp_rpc("tools/call", {"name": tool, "arguments": args})
+            text = "".join(c.get("text", "") for c in res.get("content", [])
+                           if isinstance(c, dict) and c.get("type") == "text")
+            for entry in json.loads(text).get(key, []):
+                if entry.get(name_key) and entry.get("types"):
+                    types[entry[name_key]] = entry["types"]
+    except (httpx.HTTPError, RuntimeError, ValueError, AttributeError) as exc:
+        log.warning("pokemon types unavailable", error=f"{type(exc).__name__}: {exc}")
+        return _TYPES_CACHE.get("data") or {"types": {}}
+    data = {"types": types}
+    if types:
+        _TYPES_CACHE.update(at=now, data=data)
+    return data
+
+
 class EndpointRequest(BaseModel):
     name: str = ""
     base_url: str
