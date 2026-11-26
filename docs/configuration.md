@@ -104,7 +104,7 @@ the number of games; no fixed completion time is guaranteed.
 `docker compose --profile webchat up -d --build` serves the chat at
 **http://localhost:3000**, with local models on CPU + RAM; `--profile
 webchat-gpu` runs them on an NVIDIA GPU instead (either can be set as
-`COMPOSE_PROFILES` in `.env`). Most of its settings live in its **⚙ Configure**
+`COMPOSE_PROFILES` in `.env`). Most of its settings live in its **Configure**
 view and apply without a restart; the environment variables below set their
 defaults, and what you change in the view is saved in the `chat-data` volume
 (API keys included, server-side only) and wins over them.
@@ -135,7 +135,7 @@ and sim lines it caused.
 
 ## OpenRouter
 
-Offered whenever an API key is set: in **⚙ Configure → API providers**, or as
+Offered whenever an API key is set: in **Configure → API providers**, or as
 `OPENROUTER_API_KEY` in `.env`. No GPU needed. Prompts and tool results go to
 the model's provider and are billed to the key; the header's **$** meter shows
 the current chat's cost (from each response's `usage.cost`) and, on hover, the
@@ -196,7 +196,7 @@ price cap.**
 ## OpenAI-compatible APIs
 
 Any server that speaks the OpenAI chat API with tool calling (vLLM, LM Studio,
-Ollama's `/v1`, a hosted provider) can back the chat: add it in **⚙ Configure →
+Ollama's `/v1`, a hosted provider) can back the chat: add it in **Configure →
 API providers** (name, base URL ending in `/v1`, optional key, optional model
 list, context size) or with these variables. From inside the containers, your
 host machine is `host.docker.internal`.
@@ -215,7 +215,7 @@ loaded and loads whichever model a chat picks (unloading the previous one when
 `LLAMA_MODELS_MAX` are loaded), so switching models needs no restart. Models
 come from:
 
-- **⚙ Configure → Local models**: paste a Hugging Face link (a repo, or a
+- **Configure → Local models**: paste a Hugging Face link (a repo, or a
   specific `.gguf` file) or `user/repo:quant`. It downloads in the background
   into the `llama_models` volume, together with the model's draft head (MTP,
   DFlash, EAGLE3) when the repo has one, and loads on first use. The view
@@ -230,7 +230,7 @@ reserves the GPU: on a machine without the NVIDIA container runtime that `up`
 fails. Both share the downloaded models and these settings; GPU-only ones (GPU
 layers, MoE offload) have no effect on the CPU.
 
-**Inference settings** are edited in **⚙ Configure → Inference**, for all
+**Inference settings** are edited in **Configure → Inference**, for all
 models or per model. The chat writes them to llama.cpp's preset file
 (`presets.ini` in the `chat-data` volume, read by `llama-server`) and has it
 reload: a running model whose settings changed is unloaded, and its next use

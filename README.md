@@ -16,7 +16,7 @@ docker compose up -d --build
 ```
 
 To also start a web chat at http://localhost:3000 (models and API keys are set up
-in its **⚙ Configure** view):
+in its **Configure** view):
 
 ```sh
 docker compose --profile webchat up -d --build       # local models run on CPU + RAM

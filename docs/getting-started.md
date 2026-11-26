@@ -209,7 +209,7 @@ and `ps` include it:
 COMPOSE_PROFILES=webchat-gpu
 ```
 
-Then open **⚙ Configure** (top right). Everything below is set up there, no
+Then open **Configure** (top right). Everything below is set up there, no
 restart needed; the model picker groups what is available by backend:
 
 | Backend | Setup | Cost |
@@ -217,6 +217,10 @@ restart needed; the model picker groups what is available by backend:
 | **OpenRouter** | *API providers*: paste your key (or `OPENROUTER_API_KEY` in `.env`). The Auto Router at low/medium/high cost tiers is always offered; search the catalogue to add models. | Billed per token; cheapest provider first by default. The header's **$** meter shows the chat's spend. |
 | **Local model** (llama.cpp) | *Local models*: pick a suggested model or paste a Hugging Face link. It downloads in the background, then loads on first use. | Free; runs on your CPU (`webchat`) or GPU (`webchat-gpu`). |
 | **Any OpenAI-compatible API** | *API providers*: base URL (+ key). LM Studio, Ollama, vLLM, a hosted provider. | Per that API. |
+
+The **Day / Night** button next to Configure switches between the light and
+dark theme. The browser remembers the choice; until you pick one, the theme
+follows your system setting.
 
 **OpenRouter** sends prompts and tool results to external model providers and
 may incur charges. Its default low tier has a price cap; the medium/high tiers
@@ -288,7 +292,7 @@ plain text, in `.env`.
 | Import error for `mcp.server.mcpserver` | Install the project dependencies in the interpreter used by your MCP client; SDK 2.x is required. |
 | No observed teams / no meta opponents | Remove `CHAMPIONS_MCP_BUILDS_SKIP=1` or omit `--skip-builds`, then refresh. |
 | Damage or simulation engine unavailable | Check `docker compose logs champions-calc champions-sim`; for a local server, build the images or configure reachable sidecar URLs. |
-| Local models unavailable in ⚙ Configure | `docker compose logs llama-server` (or `llama-server-gpu`) states why it idles. |
+| Local models unavailable in Configure | `docker compose logs llama-server` (or `llama-server-gpu`) states why it idles. |
 | `--profile webchat-gpu up` fails with *could not select device driver "nvidia"* | Docker has no NVIDIA GPU runtime on this machine: install the NVIDIA Container Toolkit (Linux) or enable WSL2 GPU support (Docker Desktop), or use `--profile webchat`. |
 | A local model shows *failed* | `docker compose logs llama-server` (or `llama-server-gpu`) has llama.cpp's reason, usually memory: in *Inference*, pin a smaller context, use q4_0 KV cache, or offload MoE experts to the CPU. |
 | Local model fails to load / runs out of memory | Check `docker compose logs llama-server` (or `llama-server-gpu`); verify the GGUF, GPU access and memory; reduce context or increase CPU MoE offload. |

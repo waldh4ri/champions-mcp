@@ -1,62 +1,76 @@
-/* Configuration view (⚙ Configure): local models, inference settings, chat
+/* Configuration view (Configure button): local models, inference settings, chat
  * settings and API providers. Talks to the chat server's /api/config,
  * /api/models, /api/local-models and /api/endpoints; refreshes the main
  * page's model picker (loadModels) after every change. */
 (() => {
   const css = `
-  #cfgOverlay { position: fixed; inset: 0; background: rgba(2,6,23,.72); display: none; z-index: 50;
-    align-items: flex-start; justify-content: center; padding-top: 16px; }
+  #cfgOverlay { position: fixed; inset: 0; background: var(--overlay); display: none; z-index: 50;
+    align-items: flex-start; justify-content: center; padding-top: 14px; }
   #cfgOverlay.open { display: flex; }
-  #cfgPanel { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
-    width: min(1680px, calc(100vw - 32px)); max-height: calc(100dvh - 32px);  /* height follows the content */
-    display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
-  #cfgHead { display: flex; align-items: center; gap: 6px; padding: 12px 16px; border-bottom: 1px solid #334155; }
-  #cfgHead h2 { font-size: 1rem; font-weight: 600; margin-right: 12px; }
-  .cfgTab { background: none; border: 1px solid transparent; color: #94a3b8; padding: 6px 12px; border-radius: 6px;
-    cursor: pointer; font: inherit; font-size: .85rem; }
-  .cfgTab.active { background: #0f172a; border-color: #334155; color: #e2e8f0; }
+  #cfgPanel { border: var(--frame-w) solid transparent; border-image: var(--frame-menu) 8 fill / var(--frame-w) stretch;
+    image-rendering: pixelated;
+    width: min(1680px, calc(100vw - 24px)); max-height: calc(100dvh - 28px);  /* height follows the content */
+    display: flex; flex-direction: column; }
+  #cfgHead { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px 10px;
+    border-bottom: 4px double var(--ink); }
+  #cfgHead h2 { font-family: var(--font-ui); font-size: 12px; font-weight: 400; color: var(--red);
+    margin-right: 14px; text-transform: uppercase; }
+  .cfgTab { border-color: transparent; background: transparent; color: var(--ink-2); }
+  .cfgTab:hover { color: var(--ink); background: var(--paper-2); }
+  .cfgTab.active { color: var(--ink); border-color: var(--ink); background: var(--paper-2); }
   #cfgClose { margin-left: auto; }
-  #cfgBody { padding: 20px 28px; overflow: auto; flex: 0 1 auto; min-height: 0; font-size: .87rem; }
-  #cfgBody h3 { font-size: .9rem; font-weight: 600; margin: 18px 0 8px; color: #cbd5e1; }
+  #cfgBody { padding: 14px 10px 8px; overflow: auto; flex: 0 1 auto; min-height: 0; font-size: 16px; line-height: 1.45; }
+  #cfgBody h3 { font-family: var(--font-ui); font-size: 10px; font-weight: 400; text-transform: uppercase;
+    margin: 22px 0 10px; color: var(--blue); display: flex; align-items: center; gap: 8px; }
+  #cfgBody h3::before { content: ''; width: 5px; height: 9px; background: var(--red); flex-shrink: 0;
+    -webkit-mask: var(--arrow-right) no-repeat center / 5px 9px; mask: var(--arrow-right) no-repeat center / 5px 9px; }
   #cfgBody h3:first-child { margin-top: 0; }
-  .cfgNote { color: #94a3b8; font-size: .8rem; margin: 4px 0 10px; line-height: 1.45; max-width: 120ch; }
-  .cfgErr { color: #fca5a5; font-size: .82rem; margin: 6px 0; min-height: 1em; }
-  .cfgOk { color: #86efac; }
+  #cfgBody code { font-family: var(--font-mono); font-size: 1.2em; color: var(--code); background: var(--paper-2); padding: 0 .25em; }
+  #cfgBody b { font-weight: 700; }
+  .cfgNote { color: var(--ink-2); font-size: 15px; margin: 4px 0 10px; line-height: 1.45; max-width: 120ch; }
+  .cfgErr { color: var(--red); font-size: 15px; margin: 6px 0; min-height: 1em; }
+  .cfgOk { color: var(--green); font-weight: 700; }
   .cfgRow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .cfgInput, .cfgSelect { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px;
-    padding: 6px 9px; font: inherit; font-size: .85rem; outline: none; }
-  .cfgInput:focus, .cfgSelect:focus { border-color: #6366f1; }
-  .cfgBtn { background: #4f46e5; color: #fff; border: none; border-radius: 6px; padding: 6px 12px; font: inherit;
-    font-size: .82rem; cursor: pointer; }
+  .cfgInput, .cfgSelect { cursor: text; padding: 7px 9px; font-family: var(--font-body); font-size: 16px; line-height: 1.2;
+    text-transform: none; outline: none; }
+  .cfgSelect { cursor: pointer; padding-right: 26px; }
+  .cfgInput::placeholder { color: var(--muted); }
+  .cfgInput:focus, .cfgSelect:focus { background-color: var(--paper-2); border-color: var(--blue); }
+  .cfgBtn { background: var(--accent); color: var(--on-accent); }
+  .cfgBtn:hover:not(:disabled) { filter: brightness(1.08); }
   .cfgBtn:disabled { opacity: .5; cursor: default; }
-  .cfgBtn.ghost { background: #0f172a; color: #cbd5e1; border: 1px solid #334155; }
-  .cfgBtn.danger { background: #0f172a; color: #fca5a5; border: 1px solid #7f1d1d; }
-  .cfgList { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr)); gap: 10px; }
-  .cfgItem { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; padding: 10px 12px;
-    border: 1px solid #334155; border-radius: 8px; background: rgba(15,23,42,.35); align-content: start; }
-  .cfgItem .name { font-weight: 600; word-break: break-all; }
-  .cfgItem .meta { color: #94a3b8; font-size: .78rem; grid-column: 1; }
+  .cfgBtn.ghost { background: var(--paper); color: var(--ink); }
+  .cfgBtn.ghost:hover:not(:disabled) { background: var(--paper-2); filter: none; }
+  .cfgBtn.danger { background: var(--paper); color: var(--red); border-color: var(--red); }
+  .cfgBtn.danger:hover:not(:disabled) { background: var(--red); color: var(--on-accent); filter: none; }
+  .cfgList { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr)); gap: 8px; }
+  .cfgItem { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 8px 10px;
+    border: var(--px) solid var(--ink); background: var(--paper-2); align-content: start; clip-path: var(--notch); }
+  .cfgItem .name { font-weight: 700; overflow-wrap: anywhere; }
+  .cfgItem .meta { color: var(--ink-2); font-size: 14px; grid-column: 1; }
   .cfgItem .acts { grid-row: 1 / span 2; grid-column: 2; display: flex; gap: 6px; align-items: center; }
-  .badge { display: inline-block; font-size: .72rem; padding: 1px 7px; border-radius: 99px; margin-left: 6px;
-    border: 1px solid #334155; color: #cbd5e1; vertical-align: 1px; }
-  .badge.loaded { color: #86efac; border-color: #166534; }
-  .badge.downloading, .badge.loading { color: #fde68a; border-color: #854d0e; }
-  .badge.failed { color: #fca5a5; border-color: #7f1d1d; }
-  .badge.mtp { color: #a5b4fc; border-color: #3730a3; }
-  .bar { height: 5px; background: #0f172a; border-radius: 3px; overflow: hidden; margin-top: 6px; grid-column: 1; }
-  .bar > i { display: block; height: 100%; background: #6366f1; transition: width .4s; }
-  .cfgGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 18px 40px; }
-  .cfgPair, .cfgForm { display: grid; grid-template-columns: minmax(150px, 200px) 1fr; gap: 10px 14px; align-items: start; }
-  .cfgPair label, .cfgForm label { padding-top: 6px; color: #cbd5e1; }
-  .cfgPair .help, .cfgForm .help { color: #94a3b8; font-size: .76rem; margin-top: 4px; line-height: 1.4; }
+  .badge { display: inline-block; font-family: var(--font-ui); font-size: 7px; text-transform: uppercase;
+    padding: 3px 5px 2px; margin-left: 8px; vertical-align: 2px; background: var(--ink); color: var(--paper); font-weight: 400; }
+  .badge.loaded { background: var(--green); color: var(--on-accent); }
+  .badge.downloading, .badge.loading { background: var(--yellow); color: #2a1f2d; }
+  .badge.failed { background: var(--red); color: var(--on-accent); }
+  .badge.mtp { background: var(--purple); color: var(--on-accent); }
+  /* progress: an EXP bar */
+  .bar { height: 8px; background: var(--hp-bg); border: var(--px) solid var(--ink); margin-top: 6px; grid-column: 1; }
+  .bar > i { display: block; height: 100%;
+    background: repeating-linear-gradient(90deg, var(--blue) 0 6px, color-mix(in srgb, var(--blue) 70%, #fff) 6px 8px);
+    transition: width .4s steps(8); }
+  .cfgGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 16px 40px; }
+  .cfgPair, .cfgForm { display: grid; grid-template-columns: minmax(150px, 210px) 1fr; gap: 10px 14px; align-items: start; }
+  .cfgPair label, .cfgForm label { padding-top: 7px; color: var(--ink); font-weight: 600; }
+  .cfgPair .help, .cfgForm .help { color: var(--ink-2); font-size: 14px; margin-top: 4px; line-height: 1.4; }
   .cfgForm .cfgInput { width: 100%; max-width: 560px; }
   .cfgField { display: flex; gap: 6px; align-items: center; }
-  .cfgField .cfgInput, .cfgField .cfgSelect { width: 200px; }
+  .cfgField .cfgInput, .cfgField .cfgSelect { width: 210px; }
   /* wide screens: independent sections side by side */
   .cfgCols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 640px), 1fr)); gap: 0 48px; align-items: start; }
-  .chip { background: #0f172a; border: 1px dashed #475569; color: #cbd5e1; border-radius: 6px; padding: 5px 9px;
-    cursor: pointer; font: inherit; font-size: .8rem; text-align: left; }
-  .chip:hover { border-color: #6366f1; }
+  .chip { display: inline-block; background: var(--paper); border-style: dashed; text-transform: none; font-family: var(--font-body);
+    font-size: 15px; padding: 8px 14px; text-align: left; white-space: normal; }
   `;
   document.head.insertAdjacentHTML('beforeend', `<style>${css}</style>`);
   document.body.insertAdjacentHTML('beforeend', `
@@ -169,7 +183,7 @@
     const sugg = (models.suggested_local || []).filter(s => !have.has(norm(s.model)));
     if (sugg.length) {
       html += `<div class="cfgRow" style="margin-bottom:12px">` + sugg.map(s =>
-        `<button class="chip" data-sugg="${h(s.model)}" title="${h(s.note)}">＋ ${h(s.model)} <span style="color:#94a3b8">· ${h(s.size)} · ${h(s.note)}</span></button>`).join('') + `</div>`;
+        `<button class="chip" data-sugg="${h(s.model)}" title="${h(s.note)}">+ ${h(s.model)} <span style="color:var(--muted)">· ${h(s.size)} · ${h(s.note)}</span></button>`).join('') + `</div>`;
     }
     if (!local.length) return html + `<p class="cfgNote">No local models yet.</p>`;
     html += `<div class="cfgList">` + local.map(m => {
@@ -288,7 +302,7 @@
     if (orInfo.restricted) return html + '<p class="cfgNote">Disabled by CHAT_PROVIDER.</p>';
     const k = orInfo.key;
     html += `<p class="cfgNote">${orInfo.enabled ? '<span class="cfgOk">Active.</span>' : 'Not configured yet.'}
-      Hundreds of hosted models with one key (<a href="https://openrouter.ai/keys" target="_blank" rel="noopener" style="color:#a5b4fc">openrouter.ai/keys</a>).
+      Hundreds of hosted models with one key (<a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>).
       Prompts and tool results go to the model's provider and are billed to the key.</p>
       <div class="cfgForm"><label for="orKey">API key</label><div><div class="cfgField">
         <input id="orKey" class="cfgInput" type="password" autocomplete="off" style="width:min(100%, 360px)"
@@ -319,7 +333,7 @@
       const e = m.effective || {};
       if (e.blocked) {
         const caps = [e.cap_in != null ? `$${e.cap_in} in` : null, e.cap_out != null ? `$${e.cap_out} out` : null].filter(Boolean).join(' / ');
-        return `<span style="color:#fca5a5">no provider within your price caps (${h(caps)} per 1M): requests would fail. ` +
+        return `<span style="color:var(--red)">no provider within your price caps (${h(caps)} per 1M): requests would fail. ` +
           `Raise the max input/output price in the OpenRouter settings above (0 = no cap).</span> · list ${price(m)}`;
       }
       if (e.prompt_per_m == null) return price(m);
