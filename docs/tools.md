@@ -821,6 +821,21 @@ damage numbers, and it:
 - values pivot moves;
 - picks brings and leads by matchup, judging Mega Stone holders as their Mega.
 
+In singles (BSS) it also:
+- plays each of its Pokémon against each of the foe's as a quick 1v1
+  (recovery, Toxic and other status, Leech Seed, trapping, setup undone by
+  Haze / Unaware, Rocky Helmet, sand, Focus Sash / Sturdy, speed order) and
+  brings the three that best answer the foe's six, so walls and stall pieces
+  get brought when they win those exchanges;
+- uses the same 1v1 to judge switch-ins over the long run, not only on the
+  hit they take this turn;
+- looks one turn deeper on close calls: its best few actions are each played
+  one turn forward in the engine against the foe's likeliest replies, and the
+  positions they lead to are compared (Pokémon and HP left, status, hazards,
+  how the front-line 1v1 plays out). The search only knows what the
+  information mode allows about the foe and can't see the battle's upcoming
+  rolls. It makes BSS battles about 10x slower to simulate.
+
 `"greedy"` and `"random"` are baselines. Win rates are relative to this AI,
 not ladder predictions.
 

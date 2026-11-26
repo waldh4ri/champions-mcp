@@ -349,7 +349,8 @@ function tacticStayWhenWinning() {
 /** First Impression works on entry (turn 1) and must never be clicked once activeMoveActions >= 1. */
 function tacticNoFirstImpressionAfterTurn1() {
   const b = singles(
-    [set('Golisopod', ['First Impression', 'Liquidation', 'Leech Life', 'Aqua Jet'], { ability: 'Emergency Exit', nature: 'Adamant' })],
+    // (X-Scissor, not Leech Life: a draining alternative can legitimately be better on turn 1)
+    [set('Golisopod', ['First Impression', 'Liquidation', 'X-Scissor', 'Aqua Jet'], { ability: 'Emergency Exit', nature: 'Adamant' })],
     [spa('Whimsicott', ['Moonblast', 'Energy Ball', 'Tailwind', 'Protect'], { ability: 'Infiltrator', item: 'Leftovers' })]);
   const t1 = tally(b);
   assert((t1['move 1'] || 0) >= 16, `expected First Impression on turn 1, got ${JSON.stringify(t1)}`);
@@ -524,10 +525,13 @@ function tacticHealNotEnough() {
 /** Strength Sap into a slower physical attacker: heals by its Attack and weakens the hit. */
 function tacticStrengthSap() {
   const sinistcha = () => spa('Sinistcha', ['Matcha Gotcha', 'Shadow Ball', 'Strength Sap', 'Protect'], { ability: 'Hospitality', nature: 'Bold' });
-  const gambit = () => set('Kingambit', ['Iron Head', 'Kowtow Cleave', 'Sucker Punch', 'Low Kick'], { ability: 'Defiant', nature: 'Adamant' });
+  // (Supreme Overlord, not Defiant: Strength Sap into Defiant hands it +2 Attack)
+  const gambit = () => set('Kingambit', ['Iron Head', 'Kowtow Cleave', 'Sucker Punch', 'Low Kick'], { ability: 'Supreme Overlord', nature: 'Adamant' });
   const slow = healBoard(sinistcha(), gambit(), { hp: 0.5, foeSpe: 1 });
   assert((slow.c['move 3'] || 0) >= 16, `expected Strength Sap vs slower physical Kingambit, got ${JSON.stringify(slow.c)}`);
-  const fast = healBoard(sinistcha(), gambit(), { hpOfHit: 0.8, foeSpe: 999 });
+  // (no Sucker Punch here: a status move makes it fail, which would make Strength Sap a fine dodge)
+  const fastGambit = () => set('Kingambit', ['Iron Head', 'Kowtow Cleave', 'Swords Dance', 'Low Kick'], { ability: 'Supreme Overlord', nature: 'Adamant' });
+  const fast = healBoard(sinistcha(), fastGambit(), { hpOfHit: 0.8, foeSpe: 999 });
   assert(!fast.c['move 3'], `faster Kingambit KOs first: no Strength Sap, got ${JSON.stringify(fast.c)}`);
 }
 
@@ -620,7 +624,9 @@ function tacticDefogWhenItPays() {
   assert((rocks['move 1'] || 0) >= 14, `Rocks on our side, SR-weak bench: expected Defog, got ${JSON.stringify(rocks)}`);
   const none = run([], []);
   assert(!none['move 1'], `no hazards: Defog is pointless, got ${JSON.stringify(none)}`);
-  const theirs = run(['stealthrock'], ['stealthrock', 'spikes']);
+  // (their side must really carry more: Rocks + 1 Spikes on them still cost
+  // less than Rocks on our 4x-weak Charizard, so Defog would be a net gain)
+  const theirs = run(['stealthrock'], ['stealthrock', 'spikes', 'spikes', 'spikes', 'toxicspikes']);
   assert(!(theirs['move 1'] > 2), `the foe has more hazards up: Defog would clear theirs too, got ${JSON.stringify(theirs)}`);
 }
 
@@ -652,8 +658,9 @@ const boostSpa = b => { const f = b.sides[1].active[0]; f.storedStats.spa = Math
 /** Full-HP Garchomp facing an OHKO: with Focus Sash it stays and attacks; without, it's saved by a switch. */
 function tacticSashLeadStays() {
   const run = item => {
+    // Bench partner: no better answer to Whimsicott than Garchomp (so only the Sash decides).
     const b = singles([set('Garchomp', ['Earthquake', 'Dragon Claw', 'Rock Slide', 'Swords Dance'], { ability: 'Rough Skin', item }),
-      spa('Gholdengo', ['Make It Rain', 'Shadow Ball', 'Nasty Plot', 'Recover'], { ability: 'Good as Gold', nature: 'Modest' })],
+      set('Dragonite', ['Extreme Speed', 'Earthquake', 'Fire Punch', 'Roost'], { ability: 'Multiscale', nature: 'Adamant' })],
     [hardWhim(), set('Kingambit', ['Iron Head', 'Kowtow Cleave', 'Sucker Punch', 'Low Kick'], { ability: 'Defiant' })]);
     boostSpa(b);
     const { simDamage } = require('./policies');
